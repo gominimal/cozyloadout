@@ -1,0 +1,134 @@
+# Minimal Light — generated from cozy/base16/minimal-light.yaml
+# Palette provenance and design rationale: see COLOURS.md at the repo root.
+#
+# Scope assignments are identical to minimal-dark.toml — only the palette at
+# the bottom differs. Keep the two in sync when editing scopes.
+
+# --- Syntax ------------------------------------------------------------------
+"comment" = { fg = "base03", modifiers = ["italic"] }
+
+"variable" = "base05"
+"variable.parameter" = "base05"
+"variable.builtin" = "base08"
+"variable.other.member" = "base08"
+
+"constant" = "base09"
+"constant.numeric" = "base09"
+"constant.character.escape" = "base0C"
+"constant.builtin" = "base09"
+
+"string" = "base0B"
+"string.regexp" = "base0C"
+"string.special" = "base0F"
+
+"type" = "base0A"
+"type.builtin" = "base0A"
+"constructor" = "base0C"
+"attribute" = "base0A"
+"namespace" = "base0A"
+"label" = "base0E"
+
+"function" = "base0D"
+"function.builtin" = "base0D"
+"function.macro" = "base0E"
+
+"keyword" = "base0E"
+"keyword.control" = "base0E"
+"keyword.directive" = "base0E"
+"operator" = "base0C"
+"punctuation" = "base05"
+"punctuation.bracket" = "base05"
+"special" = "base0D"
+"tag" = "base08"
+
+# --- Markup ------------------------------------------------------------------
+"markup.heading" = { fg = "base0D", modifiers = ["bold"] }
+"markup.list" = "base08"
+"markup.bold" = { fg = "base0A", modifiers = ["bold"] }
+"markup.italic" = { fg = "base0E", modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "base09", modifiers = ["underlined"] }
+"markup.link.text" = "base08"
+"markup.quote" = "base0C"
+"markup.raw" = "base0B"
+
+# --- Diff --------------------------------------------------------------------
+"diff.plus" = "base0B"
+"diff.minus" = "base08"
+"diff.delta" = "base09"
+
+# --- UI ----------------------------------------------------------------------
+"ui.background" = { bg = "base00" }
+"ui.background.separator" = { fg = "base02" }
+"ui.gutter" = { bg = "base00" }
+"ui.text" = "base05"
+"ui.text.focus" = { fg = "base05", bg = "base02", modifiers = ["bold"] }
+"ui.text.inactive" = "base04"
+
+"ui.linenr" = { fg = "base03" }
+"ui.linenr.selected" = { fg = "base04" }
+
+"ui.cursor" = { fg = "base00", bg = "base05" }
+"ui.cursor.primary" = { fg = "base00", bg = "base05" }
+"ui.cursor.match" = { fg = "base0A", modifiers = ["underlined"] }
+"ui.cursorline.primary" = { bg = "base01" }
+"ui.cursorcolumn.primary" = { bg = "base01" }
+
+"ui.selection" = { bg = "base02" }
+"ui.selection.primary" = { bg = "base02" }
+"ui.highlight" = { bg = "base02" }
+
+"ui.menu" = { fg = "base05", bg = "base01" }
+"ui.menu.selected" = { fg = "base00", bg = "base04" }
+"ui.menu.scroll" = { fg = "base03", bg = "base01" }
+"ui.popup" = { fg = "base05", bg = "base01" }
+"ui.popup.info" = { fg = "base05", bg = "base01" }
+"ui.help" = { fg = "base05", bg = "base01" }
+"ui.window" = { fg = "base02" }
+
+"ui.virtual.whitespace" = "base02"
+"ui.virtual.indent-guide" = "base02"
+"ui.virtual.ruler" = { bg = "base01" }
+"ui.virtual.inlay-hint" = { fg = "base03" }
+"ui.virtual.wrap" = { fg = "base03" }
+"ui.virtual.jump-label" = { fg = "base0E", modifiers = ["bold"] }
+
+"ui.statusline" = { fg = "base05", bg = "base01" }
+"ui.statusline.inactive" = { fg = "base04", bg = "base01" }
+"ui.statusline.normal" = { fg = "base00", bg = "base0D", modifiers = ["bold"] }
+"ui.statusline.insert" = { fg = "base00", bg = "base0B", modifiers = ["bold"] }
+"ui.statusline.select" = { fg = "base00", bg = "base0E", modifiers = ["bold"] }
+
+"ui.bufferline" = { fg = "base04", bg = "base01" }
+"ui.bufferline.active" = { fg = "base05", bg = "base00", modifiers = ["bold"] }
+"ui.bufferline.background" = { bg = "base01" }
+
+"ui.debug" = { fg = "base09" }
+
+# --- Diagnostics -------------------------------------------------------------
+"error" = "base08"
+"warning" = "base0A"
+"info" = "base0D"
+"hint" = "base0C"
+"diagnostic.error" = { underline = { color = "base08", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "base0A", style = "curl" } }
+"diagnostic.info" = { underline = { color = "base0D", style = "curl" } }
+"diagnostic.hint" = { underline = { color = "base0C", style = "curl" } }
+
+[palette]
+base00 = "#f5f5f5" # gray-96-light — --background
+base01 = "#ebebeb" # gray-92-light
+base02 = "#cccccc" # gray-80-light
+base03 = "#666666" # gray-40       — --muted-foreground
+base04 = "#3d3d3d" # gray-24
+base05 = "#141414" # gray-8        — --foreground
+base06 = "#0a0a0a" # derived
+base07 = "#000000" # derived
+base08 = "#b81414" # red-40
+base09 = "#8b4a18" # orange-32     — derived
+base0A = "#7a6200" # yellow-24
+base0B = "#317247" # green-32      — derived
+base0C = "#2d6f76" # cyan-32       — derived
+base0D = "#2850bd" # blue-45       — derived
+base0E = "#7743b1" # purple-48     — derived
+base0F = "#754938" # brown-34      — derived

@@ -1,0 +1,25 @@
+[[language]]
+language-servers = ["rust-analyzer"]
+name = "rust"
+
+[language-server.rust-analyzer.config.check]
+command = "clippy"
+
+[language-server.rust-analyzer.config.inlayHints.bindingModeHints]
+enable = false
+
+[language-server.rust-analyzer.config.inlayHints.closingBraceHints]
+minLines = 10
+
+[language-server.rust-analyzer.config.inlayHints.closureReturnTypeHints]
+enable = "with_block"
+
+[language-server.rust-analyzer.config.inlayHints.discriminateHints]
+enable = "fieldless"
+
+[language-server.rust-analyzer.config.inlayHints.lifetimeElisionHints]
+enable = "skip_trivial"
+
+[language-server.rust-analyzer.config.inlayHints.typeHints]
+hideClosureInitialization = false
+

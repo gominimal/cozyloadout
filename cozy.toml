@@ -1,0 +1,52 @@
+name = "cozy"
+description = "A cozy developer setup"
+
+packages = [
+  "fish",
+  "starship",
+  "zellij",
+  "helix",
+  "bat",
+  "broot",
+  "delta",
+  "fd",
+  "ripgrep",
+  "eza",
+  "git",
+  "procs",
+  "bottom",
+  "glow",
+  "zoxide",
+  "claude-code",
+  "fzf",
+  "sd",
+]
+
+patches = [
+    { dest = ".config/fish/config.fish",
+      source = "~/.config/minimal/loadouts/cozy/fish/config.fish" },
+    { dest = ".config/helix/config.toml",
+      source = "~/.config/minimal/loadouts/cozy/helix/config.toml"},
+    { dest = ".config/helix/languages.toml",
+      source = "~/.config/minimal/loadouts/cozy/helix/languages.toml"},
+    { dest = ".config/zellij/config.kdl",
+      source = "~/.config/minimal/loadouts/cozy/zellij/config.kdl"},
+
+    # Minimal base16 themes — see COLOURS.md
+    { dest = ".config/helix/themes/minimal-dark.toml",
+      source = "~/.config/minimal/loadouts/cozy/helix/themes/minimal-dark.toml"},
+    { dest = ".config/helix/themes/minimal-light.toml",
+      source = "~/.config/minimal/loadouts/cozy/helix/themes/minimal-light.toml"},
+    { dest = ".config/zellij/themes/minimal.kdl",
+      source = "~/.config/minimal/loadouts/cozy/zellij/themes/minimal.kdl"},
+]
+
+[vars]
+SHELL     = "fish"
+EDITOR    = "hx"
+PAGER     = "bat"
+TERM      = { inherit = true, default = "xterm-256color" }
+LANG      = { inherit = true, default = "C.UTF-8" }
+# Shell palette variant (dark|light). Only fish reads this — helix and zellij
+# pin their variant in their own configs. See COLOURS.md.
+MINIMAL_THEME = { inherit = true, default = "dark" }

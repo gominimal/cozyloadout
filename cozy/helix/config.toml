@@ -1,0 +1,56 @@
+# Minimal base16 (see COLOURS.md). Swap to "minimal-light" here, or run
+# `:theme minimal-light` for a single session.
+theme = "minimal-dark"
+
+[editor]
+bufferline = "multiple"
+cursorcolumn = true
+cursorline = true
+end-of-line-diagnostics = "hint"
+line-number = "relative"
+rulers = [120]
+true-color = true
+
+[editor.cursor-shape]
+insert = "bar"
+normal = "block"
+select = "underline"
+
+[editor.file-picker]
+hidden = false
+
+[editor.indent-guides]
+character = "┊"
+render = true
+
+[editor.inline-diagnostics]
+cursor-line = "error"
+other-lines = "disable"
+
+[editor.lsp]
+display-inlay-hints = true
+display-messages = true
+
+[editor.soft-wrap]
+enable = true
+wrap-indicator = "↩ "
+
+[editor.statusline]
+center = ["file-name", "separator", "version-control", "separator"]
+left = ["mode", "spinner", "diagnostics"]
+right = ["position", "position-percentage", "total-line-numbers"]
+separator = "│"
+
+[editor.statusline.mode]
+insert = "INSERT"
+normal = "NORMAL"
+select = "SELECT"
+
+[editor.whitespace.characters]
+tab = "→"
+tabpad = "."
+
+[editor.whitespace.render]
+tab = "all"
+
+

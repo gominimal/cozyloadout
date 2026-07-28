@@ -1,0 +1,24 @@
+system: "base16"
+name: "Minimal Light"
+author: "Minimal System (gominimal)"
+variant: "light"
+palette:
+  # --- Greyscale ramp: Minimal System grays, light mapping (reversed) -------
+  base00: "#f5f5f5" # gray-96-light — --background / --muted / --accent
+  base01: "#ebebeb" # gray-92-light — lighter surface (gutter, statusline)
+  base02: "#cccccc" # gray-80-light — selection
+  base03: "#666666" # gray-40       — --muted-foreground (comments)      5.2:1
+  base04: "#3d3d3d" # gray-24
+  base05: "#141414" # gray-8        — --foreground                      16.9:1
+  base06: "#0a0a0a" # derived — darker than gray-8 (base16 needs the ramp to continue)
+  base07: "#000000" # derived
+
+  # --- Accents -------------------------------------------------------------
+  base08: "#b81414" # red-40                                             6.1:1
+  base09: "#8b4a18" # orange-32     — derived (hue 26, S70)              6.2:1
+  base0A: "#7a6200" # yellow-24                                          5.4:1
+  base0B: "#317247" # green-32      — derived (hue 140, S40)             5.3:1
+  base0C: "#2d6f76" # cyan-32       — derived (hue 186, S45)             5.3:1
+  base0D: "#2850bd" # blue-45       — derived (hue 224, S65)             6.4:1
+  base0E: "#7743b1" # purple-48     — derived (hue 268, S45)             5.9:1
+  base0F: "#754938" # brown-34      — derived (hue 16, S35)              6.9:1

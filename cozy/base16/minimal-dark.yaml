@@ -1,0 +1,24 @@
+system: "base16"
+name: "Minimal Dark"
+author: "Minimal System (gominimal)"
+variant: "dark"
+palette:
+  # --- Greyscale ramp: Minimal System grays, dark mapping -------------------
+  base00: "#141414" # gray-8        — --background
+  base01: "#292929" # gray-16       — --card / --muted / --accent (gutter, statusline)
+  base02: "#3d3d3d" # gray-24       — --secondary / --border / --input (selection)
+  base03: "#666666" # gray-40       — --outline (comments, invisibles)   3.2:1
+  base04: "#8f8f8f" # gray-56       — --muted-foreground                 5.7:1
+  base05: "#e0e0e0" # gray-88       — --foreground                      14.0:1
+  base06: "#ebebeb" # gray-92
+  base07: "#ffffff" # gray-100-dark
+
+  # --- Accents -------------------------------------------------------------
+  base08: "#e93535" # red-56        — --error                            4.4:1
+  base09: "#dd8440" # orange-56     — derived (hue 26, S70)              6.5:1
+  base0A: "#cca300" # yellow-40                                          7.7:1
+  base0B: "#7ec897" # green-64      — --success                          9.3:1
+  base0C: "#6bbec7" # cyan-60       — derived (hue 186, S45)             8.6:1
+  base0D: "#4a7aff" # blue-56       — --info                             4.8:1
+  base0E: "#aa81da" # purple-68     — derived (hue 268, S55)             6.0:1
+  base0F: "#af715a" # brown-52      — derived (hue 16, S35)              4.7:1
