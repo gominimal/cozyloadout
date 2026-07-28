@@ -123,7 +123,7 @@ tie to the product, so it stays.
 | `cozy/base16/minimal-{dark,light}.yaml` | —  | Source of truth (tinted-theming format)      |
 | `cozy/helix/themes/minimal-*.toml`  | helix  | Scope assignments identical; only the `[palette]` block differs |
 | `cozy/zellij/themes/minimal.kdl`    | zellij | Both variants in one file, UI-component spec (zellij 0.41+) |
-| `cozy/fish/config.fish`             | fish   | Hex set explicitly, not via ANSI names       |
+| `cozy/fish/config.fish`             | fish   | Hex set explicitly, not via ANSI names; also sets the terminal's own surface and ANSI table via OSC, and draws the greeting banner in `base0D` |
 | `cozy/bat/themes/minimal-*.tmTheme` | bat, delta | Sublime `.tmTheme`; scope assignments mirror the helix themes |
 | `cozy/bat/config`                   | bat    | Declares both variants, pins one             |
 | `cozy/delta/minimal.gitconfig`      | delta  | Both variants as delta *features*; an include, not a gitconfig |
@@ -149,6 +149,9 @@ Two of them need a step the patch system can't do:
 
 - **fish** follows `$MINIMAL_THEME` (`dark` | `light`), declared in `cozy.toml`
   with a default of `dark`. Anything other than `light` gets the dark palette.
+  The terminal's own background, foreground, cursor and ANSI table follow the
+  same variable, since fish is what sets them — so this is the one switch that
+  moves a surface no config file owns.
 - **helix** pins the variant in `cozy/helix/config.toml`. For one session,
   `:theme minimal-light` works without touching the file.
 - **zellij** pins the variant in `cozy/zellij/config.kdl`.
@@ -174,19 +177,54 @@ which meant half the prompt tracked the host terminal's 16-colour table and half
 didn't. Setting hex throughout makes the shell match helix and zellij regardless
 of the terminal emulator's own palette.
 
-If you'd rather drive everything from the terminal's ANSI table instead, the
-standard base16 mapping is:
+### The terminal's own surface
+
+Setting hex fixes fish's *output*, but not the surface behind it. helix, zellij
+and broot each paint `base00` themselves; the prompt, `bat`, `delta` and
+bottom's widget text don't, so those fall through to whatever background the
+emulator was configured with.
+
+`cozy/fish/config.fish` closes that with OSC escape sequences, driven by the
+same `$MINIMAL_THEME` branch as everything else in that file:
+
+| Sequence | Sets            | Reset |
+| -------- | --------------- | ----- |
+| OSC 10   | Foreground (`base05`) | OSC 110 |
+| OSC 11   | Background (`base00`) | OSC 111 |
+| OSC 12   | Cursor (`base05`)     | OSC 112 |
+| OSC 4    | ANSI slots 0–15       | OSC 104 |
+
+The ANSI mapping is the standard base16 one:
 
 | ANSI | 0      | 1      | 2      | 3      | 4      | 5      | 6      | 7      |
 | ---- | ------ | ------ | ------ | ------ | ------ | ------ | ------ | ------ |
 |      | base00 | base08 | base0B | base0A | base0D | base0E | base0C | base05 |
 | **+8** | base03 | base09 | base01 | base02 | base04 | base06 | base0F | base07 |
 
+Setting it means a program that still speaks in ANSI names lands in the palette
+rather than in the emulator's defaults — which is the other half of the problem
+hex-only solved for fish alone. It has a cost: slots 9–14 go to the greyscale
+ramp and the leftover accents, so a program asking for **bright green gets
+`base01`, a dark surface grey**. That is the standard base16 trade, and it is
+the reason fish itself still sets hex rather than relying on the table.
+
+`$__MINIMAL_TERM_THEMED` is exported, so nested shells and zellij panes inherit
+it and skip both the apply and the reset. Only the outermost fish owns the
+terminal's colours and restores them on exit — otherwise an inner shell exiting
+would strip the palette from under the shell still running, and sshing into a
+box with this loadout would leave your *local* terminal recoloured after logout.
+
+One editing hazard worth knowing: **fish's single quotes are not literal.** They
+collapse `\\` to `\` before `printf` ever sees the format string, so the
+natural-looking `'\e]10;…\e\\\e]11;…'` loses an escape and prints a stray `e`
+where the second `ESC` should be. The config writes ST as `\e\x5c` and emits one
+sequence per `printf` for that reason.
+
 ---
 
 ## Known gaps
 
-Nothing in the loadout's package list is still on its own colours. Three
+Nothing in the loadout's package list is still on its own colours. Four
 partial exceptions are worth knowing about:
 
 1. **broot's file preview.** broot renders previews with syntect but only
@@ -219,6 +257,20 @@ partial exceptions are worth knowing about:
    referenced and the module silently renders unstyled. Its palettes use
    `base0d`; everything else in the loadout uses the `base0D` spelling.
 
+4. **The OSC sequences depend on the emulator, and zellij is untested.** Setting
+   the terminal surface is a request, not a guarantee: kitty, alacritty, wezterm,
+   foot, ghostty, contour, iTerm2 and xterm all honour OSC 4/10/11/12, the Linux
+   console ignores them, and Apple Terminal ignores the background one. A
+   terminal that doesn't implement a sequence swallows it silently, so the
+   failure mode is "nothing happens", not corruption.
+
+   The open question is **zellij**, which fish auto-starts here, so after the
+   first prompt the OSCs are emitted from inside a pane. zellij 0.44.3 does
+   handle OSC, but whether it forwards a *set* to the host terminal or absorbs
+   it hasn't been verified in a real session — the guard means only the
+   outermost fish emits them, which is before zellij starts, so the intended
+   path doesn't depend on passthrough. Worth confirming by eye.
+
 ---
 
 ## Regenerating
@@ -228,7 +280,8 @@ sync:
 
 - helix: `[palette]` block at the bottom of each theme file
 - zellij: hex values inline (both variants in `minimal.kdl`)
-- fish: the `__min_b*` block in `config.fish`
+- fish: the `__min_b*` block in `config.fish` — all sixteen slots, since the
+  OSC 4 table needs the ones fish's own colours never reference
 - bat: hex inline in both `.tmTheme` files, then `just bat-cache`
 - delta: hex inline in both feature blocks, plus the blended diff backgrounds
 - starship: the two `[palettes.minimal_*]` blocks (lowercase slot names)
