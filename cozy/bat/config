@@ -1,0 +1,20 @@
+# bat — Minimal base16 (see COLOURS.md).
+#
+# The themes themselves live in ~/.config/bat/themes/. bat only sees them once
+# its cache has been rebuilt:
+#
+#     bat cache --build
+#
+# `just install` does this for you. `bat --list-themes` should then show
+# minimal-dark and minimal-light.
+
+# Both variants are declared, and --theme pins which one is used, the same way
+# helix and zellij pin theirs. Swap to "light" here for the light palette, or to
+# "auto" to let bat query the terminal's background colour and pick per-run.
+--theme-dark="minimal-dark"
+--theme-light="minimal-light"
+--theme="dark"
+
+# The themes italicise comments, matching cozy/helix/themes/minimal-*.toml. bat
+# suppresses italics unless asked, so ask.
+--italic-text=always

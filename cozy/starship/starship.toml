@@ -1,0 +1,369 @@
+# starship — Minimal base16 (see COLOURS.md).
+#
+# This file only restyles starship; it deliberately does not set `format`, so
+# the prompt keeps starship's default shape and module set. Every module that
+# ships a coloured default is reassigned to a base16 slot here, so nothing is
+# left tracking the terminal emulator's own 16-colour table — the same reasoning
+# behind fish setting hex explicitly.
+#
+# Switch the whole prompt by pointing `palette` at "minimal_light", the way
+# helix and zellij pin their variant.
+#
+# Slot names are lowercase here (base0a, not base0A as in the helix themes and
+# the YAML): starship lowercases a style string before looking it up in the
+# palette, so an uppercase palette key can never be referenced and the module
+# silently renders unstyled.
+#
+# Slot conventions used below:
+#   base0d blue   — where you are (directory, containers, C-family)
+#   base0a yellow — VCS branch, packaging, types-ish tooling
+#   base09 orange — VCS state, clouds, "something is in progress"
+#   base08 red    — errors, root, dirty worktree, JVM/Ruby family
+#   base0b green  — success, JS/green-field runtimes
+#   base0c cyan   — identity, orchestration, ML/systems runtimes
+#   base0e purple — shells, functional languages, IaC
+#   base0f brown  — the leftovers that would otherwise collide
+
+palette = "minimal_dark"
+
+# --- Palettes ----------------------------------------------------------------
+[palettes.minimal_dark]
+base00 = "#141414" # gray-8        — --background
+base01 = "#292929" # gray-16       — --card
+base02 = "#3d3d3d" # gray-24       — --border
+base03 = "#666666" # gray-40       — --outline
+base04 = "#8f8f8f" # gray-56       — --muted-foreground
+base05 = "#e0e0e0" # gray-88       — --foreground
+base06 = "#ebebeb" # gray-92
+base07 = "#ffffff" # gray-100-dark
+base08 = "#e93535" # red-56        — --error
+base09 = "#dd8440" # orange-56     — derived
+base0a = "#cca300" # yellow-40
+base0b = "#7ec897" # green-64      — --success
+base0c = "#6bbec7" # cyan-60       — derived
+base0d = "#4a7aff" # blue-56       — --info
+base0e = "#aa81da" # purple-68     — derived
+base0f = "#af715a" # brown-52      — derived
+
+[palettes.minimal_light]
+base00 = "#f5f5f5" # gray-96-light — --background
+base01 = "#ebebeb" # gray-92-light
+base02 = "#cccccc" # gray-80-light
+base03 = "#666666" # gray-40       — --muted-foreground
+base04 = "#3d3d3d" # gray-24
+base05 = "#141414" # gray-8        — --foreground
+base06 = "#0a0a0a" # derived
+base07 = "#000000" # derived
+base08 = "#b81414" # red-40
+base09 = "#8b4a18" # orange-32     — derived
+base0a = "#7a6200" # yellow-24
+base0b = "#317247" # green-32      — derived
+base0c = "#2d6f76" # cyan-32       — derived
+base0d = "#2850bd" # blue-45       — derived
+base0e = "#7743b1" # purple-48     — derived
+base0f = "#754938" # brown-34      — derived
+
+# --- Prompt character --------------------------------------------------------
+[character]
+success_symbol = "[❯](bold base0b)"
+error_symbol = "[❯](bold base08)"
+vimcmd_symbol = "[❮](bold base0e)"
+vimcmd_replace_one_symbol = "[❮](bold base0e)"
+vimcmd_replace_symbol = "[❮](bold base0e)"
+vimcmd_visual_symbol = "[❮](bold base0a)"
+
+# --- Location ----------------------------------------------------------------
+[directory]
+style = "bold base0d"
+read_only_style = "base08"
+repo_root_style = "bold base0d"
+
+[shlvl]
+style = "bold base0a"
+
+[fill]
+style = "base02"
+
+# --- Identity ----------------------------------------------------------------
+[username]
+style_user = "bold base0c"
+style_root = "bold base08"
+
+[hostname]
+style = "bold base0c"
+
+[localip]
+style = "bold base0c"
+
+[shell]
+style = "bold base0e"
+
+[sudo]
+style = "bold base08"
+
+[container]
+style = "bold base0d"
+
+[os]
+style = "bold base04"
+
+[singularity]
+style = "bold base0e"
+
+# --- Version control ---------------------------------------------------------
+[git_branch]
+style = "bold base0a"
+
+[git_commit]
+style = "bold base0b"
+
+[git_state]
+style = "bold base09"
+
+[git_status]
+style = "bold base08"
+
+[git_metrics]
+added_style = "bold base0b"
+deleted_style = "bold base08"
+
+[hg_branch]
+style = "bold base0a"
+
+[hg_state]
+style = "bold base09"
+
+[fossil_branch]
+style = "bold base0a"
+
+[fossil_metrics]
+added_style = "bold base0b"
+deleted_style = "bold base08"
+
+[pijul_channel]
+style = "bold base0a"
+
+[vcsh]
+style = "bold base0a"
+
+# --- Command status ----------------------------------------------------------
+[cmd_duration]
+style = "bold base0a"
+
+[jobs]
+style = "bold base0d"
+
+[status]
+style = "bold base08"
+
+[time]
+style = "bold base04"
+
+[memory_usage]
+style = "bold base04"
+
+[[battery.display]]
+threshold = 10
+style = "bold base08"
+
+# --- Environments, clouds, orchestration -------------------------------------
+[aws]
+style = "bold base09"
+
+[azure]
+style = "bold base0d"
+
+[gcloud]
+style = "bold base0d"
+
+[openstack]
+style = "bold base0a"
+
+[kubernetes]
+style = "bold base0c"
+
+[docker_context]
+style = "bold base0d"
+
+[terraform]
+style = "bold base0e"
+
+[pulumi]
+style = "bold base0e"
+
+[helm]
+style = "bold base0d"
+
+[opa]
+style = "bold base0d"
+
+[vagrant]
+style = "bold base0c"
+
+[nats]
+style = "bold base0b"
+
+[nix_shell]
+style = "bold base0d"
+
+[guix_shell]
+style = "bold base0a"
+
+[conda]
+style = "bold base0b"
+
+[spack]
+style = "bold base0a"
+
+[package]
+style = "bold base0a"
+
+[env_var]
+style = "bold base04"
+
+# --- Language and toolchain modules ------------------------------------------
+# Hues track each ecosystem's usual identity where the palette allows it, and
+# fall back to the slot conventions at the top of this file where it doesn't.
+[c]
+style = "bold base0d"
+
+[cpp]
+style = "bold base0d"
+
+[cmake]
+style = "bold base0d"
+
+[meson]
+style = "bold base0d"
+
+[xmake]
+style = "bold base0d"
+
+[gradle]
+style = "bold base0d"
+
+[buf]
+style = "bold base0d"
+
+[golang]
+style = "bold base0c"
+
+[rust]
+style = "bold base09"
+
+[zig]
+style = "bold base0a"
+
+[odin]
+style = "bold base0d"
+
+[nim]
+style = "bold base0a"
+
+[crystal]
+style = "bold base08"
+
+[vlang]
+style = "bold base0d"
+
+[mojo]
+style = "bold base08"
+
+[python]
+style = "bold base0a"
+
+[rlang]
+style = "bold base0d"
+
+[julia]
+style = "bold base0e"
+
+[quarto]
+style = "bold base0d"
+
+[typst]
+style = "bold base0c"
+
+[nodejs]
+style = "bold base0b"
+
+[deno]
+style = "bold base0a"
+
+[bun]
+style = "bold base0f"
+
+[purescript]
+style = "bold base0e"
+
+[elm]
+style = "bold base0c"
+
+[gleam]
+style = "bold base0e"
+
+[java]
+style = "bold base08"
+
+[kotlin]
+style = "bold base0e"
+
+[scala]
+style = "bold base08"
+
+[dotnet]
+style = "bold base0e"
+
+[swift]
+style = "bold base09"
+
+[dart]
+style = "bold base0c"
+
+[haxe]
+style = "bold base09"
+
+[ruby]
+style = "bold base08"
+
+[perl]
+style = "bold base0d"
+
+[php]
+style = "bold base0e"
+
+[raku]
+style = "bold base0e"
+
+[lua]
+style = "bold base0d"
+
+[fennel]
+style = "bold base0b"
+
+[erlang]
+style = "bold base08"
+
+[elixir]
+style = "bold base0e"
+
+[haskell]
+style = "bold base0e"
+
+[ocaml]
+style = "bold base09"
+
+[daml]
+style = "bold base0d"
+
+[cobol]
+style = "bold base0d"
+
+[solidity]
+style = "bold base0d"
+
+[red]
+style = "bold base08"
+
+[pixi]
+style = "bold base0a"

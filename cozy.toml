@@ -39,6 +39,36 @@ patches = [
       source = "~/.config/minimal/loadouts/cozy/helix/themes/minimal-light.toml"},
     { dest = ".config/zellij/themes/minimal.kdl",
       source = "~/.config/minimal/loadouts/cozy/zellij/themes/minimal.kdl"},
+
+    # bat: themes plus the config that pins one. bat only sees the themes once
+    # its cache is rebuilt — run `just bat-cache` after these land.
+    { dest = ".config/bat/config",
+      source = "~/.config/minimal/loadouts/cozy/bat/config"},
+    { dest = ".config/bat/themes/minimal-dark.tmTheme",
+      source = "~/.config/minimal/loadouts/cozy/bat/themes/minimal-dark.tmTheme"},
+    { dest = ".config/bat/themes/minimal-light.tmTheme",
+      source = "~/.config/minimal/loadouts/cozy/bat/themes/minimal-light.tmTheme"},
+
+    # delta: an include, not a gitconfig. Wire it up with `just delta-include`.
+    { dest = ".config/git/minimal-delta.gitconfig",
+      source = "~/.config/minimal/loadouts/cozy/delta/minimal.gitconfig"},
+
+    { dest = ".config/starship.toml",
+      source = "~/.config/minimal/loadouts/cozy/starship/starship.toml"},
+
+    { dest = ".config/broot/conf.hjson",
+      source = "~/.config/minimal/loadouts/cozy/broot/conf.hjson"},
+    { dest = ".config/broot/skins/minimal-dark.hjson",
+      source = "~/.config/minimal/loadouts/cozy/broot/skins/minimal-dark.hjson"},
+    { dest = ".config/broot/skins/minimal-light.hjson",
+      source = "~/.config/minimal/loadouts/cozy/broot/skins/minimal-light.hjson"},
+
+    # bottom has no variant switch of its own, so both files ship and the dark
+    # one takes the default path.
+    { dest = ".config/bottom/bottom.toml",
+      source = "~/.config/minimal/loadouts/cozy/bottom/bottom.toml"},
+    { dest = ".config/bottom/bottom-light.toml",
+      source = "~/.config/minimal/loadouts/cozy/bottom/bottom-light.toml"},
 ]
 
 [vars]

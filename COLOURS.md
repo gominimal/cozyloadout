@@ -6,8 +6,8 @@ tokens used by the web app. The goal is that a terminal running this loadout and
 a browser showing the product read as the same design system.
 
 The schemes live in [`cozy/base16/`](cozy/base16/) and are the single source of
-truth. Everything else (helix themes, zellij themes, fish colours) is a mapping
-of those 16 slots onto a specific tool.
+truth. Everything else — helix, zellij, fish, bat, delta, starship, broot and
+bottom — is a mapping of those 16 slots onto a specific tool.
 
 ---
 
@@ -124,9 +124,26 @@ tie to the product, so it stays.
 | `cozy/helix/themes/minimal-*.toml`  | helix  | Scope assignments identical; only the `[palette]` block differs |
 | `cozy/zellij/themes/minimal.kdl`    | zellij | Both variants in one file, UI-component spec (zellij 0.41+) |
 | `cozy/fish/config.fish`             | fish   | Hex set explicitly, not via ANSI names       |
+| `cozy/bat/themes/minimal-*.tmTheme` | bat, delta | Sublime `.tmTheme`; scope assignments mirror the helix themes |
+| `cozy/bat/config`                   | bat    | Declares both variants, pins one             |
+| `cozy/delta/minimal.gitconfig`      | delta  | Both variants as delta *features*; an include, not a gitconfig |
+| `cozy/starship/starship.toml`       | starship | Both variants as starship palettes; restyles modules only, no `format` |
+| `cozy/broot/skins/minimal-*.hjson`  | broot  | One skin file per variant                    |
+| `cozy/broot/conf.hjson`             | broot  | Imports the pinned skin                      |
+| `cozy/bottom/bottom{,-light}.toml`  | bottom | `[styles]` only; no palette indirection, so one whole file per variant |
 
-`cozy.toml` deploys the two helix themes and the zellij theme alongside the
-existing config patches.
+`cozy.toml` deploys all of the above alongside the existing config patches.
+Two of them need a step the patch system can't do:
+
+- **bat** compiles themes into a cache. Run `just bat-cache` once the patches
+  have landed; until then `bat --list-themes` won't show `minimal-dark`, and
+  delta — which reads bat's cache for in-diff syntax highlighting — falls back
+  to Monokai.
+- **delta** has no config file of its own; it reads `[delta]` out of git config.
+  Rather than overwrite `~/.gitconfig` (and take your name, email and remotes
+  with it), the loadout drops an includable fragment and leaves the wiring to
+  `just delta-include`, which runs
+  `git config --global include.path ~/.config/git/minimal-delta.gitconfig`.
 
 ### Switching variants
 
@@ -135,9 +152,20 @@ existing config patches.
 - **helix** pins the variant in `cozy/helix/config.toml`. For one session,
   `:theme minimal-light` works without touching the file.
 - **zellij** pins the variant in `cozy/zellij/config.kdl`.
+- **bat** pins it with `--theme` in `cozy/bat/config`; both variants are already
+  declared there as `--theme-dark` / `--theme-light`. `--theme="auto"` makes bat
+  query the terminal's background instead, per run.
+- **delta** pins it with `features` in `cozy/delta/minimal.gitconfig`.
+- **starship** pins it with `palette` in `cozy/starship/starship.toml`.
+- **broot** pins it in the `imports` list in `cozy/broot/conf.hjson`; broot can
+  also pick per-terminal via the `luma` form of an import.
+- **bottom** has no switch at all, so the variant is which *file* is deployed —
+  swap the `.config/bottom/bottom.toml` patch source in `cozy.toml`, or run
+  `btm -C ~/.config/bottom/bottom-light.toml` for one session.
 
-Helix and zellij have no env-var hook for this, so switching the whole loadout
-is a two-line edit rather than one variable.
+Only fish has an env-var hook, so switching the whole loadout is a handful of
+one-line edits rather than one variable. Every one of them is a single token on
+a single line, and each file says which line in its header comment.
 
 ### Why fish sets hex instead of ANSI names
 
@@ -156,12 +184,40 @@ standard base16 mapping is:
 
 ---
 
-## Not themed yet
+## Known gaps
 
-`bat`, `delta`, `starship`, `broot` and `bottom` still use their own defaults.
-`bat` and `delta` need a Sublime `.tmTheme` rather than a base16 file, which is
-a bigger generated artifact than the configs above; `starship` and `broot` would
-need their own config files, which this loadout doesn't currently ship.
+Nothing in the loadout's package list is still on its own colours. Three
+partial exceptions are worth knowing about:
+
+1. **broot's file preview.** broot renders previews with syntect but only
+   accepts one of six themes compiled into the binary — it cannot load an
+   external `.tmTheme` the way bat can. The skins pick the nearest available
+   (`OceanDark` for the dark variant, `GitHub` for the light one), so the
+   preview pane is the one surface in the loadout that isn't Minimal. The
+   panel chrome around it is.
+
+2. **Diff backgrounds are blends, not slots.** base16 has no dim red/green
+   surface colours, so delta's `minus-style` / `plus-style` backgrounds are
+   `base08` and `base0B` mixed into `base00` at 15%, and the `*-emph` variants
+   at 30%:
+
+   | | dark | light |
+   | --- | --- | --- |
+   | minus       | `#341919` | `#ecd3d3` |
+   | minus (emph)| `#541e1e` | `#e3b2b2` |
+   | plus        | `#242f28` | `#d8e1db` |
+   | plus (emph) | `#344a3b` | `#bacec1` |
+
+   `base05` stays between 7.3:1 and 13.8:1 on those eight — the floor is the
+   dark emphasised-plus background. broot's `good_to_bad` ramp and
+   bottom's `temp_graph_color_styles` are built the same way, stepping
+   `base0B → base0A → base09 → base08` with midpoints where the gauge needs
+   more stops than the palette has slots.
+
+3. **Slot names are lowercase in starship.** starship lowercases a style string
+   before resolving it against the palette, so a `base0D` key can never be
+   referenced and the module silently renders unstyled. Its palettes use
+   `base0d`; everything else in the loadout uses the `base0D` spelling.
 
 ---
 
@@ -173,6 +229,21 @@ sync:
 - helix: `[palette]` block at the bottom of each theme file
 - zellij: hex values inline (both variants in `minimal.kdl`)
 - fish: the `__min_b*` block in `config.fish`
+- bat: hex inline in both `.tmTheme` files, then `just bat-cache`
+- delta: hex inline in both feature blocks, plus the blended diff backgrounds
+- starship: the two `[palettes.minimal_*]` blocks (lowercase slot names)
+- broot: hex inline in both skins, including the `good_to_bad` ramp
+- bottom: hex inline in both `[styles]` files
 
 Scope assignments in the two helix themes are intentionally identical — if you
-change a scope in one, change it in the other.
+change a scope in one, change it in the other. The same holds for each of the
+other dark/light pairs: they differ only in the palette, so the light file of
+each pair is derived from the dark one by substituting the sixteen slots.
+
+Two formats have footguns worth remembering when editing:
+
+- In **git config**, `#` starts a comment, so every delta style value has to be
+  quoted. An unquoted `minus-style = syntax #341919` parses as empty and delta
+  quietly falls back to its own defaults.
+- **broot** ignores unknown skin keys rather than erroring, so a mistyped key
+  shows up as an unstyled widget, not as a message.
