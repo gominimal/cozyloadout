@@ -20,6 +20,11 @@ packages = [
   "claude-code",
   "fzf",
   "sd",
+  "less",
+  "coreutils",
+  "inetutils",
+  "iproute2",
+  "procps-ng",
 ]
 
 patches = [
@@ -75,8 +80,6 @@ patches = [
 SHELL     = "fish"
 EDITOR    = "hx"
 PAGER     = "bat"
-TERM      = { inherit = true, default = "xterm-256color" }
-LANG      = { inherit = true, default = "C.UTF-8" }
 # Shell palette variant (dark|light). Only fish reads this — helix and zellij
 # pin their variant in their own configs. See COLOURS.md.
 MINIMAL_THEME = { inherit = true, default = "dark" }
