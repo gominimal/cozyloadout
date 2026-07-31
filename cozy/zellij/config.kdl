@@ -1,5 +1,0 @@
-// Minimal base16 (see COLOURS.md). Swap to "minimal-light" for the light variant.
-theme "minimal-dark"
-show_startup_tips false
-show_release_notes false
-

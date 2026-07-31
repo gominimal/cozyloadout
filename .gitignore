@@ -1,1 +1,13 @@
-cozy.zip
+# Build output. `just theme` deletes and rewrites build/ on every run.
+/build/
+/cozy.zip
+
+# Renderer build artifacts.
+/tools/cozy-theme/target/
+**/*.rs.bk
+
+# The upstream scheme collection, cloned by `just fetch-schemes`.
+/schemes/vendor/
+
+# macOS
+.DS_Store

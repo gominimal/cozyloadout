@@ -1,0 +1,88 @@
+# What `just theme` renders, and where each result is patched to.
+#
+# One [[file]] per output. Fields:
+#
+#   template  path under templates/
+#   out       path under the built loadout (build/cozy/...)
+#   dest      path relative to $HOME that cozy.toml patches it to.
+#             Omit for files that are not patched (nothing at present).
+#   copy      true to copy verbatim instead of expanding placeholders.
+#             Use for files with no colours and no scheme name in them.
+#
+# `{slug}` in `out` is replaced with the scheme slug, so switching schemes
+# renames the theme files rather than leaving a stale name on disk holding the
+# wrong colours.
+#
+# The cozy.toml patches list is generated from `out` + `dest` below, in this
+# order, so adding a file here is the only edit needed to ship it.
+
+[[file]]
+template = "fish/config.fish"
+out      = "fish/config.fish"
+dest     = ".config/fish/config.fish"
+
+[[file]]
+template = "helix/config.toml"
+out      = "helix/config.toml"
+dest     = ".config/helix/config.toml"
+
+[[file]]
+template = "helix/languages.toml"
+out      = "helix/languages.toml"
+dest     = ".config/helix/languages.toml"
+copy     = true
+
+[[file]]
+template = "helix/themes/theme.toml"
+out      = "helix/themes/{slug}.toml"
+dest     = ".config/helix/themes/{slug}.toml"
+
+[[file]]
+template = "zellij/config.kdl"
+out      = "zellij/config.kdl"
+dest     = ".config/zellij/config.kdl"
+
+[[file]]
+template = "zellij/themes/theme.kdl"
+out      = "zellij/themes/{slug}.kdl"
+dest     = ".config/zellij/themes/{slug}.kdl"
+
+# bat only sees the theme once its cache is rebuilt — `just bat-cache`.
+[[file]]
+template = "bat/config"
+out      = "bat/config"
+dest     = ".config/bat/config"
+
+[[file]]
+template = "bat/themes/theme.tmTheme"
+out      = "bat/themes/{slug}.tmTheme"
+dest     = ".config/bat/themes/{slug}.tmTheme"
+
+# delta reads [delta] out of git config, so this is an include rather than a
+# gitconfig of its own. Wire it up with `just delta-include`.
+[[file]]
+template = "delta/delta.gitconfig"
+out      = "delta/cozy-delta.gitconfig"
+dest     = ".config/git/cozy-delta.gitconfig"
+
+[[file]]
+template = "starship/starship.toml"
+out      = "starship/starship.toml"
+dest     = ".config/starship.toml"
+
+[[file]]
+template = "broot/conf.hjson"
+out      = "broot/conf.hjson"
+dest     = ".config/broot/conf.hjson"
+
+[[file]]
+template = "broot/skins/skin.hjson"
+out      = "broot/skins/{slug}.hjson"
+dest     = ".config/broot/skins/{slug}.hjson"
+
+# bottom has no theme-name concept, so the scheme is baked into the config and
+# the filename stays fixed.
+[[file]]
+template = "bottom/bottom.toml"
+out      = "bottom/bottom.toml"
+dest     = ".config/bottom/bottom.toml"
