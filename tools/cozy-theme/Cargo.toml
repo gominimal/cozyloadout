@@ -3,6 +3,11 @@ name = "cozy-theme"
 version = "0.1.0"
 edition = "2021"
 
+# Declared so an older toolchain fails with "requires rustc 1.71" rather than a
+# confusing parse error. 1.71 is where `[char; N]` gained its Pattern impl,
+# which `split_kv` uses; the rest of the crate needs no more than 1.65.
+rust-version = "1.71"
+
 # No dependencies on purpose: the scheme format is a flat map and the template
 # grammar is four constructs, so hand-rolling both keeps `just theme` buildable
 # with nothing but a rustc/cargo pair — no registry fetch, no vendor directory.

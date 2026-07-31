@@ -1,4 +1,4 @@
-# Build recipes for the cozy loadout. See README.md.
+# Build recipes for the cozy loadout. Usage: README.md. Internals: AGENTS.md.
 #
 # `just --list` shows only the LAST line of a preceding comment block, so every
 # recipe with more to say than fits on one line carries a [doc] attribute for
@@ -77,23 +77,47 @@ schemes:
         | strip | sort | sed 's/^/  /'
     # Count only base16/ and base24/: the upstream repo also carries tinted8
     # schemes and its own workflow YAML, neither of which this can render.
-    usable=$(find "{{SCHEMES}}/vendor/base16" "{{SCHEMES}}/vendor/base24" \
-             \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$usable" -gt 0 ]]; then
-        echo ""
+    #
+    # The directories are collected before being searched. Handing find a path
+    # that does not exist makes it exit non-zero, which under `set -o pipefail`
+    # fails the whole recipe — and on a fresh clone, before `just fetch-schemes`
+    # has run, neither path exists. That took out bare `just` too, since the
+    # default recipe calls this one.
+    usable=0
+    dirs=()
+    for d in "{{SCHEMES}}/vendor/base16" "{{SCHEMES}}/vendor/base24"; do
+        [[ -d "$d" ]] && dirs+=("$d")
+    done
+    # Deduplicated, matching `just vendored`: a handful of names exist in both
+    # base16/ and base24/, and a name is what you actually pass to `just theme`,
+    # so counting files would overstate the choice on offer.
+    if (( ${#dirs[@]} > 0 )); then
+        usable=$(find "${dirs[@]}" \( -name '*.yaml' -o -name '*.yml' \) \
+                 | sed 's|.*/||; s|\.yaml$||; s|\.yml$||' | sort -u | wc -l | tr -d ' ')
+    fi
+    echo ""
+    if (( usable > 0 )); then
         echo "Plus $usable vendored upstream schemes; list them with:"
         echo "  just vendored"
     else
-        echo ""
-        echo "\`just fetch-schemes\` adds ~500 upstream tinted-theming schemes."
+        echo "\`just fetch-schemes\` adds ~480 upstream tinted-theming schemes."
     fi
 
 # `sort -u` because a handful of names exist in both base16/ and base24/;
 # `_resolve` prefers base16, so listing them twice would misrepresent the choice.
 [doc('List the vendored upstream schemes')]
 vendored:
-    @find {{SCHEMES}}/vendor/base16 {{SCHEMES}}/vendor/base24 \
-        \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dirs=()
+    for d in "{{SCHEMES}}/vendor/base16" "{{SCHEMES}}/vendor/base24"; do
+        [[ -d "$d" ]] && dirs+=("$d")
+    done
+    if (( ${#dirs[@]} == 0 )); then
+        echo "no vendored schemes — run \`just fetch-schemes\` first" >&2
+        exit 1
+    fi
+    find "${dirs[@]}" \( -name '*.yaml' -o -name '*.yml' \) \
         | sed 's|.*/||; s|\.yaml$||; s|\.yml$||' | sort -u
 
 # Gitignored, so it stays out of this repo's history.

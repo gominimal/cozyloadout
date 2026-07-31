@@ -3,7 +3,7 @@
 //! Reads a tinted-theming scheme YAML, expands every file listed in
 //! templates/manifest.toml, and writes a ready-to-bundle loadout tree.
 //!
-//! See README.md for the template grammar and the build pipeline.
+//! See AGENTS.md for the template grammar and the build pipeline.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -640,7 +640,7 @@ base0f: d65d0e
     fn mix_matches_the_hand_computed_diff_backgrounds() {
         let s = scheme_for("minimal-dark", CURRENT);
         let bg = s.palette["base00"];
-        // The values README.md tabulated by hand for delta.
+        // The values AGENTS.md tabulates, computed by hand for delta.
         assert_eq!(mix(s.palette["base08"], bg, 15.0).hex(), "341919");
         assert_eq!(mix(s.palette["base08"], bg, 30.0).hex(), "541e1e");
         assert_eq!(mix(s.palette["base0B"], bg, 15.0).hex(), "242f28");
