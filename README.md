@@ -16,7 +16,7 @@ just delta-include             # wire up delta in ~/.gitconfig (once, ever)
 
 Any [tinted-theming](https://github.com/tinted-theming/schemes) scheme works, as
 does any file in that format. `just fetch-schemes` clones the upstream
-collection — 335 schemes — into `schemes/vendor/`.
+collection — ~530 base16 and base24 schemes — into `schemes/vendor/`.
 
 ---
 
@@ -52,6 +52,7 @@ collection — 335 schemes — into `schemes/vendor/`.
 | `just render [scheme]` | Render only, no zip — for eyeballing `build/` first |
 | `just install` | Bundle and unzip into `~/.config/minimal/loadouts/` |
 | `just schemes` | List what `just theme` will accept |
+| `just vendored` | List the vendored upstream schemes by name |
 | `just fetch-schemes` | Clone the upstream scheme collection |
 | `just bat-cache` | Rebuild bat's theme cache. Needed after every install |
 | `just delta-include` | Point `~/.gitconfig` at the delta include. Once, ever |
