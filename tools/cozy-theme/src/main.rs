@@ -492,9 +492,13 @@ fn build(args: &Args) -> Result<(), String> {
         write_file(&dst, &body)?;
 
         if let Some(dest) = &e.dest {
+            // One line per entry. TOML forbids newlines inside an inline
+            // table, so the wrapped `{ dest = …,\n source = … }` form this
+            // file used to be written in was not actually valid TOML — it
+            // survived only because minimal's parser tolerates it.
             let _ = write!(
                 patches,
-                "    {{ dest = \"{}\",\n      source = \"~/.config/minimal/loadouts/{}/{}\" }},\n",
+                "    {{ dest = \"{}\", source = \"~/.config/minimal/loadouts/{}/{}\" }},\n",
                 sub(dest),
                 args.loadout,
                 out_rel

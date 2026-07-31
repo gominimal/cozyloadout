@@ -41,3 +41,23 @@ patches = [
 SHELL  = "fish"
 EDITOR = "hx"
 PAGER  = "bat"
+
+# Hand `min attach` over to fish, which in turn auto-starts zellij.
+#
+# The attach shell is bash and reads no profile or rc file, so SHELL above has
+# no effect on it — PROMPT_COMMAND is the one remaining seam, because bash takes
+# it from the environment and evaluates it before drawing the first prompt.
+#
+# `unset PROMPT_COMMAND` first, for two reasons: it fires once rather than on
+# every prompt, and unset drops it from the exported environment too, so the
+# fish it execs into — and any bash nested under that — never sees it. No loop.
+#
+# The `command -v` guard is load-bearing, not defensive dressing. `exec` of a
+# missing binary behaves differently depending on where it runs: typed at an
+# interactive prompt it prints "not found" and leaves the shell alive, but from
+# inside PROMPT_COMMAND it takes the shell down with it (bash 5.3, exit 127).
+# Unguarded, a missing fish would mean every attach exits immediately — the
+# exact failure the once-only unset is meant to avoid.
+#
+# Upstream tracking issue for a real interface: minimal#957.
+PROMPT_COMMAND = "unset PROMPT_COMMAND; command -v fish >/dev/null && exec fish"

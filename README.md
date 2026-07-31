@@ -101,6 +101,31 @@ Two steps the patch system can't do, hence the extra recipes:
   it up. The include path doesn't change with the scheme, so that is a one-time
   step.
 
+### Attaching to a session
+
+`min attach` drops you straight into fish, which auto-starts zellij. That isn't
+automatic on minimal's side — the attach shell is bash and reads no profile or
+rc file, so the loadout's `SHELL = "fish"` has no effect on it. The seam is
+`PROMPT_COMMAND`, which bash takes from the environment and evaluates before
+drawing its first prompt:
+
+```toml
+PROMPT_COMMAND = "unset PROMPT_COMMAND; command -v fish >/dev/null && exec fish"
+```
+
+`unset` comes first so it fires once rather than on every prompt, and because
+unsetting drops it from the exported environment too — the fish it execs into,
+and any bash nested under that, never sees it, so there is no relaunch loop.
+
+The `command -v` guard is load-bearing. `exec` of a missing binary behaves
+differently depending on where it runs: typed at an interactive prompt it prints
+`not found` and leaves the shell alive, but from inside `PROMPT_COMMAND` it
+takes the shell down with it (bash 5.3, exit 127). Unguarded, a missing fish
+would mean every attach exits immediately.
+
+This is a shell-specific side door rather than an interface, and only works
+because the attach shell is bash. Tracked upstream as `minimal#957`.
+
 ---
 
 ## How it works
