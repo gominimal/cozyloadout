@@ -13,8 +13,8 @@
   in helix are coloured the same way.
 
   bat takes the theme name from the *file stem*, not the <key>name</key> below;
-  both are kept in sync anyway. Rebuild bat's cache after installing:
-      just bat-cache
+  both are kept in sync anyway. bat's cache is rebuilt on attach by the fish
+  config; by hand it is `bat cache --build`.
 -->
 <plist version="1.0">
 <dict>

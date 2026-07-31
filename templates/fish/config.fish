@@ -140,6 +140,41 @@ set -g fish_greeting (set_color $__cozy_b0d)"   ████  ████▄
 set -e __cozy_b00 __cozy_b01 __cozy_b02 __cozy_b03 __cozy_b04 __cozy_b05 __cozy_b06 __cozy_b07 \
     __cozy_b08 __cozy_b09 __cozy_b0a __cozy_b0b __cozy_b0c __cozy_b0d __cozy_b0e __cozy_b0f
 
+# --- First-run setup ---
+# The two things minimal's patch system can't do on its own. Both used to be
+# `just` recipes run by hand after installing; they now happen on attach, in the
+# shell attach hands over to.
+#
+# $__COZY_SETUP_DONE is exported, so only the outermost fish does this and
+# zellij's panes skip it — the same guard the terminal colours use. Each step is
+# independently idempotent as well, so a fresh session re-checking costs nothing
+# and cannot duplicate work.
+if not set -q __COZY_SETUP_DONE
+    set -gx __COZY_SETUP_DONE 1
+
+    # bat compiles themes into a cache and cannot see a .tmTheme until that
+    # cache is rebuilt. delta reads the same cache for in-diff highlighting, so
+    # skipping this leaves both off-scheme — delta falls back to Monokai.
+    # Probing the theme list first keeps the common case to one ~10ms check
+    # rather than a full rebuild on every attach.
+    if command -q bat; and not bat --list-themes 2>/dev/null | string match -q -- {{scheme-slug}}
+        if not bat cache --build >/dev/null 2>&1
+            echo "cozy: bat cache --build failed; bat and delta will be off-scheme" >&2
+        end
+    end
+
+    # delta has no config file of its own; it reads [delta] out of git config,
+    # so the loadout ships an include and this points git at it.
+    #
+    # --add after checking, rather than a plain set: `git config --global
+    # include.path X` REPLACES the existing value, so it would silently drop an
+    # include of your own. Matching on the basename also means an entry added as
+    # an absolute path is recognised and not duplicated.
+    if command -q git; and not git config --global --get-all include.path 2>/dev/null | string match -q '*cozy-delta.gitconfig'
+        git config --global --add include.path '~/.config/git/cozy-delta.gitconfig'
+    end
+end
+
 # --- zellij auto-start (kept before starship, as in the original) ---
 if command -q zellij; and test "$TERM" != dumb
     eval (zellij setup --generate-auto-start fish | string collect)

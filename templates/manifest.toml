@@ -47,7 +47,8 @@ template = "zellij/themes/theme.kdl"
 out      = "zellij/themes/{slug}.kdl"
 dest     = ".config/zellij/themes/{slug}.kdl"
 
-# bat only sees the theme once its cache is rebuilt — `just bat-cache`.
+# bat only sees the theme once its cache is rebuilt; the fish config does that
+# on attach.
 [[file]]
 template = "bat/config"
 out      = "bat/config"
@@ -59,7 +60,7 @@ out      = "bat/themes/{slug}.tmTheme"
 dest     = ".config/bat/themes/{slug}.tmTheme"
 
 # delta reads [delta] out of git config, so this is an include rather than a
-# gitconfig of its own. Wire it up with `just delta-include`.
+# gitconfig of its own. The fish config points git at it on attach.
 [[file]]
 template = "delta/delta.gitconfig"
 out      = "delta/cozy-delta.gitconfig"

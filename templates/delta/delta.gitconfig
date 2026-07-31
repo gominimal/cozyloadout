@@ -5,18 +5,18 @@
 #
 # delta has no config file of its own; it reads its settings out of git config.
 # This file is therefore an *include*, not a replacement for your ~/.gitconfig —
-# the loadout drops it at ~/.config/git/cozy-delta.gitconfig and you point git
-# at it once:
+# the loadout drops it at ~/.config/git/cozy-delta.gitconfig and git is pointed
+# at it on attach, by the first-run block in the fish config, with:
 #
-#     git config --global include.path ~/.config/git/cozy-delta.gitconfig
+#     git config --global --add include.path ~/.config/git/cozy-delta.gitconfig
 #
-# `just delta-include` runs exactly that. It is deliberately not automatic:
-# clobbering a user's gitconfig to set a colour scheme would take your name,
-# email and remotes with it.
+# --add rather than a plain set, and only after checking the existing values:
+# `git config --global include.path X` replaces what is already there, which
+# would silently drop an include of your own.
 #
 # Syntax highlighting inside diffs comes from bat's theme cache, so this depends
-# on cozy/bat/themes/{{scheme-slug}}.tmTheme being installed and
-# `bat cache --build` having been run.
+# on cozy/bat/themes/{{scheme-slug}}.tmTheme being installed and bat's cache
+# rebuilt — also handled on attach.
 #
 # Every style value is quoted on purpose: in git config `#` starts a comment, so
 # an unquoted `minus-style = syntax #341919` parses as an empty value and delta

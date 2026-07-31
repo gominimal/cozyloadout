@@ -121,29 +121,13 @@ bundle:
     cd "{{BUILD}}" && zip -qr ../cozy.zip cozy.toml cozy
     echo "cozy.zip"
 
-# Install the bundled loadout into ~/.config/minimal/loadouts/.
+# There is nothing to run afterwards: bat's theme cache and delta's gitconfig
+# include are handled on attach by the first-run block in the fish config.
+[doc('Install the bundled loadout into ~/.config/minimal/loadouts/')]
 install: bundle
     mkdir -p ~/.config/minimal/loadouts
     unzip -oq cozy.zip -d ~/.config/minimal/loadouts
-    @echo "installed. Apply the loadout, then run \`just bat-cache\`."
-
-# Run this once the loadout's patches have been applied — it reads whatever is
-# in ~/.config/bat/themes, so running it earlier caches an empty theme set, and
-# running it this way keeps any themes of your own that live there too.
-[doc("Rebuild bat's theme cache so it picks up the rendered theme")]
-bat-cache:
-    bat cache --build
-    @echo "bat themes now available:"
-    @bat --list-themes | grep -v '^ ' || true
-
-# Deliberately not part of `install`: it edits ~/.gitconfig, which the loadout
-# otherwise never touches. The include path does not change with the scheme, so
-# this only needs running once ever.
-[doc("Point git's global config at the delta theme (once, ever)")]
-delta-include:
-    git config --global include.path ~/.config/git/cozy-delta.gitconfig
-    @echo "delta feature now resolving to:"
-    @delta --show-config | grep -E 'syntax-theme|minus-style'
+    @echo "installed. Apply the loadout and attach."
 
 # Run the renderer's tests.
 test:

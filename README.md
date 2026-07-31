@@ -10,9 +10,11 @@ renders every config file from that one palette:
 ```sh
 just theme gruvbox-dark-hard   # render + bundle into cozy.zip
 just install                   # unzip into ~/.config/minimal/loadouts/
-just bat-cache                 # rebuild bat's theme cache (needed after install)
-just delta-include             # wire up delta in ~/.gitconfig (once, ever)
 ```
+
+Then apply the loadout and attach. There is no post-install step: `min attach`
+hands over to fish, which starts zellij and does the two bits of setup the patch
+system can't — see [Attaching to a session](#attaching-to-a-session).
 
 Any [tinted-theming](https://github.com/tinted-theming/schemes) scheme works, as
 does any file in that format. `just fetch-schemes` clones the upstream
@@ -54,8 +56,6 @@ collection — ~530 base16 and base24 schemes — into `schemes/vendor/`.
 | `just schemes` | List what `just theme` will accept |
 | `just vendored` | List the vendored upstream schemes by name |
 | `just fetch-schemes` | Clone the upstream scheme collection |
-| `just bat-cache` | Rebuild bat's theme cache. Needed after every install |
-| `just delta-include` | Point `~/.gitconfig` at the delta include. Once, ever |
 | `just test` | Run the renderer's tests |
 | `just clean` | Drop build artifacts (leaves `schemes/vendor/` alone) |
 
@@ -90,16 +90,8 @@ read `build/`.
 `just install` unzips into `~/.config/minimal/loadouts/`. Applying the loadout
 is minimal's job; the patches in `build/cozy.toml` then land in `~/.config`.
 
-Two steps the patch system can't do, hence the extra recipes:
-
-- **bat** compiles themes into a cache. Until `just bat-cache` runs,
-  `bat --list-themes` won't show the theme and delta — which reads bat's cache
-  for in-diff highlighting — falls back to Monokai.
-- **delta** has no config file; it reads `[delta]` out of git config. Rather
-  than overwrite `~/.gitconfig` (and take your name, email and remotes with
-  it), the loadout drops an includable fragment and `just delta-include` wires
-  it up. The include path doesn't change with the scheme, so that is a one-time
-  step.
+Nothing to run afterwards — the two steps the patch system can't do happen on
+attach, below.
 
 ### Attaching to a session
 
@@ -125,6 +117,31 @@ would mean every attach exits immediately.
 
 This is a shell-specific side door rather than an interface, and only works
 because the attach shell is bash. Tracked upstream as `minimal#957`.
+
+#### First-run setup
+
+Two things minimal's patch system can't do are handled by a block in the fish
+config, which therefore also runs on attach:
+
+- **bat's theme cache.** bat compiles themes into a cache and cannot see a
+  `.tmTheme` until it is rebuilt; delta reads that same cache for in-diff
+  highlighting, so skipping it leaves both off-scheme with delta falling back to
+  Monokai. The block probes `bat --list-themes` for the scheme (~10ms) and only
+  rebuilds when it is missing.
+- **delta's gitconfig include.** delta has no config file of its own, so the
+  loadout ships a fragment and this points git at it. It uses
+  `git config --global --add`, and only after checking the existing values —
+  a plain `git config --global include.path X` *replaces* what is there, which
+  would silently drop an include of your own. Matching on the basename means an
+  entry already added as an absolute path is recognised rather than duplicated.
+
+`$__COZY_SETUP_DONE` is exported, so only the outermost fish does this and
+zellij's panes skip it — the same guard the terminal colours use. Both steps are
+independently idempotent too, so a fresh session re-checking costs nothing.
+
+This is the one place the loadout writes outside `~/.config`: the delta step
+edits `~/.gitconfig`. It adds a single `include.path` line and touches nothing
+else.
 
 ---
 
