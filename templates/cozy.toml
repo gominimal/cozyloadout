@@ -44,9 +44,15 @@ PAGER  = "bat"
 
 # Hand `min attach` over to fish, which in turn auto-starts zellij.
 #
-# The attach shell is bash and reads no profile or rc file, so SHELL above has
-# no effect on it — PROMPT_COMMAND is the one remaining seam, because bash takes
-# it from the environment and evaluates it before drawing the first prompt.
+# Lifecycle hooks do NOT replace this, though they look like they should. The
+# attach shell is `bash --noprofile -l` and sources no startup files, there is
+# no documented way to choose what you land in, and on_attach runs *before* that
+# bash and is timeout-capped (60s default, 300s max) — so a hook cannot be your
+# interactive session. The loadouts reference says as much: "Interactive setup
+# happens through environment variables instead."
+#
+# PROMPT_COMMAND is that environment variable: bash takes it from the
+# environment and evaluates it before drawing the first prompt.
 #
 # `unset PROMPT_COMMAND` first, for two reasons: it fires once rather than on
 # every prompt, and unset drops it from the exported environment too, so the
@@ -61,3 +67,33 @@ PAGER  = "bat"
 #
 # Upstream tracking issue for a real interface: minimal#957.
 PROMPT_COMMAND = "unset PROMPT_COMMAND; command -v fish >/dev/null && exec fish"
+
+# --- Lifecycle hooks -------------------------------------------------------
+# The two steps minimal's patch system can't do. These used to live in the fish
+# config behind an exported once-per-session guard, and before that were `just`
+# recipes run by hand.
+#
+# External rather than inline: the scripts are long enough to want comments, and
+# an external `value` resolves against the directory beside this file — which is
+# the loadout's own `cozy/` directory, where the renderer already puts them.
+#
+# on_activate only. There is deliberately NO on_attach hook: it is the one event
+# that runs on your attached terminal, and having any on_attach hook at all stops
+# fish's OSC 11 from taking effect, so the terminal background never gets set.
+# The hook script itself emits nothing — captured on a pty, it writes zero bytes
+# — so this is something about how the attach path handles a terminal-attached
+# hook, not about what the script does. Re-test before adding one back.
+#
+# It existed only as a safety net for the case where `patches` land after
+# on_activate, leaving the .tmTheme absent when the cache is built. That
+# ordering is still undocumented and still unmeasured — session `$HOME` is
+# isolated from the host, so the hook's effects can't be observed from outside,
+# and `min session attach` has no non-interactive `--command` flag to probe with.
+#
+# If `bat --list-themes` inside a fresh session does not list the scheme, that
+# is this gap: patches landed after the hook. The fix is a rebuild in the fish
+# config, NOT an on_attach hook — the fish config sets the terminal colours
+# itself and demonstrably coexists with them.
+[[lifecycle_hooks]]
+description = "cozy: point git at delta's include, build bat's theme cache"
+on_activate = { type = "external", value = "./hooks/on-activate.sh" }

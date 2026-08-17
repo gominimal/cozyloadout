@@ -120,23 +120,27 @@ skins directory, and nothing removes them automatically.
 ### What happens on attach
 
 `min attach` drops you straight into fish, which starts zellij. minimal's attach
-shell is bash and reads no profile or rc file, so the loadout arranges this
-through `PROMPT_COMMAND`, which bash evaluates before its first prompt.
+shell is `bash --noprofile -l` and reads no startup files, so the loadout
+arranges this through `PROMPT_COMMAND`, which bash evaluates before its first
+prompt.
 
-The same handover does two bits of setup the patch system can't, once per
-session and skipped inside zellij's panes:
+Two bits of setup the patch system can't do run as **lifecycle hooks**, declared
+in the loadout and shipped as scripts in `cozy/hooks/`:
 
-- **Rebuilds bat's theme cache** if the scheme isn't in it. bat can't see a
-  theme until its cache is built, and delta reads that same cache for in-diff
-  highlighting, so without this both are off-scheme and delta falls back to
-  Monokai.
-- **Points git at delta's config.** delta has no config file of its own and
-  reads `[delta]` out of git config, so the loadout ships an include and adds it
-  to `~/.gitconfig`.
+- **`on_activate`** — when the session is created — points git at delta's
+  config, and builds bat's theme cache. delta has no config file of its own and
+  reads `[delta]` out of git config, so the loadout ships an include; bat can't
+  see a theme until its cache is built, and delta reads that same cache for
+  in-diff highlighting, so without it both are off-scheme and delta falls back
+  to Monokai.
 
-That second one is **the only thing the loadout writes outside `~/.config`**. It
-appends a single `include.path` entry and checks first, so an include of your
-own is never replaced or duplicated.
+There is no `on_attach` hook, on purpose: declaring one stops fish from being
+able to set the terminal background. See AGENTS.md if you're tempted to add
+one.
+
+Pointing git at the include is **the only thing the loadout writes outside
+`~/.config`**. It appends a single `include.path` entry and checks first, so an
+include of your own is never replaced or duplicated.
 
 ---
 

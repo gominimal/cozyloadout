@@ -1,3 +1,6 @@
+| `on_activate` fires on a real session | verified — `min session activate` reported it running |
+| Any `on_attach` hook breaks fish's OSC 11 background | observed; mechanism unexplained |
+| Patches applied before `on_activate` | **unmeasured** — session `$HOME` is isolated, no non-interactive probe |
 # AGENTS.md
 
 Working notes for this repo. [README.md](README.md) covers using the loadout;
@@ -117,18 +120,84 @@ seemed worse than the mess.
 **No scheme validation.** Considered and dropped: a contrast report with a
 `--strict` flag. The instruction was to render what the user asked for.
 
-## The on-attach mechanism
+## Session setup and the shell handover
 
-`templates/cozy.toml` `[vars]`:
+Two separate mechanisms, for two reasons. Don't collapse them.
+
+### Lifecycle hooks — the setup steps
+
+Declared in `templates/cozy.toml`, scripts in `templates/hooks/`:
+
+```toml
+[[lifecycle_hooks]]
+on_activate = { type = "external", value = "./hooks/on-activate.sh" }
+```
+
+**Do not add an `on_attach` hook.** There was one, briefly, as a safety net for
+the bat cache. Declaring *any* `on_attach` hook stops fish's OSC 11 from taking
+effect, so the terminal background never gets set; `min session activate
+--no-hooks` restores it. The hook script was not the cause — captured on a pty
+it writes zero bytes, and it runs before fish anyway, so fish's sequence should
+win regardless. `on_attach` is the only event that runs on the attached terminal
+("the other three have no terminal and their output is captured into the daemon
+log"), which is what singles it out. Whatever the mechanism is, it lives in the
+attach path, and minimal was being actively developed when this surfaced —
+re-test before reintroducing one.
+
+If something genuinely needs to happen per-attach, put it in the fish config:
+that is what sets the terminal colours in the first place, and it demonstrably
+coexists with them.
+
+Schema, per <https://minimal.dev/docs/reference/loadouts>: `[[lifecycle_hooks]]`
+is an array of tables; events are `on_activate`, `on_destroy`, `on_attach`,
+`on_detach`; each value is `{ type = "inline"|"external", value = …, timeout = …
+}` with timeout defaulting to 60s and **capped at 300s — over the cap the file
+is rejected at parse time**. External `value` resolves against the directory
+beside the loadout file, which for `cozy.toml` is `cozy/` — exactly where the
+renderer puts things, so `./hooks/x.sh` just works. Setup hooks run in
+declaration order, teardown in reverse. Scripts run under POSIX `sh` unless a
+shebang overrides.
+
+Four things to keep in mind when editing these:
+
+1. **`on_activate` must never exit non-zero.** "A failing `on_activate` fails
+   the activation — the session does not become attachable." Both scripts end in
+   a bare `exit 0` and guard every step. Verified: with no tools on `PATH` at
+   all, and with a `bat` that exits 3, both still exit 0.
+2. **No `grep`.** It is *not* in the loadout's package list — `ripgrep` is, and
+   coreutils doesn't ship grep. The first draft used `grep -q` for the
+   already-configured check; with grep absent the negation inverts and appends a
+   duplicate `include.path` on every activation. Both scripts now use `case`,
+   which is a shell builtin. Verified: three activations with no grep on `PATH`
+   leave exactly one entry.
+3. **POSIX `sh`, not bash.** Check with `dash -n build/cozy/hooks/*.sh`.
+4. **Patch ordering against `on_activate` is undocumented and unmeasured.** It
+   is not guaranteed the `.tmTheme` exists when the activate hook runs, so the
+   hook only builds the cache if the file is there. It could not be measured:
+   session `` is isolated from the host, and `min session attach` has no
+   non-interactive command flag to probe with. Symptom if the ordering is
+   unlucky: `bat --list-themes` in a fresh session omits the scheme, and delta
+   falls back to Monokai. Fix it in the fish config, not with an on_attach hook.
+
+The daemon was unreachable on this machine, so the hooks have been run directly
+against throwaway `$HOME`s but **never observed firing from a real session**.
+
+### PROMPT_COMMAND — the shell handover
 
 ```toml
 PROMPT_COMMAND = "unset PROMPT_COMMAND; command -v fish >/dev/null && exec fish"
 ```
 
-The attach shell is bash and reads no profile or rc file, so `SHELL = "fish"`
-has no effect on it. `PROMPT_COMMAND` is the one seam: bash takes it from the
-environment and evaluates it before the first prompt. Filed upstream as
-`minimal#957` — it works, but a shell-specific side door isn't an interface.
+**Lifecycle hooks cannot replace this**, which is counterintuitive enough to be
+worth writing down. The attach shell is `bash --noprofile -l`, sourcing no
+startup files; there is no documented way to choose what you land in; and
+`on_attach` runs *before* that bash and is timeout-capped, so a hook cannot be
+your interactive session — it would be killed at ≤300s and drop you into bash
+anyway. The reference is explicit: "Interactive setup happens through
+environment variables instead." `PROMPT_COMMAND` is that environment variable.
+
+Filed upstream as `minimal#957` — it works, but a shell-specific side door isn't
+an interface.
 
 Two things about it are load-bearing and were verified, not assumed:
 
@@ -148,30 +217,28 @@ here fish's own config runs `zellij setup --generate-auto-start`, whose script
 already carries the check. Adding it would be actively wrong — inside a pane
 running bash, exec'ing fish is what you want.
 
-### First-run setup
+### Why the delta step uses `--add`
 
-In `templates/fish/config.fish`, before the zellij auto-start so the guard
-propagates to panes. Replaced the former `just bat-cache` and
-`just delta-include` recipes.
-
-`$__COZY_SETUP_DONE` is exported — same pattern as the terminal colours — so
-only the outermost fish runs it. Both steps are independently idempotent too.
-
-**The delta step changed when it moved, and that matters.** The old recipe ran
-`git config --global include.path <ours>`, which *replaces* rather than appends.
-Demonstrated against a throwaway `$HOME`:
+Worth preserving, because the obvious form is destructive. The original
+`just delta-include` recipe ran `git config --global include.path <ours>`, which
+*replaces* rather than appends. Demonstrated against a throwaway `$HOME`:
 
 ```
 before: ~/my-own-stuff.gitconfig
 after:  ~/.config/git/cozy-delta.gitconfig
 ```
 
-Survivable when run by hand once; a trap on every attach. It now checks
-`--get-all` and uses `--add`, matching on basename so an entry already added as
-an absolute path is recognised rather than duplicated.
+Survivable when run by hand once; a trap when it runs automatically. The hook
+checks `--get-all` first and uses `--add`, matching on basename so an entry
+already added as an absolute path is recognised rather than duplicated.
 
 The bat step probes `bat --list-themes` (~8ms measured) and only rebuilds when
-the scheme is absent, so steady state is one cheap check per attach.
+the scheme is absent, so the steady state is one cheap check.
+
+This setup has lived in three places: `just` recipes run by hand, then a
+guarded block in the fish config, now lifecycle hooks. Each move was a real
+improvement; the *logic* has barely changed, so read the hook scripts rather
+than reinventing it.
 
 ## Per-tool notes
 
@@ -288,8 +355,13 @@ Worth knowing before relying on any of it:
 | Renderer builds with no network | verified |
 | `PROMPT_COMMAND` hands over to fish; unset prevents loops | verified against a pty |
 | Unguarded `exec` in `PROMPT_COMMAND` exits 127 | verified |
-| First-run setup is idempotent, preserves other git includes | verified against a throwaway `$HOME` |
+| Hooks are idempotent, tolerate missing/broken tools, preserve other git includes | verified against throwaway `$HOME`s |
+| Hook scripts are POSIX-sh clean | verified with `dash -n` |
 | `just` recipes | all run except `install` against the real `~/.config` |
+| Lifecycle hook schema and semantics | taken from the loadouts reference, not observed |
+| `on_activate` fires on a real session | verified — `min session activate` reported running it |
+| Any `on_attach` hook breaks fish's OSC 11 background | observed; `--no-hooks` restores it, mechanism unexplained |
+| Patches applied before `on_activate` | **unmeasured** — session `$HOME` is isolated, and attach has no non-interactive probe |
 | Rust floor of 1.71 | **derived, never tested** — only 1.97.1 available |
 | `ctrl-w` detaches, per the fish greeting | **unverified** — not in `min --help`, `min session attach --help`, or the binary's strings |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |

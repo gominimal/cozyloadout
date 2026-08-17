@@ -146,7 +146,7 @@ bundle:
     echo "cozy.zip"
 
 # There is nothing to run afterwards: bat's theme cache and delta's gitconfig
-# include are handled on attach by the first-run block in the fish config.
+# include are handled by the loadout's lifecycle hooks.
 [doc('Install the bundled loadout into ~/.config/minimal/loadouts/')]
 install: bundle
     mkdir -p ~/.config/minimal/loadouts

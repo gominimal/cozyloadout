@@ -6,7 +6,7 @@
 # delta has no config file of its own; it reads its settings out of git config.
 # This file is therefore an *include*, not a replacement for your ~/.gitconfig —
 # the loadout drops it at ~/.config/git/cozy-delta.gitconfig and git is pointed
-# at it on attach, by the first-run block in the fish config, with:
+# at it by the on_activate lifecycle hook, with:
 #
 #     git config --global --add include.path ~/.config/git/cozy-delta.gitconfig
 #
