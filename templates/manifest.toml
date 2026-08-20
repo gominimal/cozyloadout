@@ -9,9 +9,11 @@
 #   copy      true to copy verbatim instead of expanding placeholders.
 #             Use for files with no colours and no scheme name in them.
 #
-# `{slug}` in `out` is replaced with the scheme slug, so switching schemes
+# `{slug}` in `out`/`dest` is replaced with the scheme slug, so switching schemes
 # renames the theme files rather than leaving a stale name on disk holding the
-# wrong colours.
+# wrong colours. `{loadout}` is replaced with the loadout's name (`--loadout`,
+# default `cozy`), which is what keeps a renamed loadout from shipping files
+# named after this one.
 #
 # The cozy.toml patches list is generated from `out` + `dest` below, in this
 # order, so adding a file here is the only edit needed to ship it.
@@ -70,8 +72,8 @@ dest     = ".config/bat/themes/{slug}.tmTheme"
 # gitconfig of its own. The on_activate lifecycle hook points git at it.
 [[file]]
 template = "delta/delta.gitconfig"
-out      = "delta/cozy-delta.gitconfig"
-dest     = ".config/git/cozy-delta.gitconfig"
+out      = "delta/{loadout}-delta.gitconfig"
+dest     = ".config/git/{loadout}-delta.gitconfig"
 
 [[file]]
 template = "starship/starship.toml"

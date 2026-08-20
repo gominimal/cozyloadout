@@ -83,36 +83,51 @@ set -g fish_pager_color_selected_background --background=$__cozy_b02
 # program asking for "bright green" gets base01, a dark surface grey. That is
 # the usual base16 trade for having all 16 slots on-scheme.
 #
-# $__COZY_TERM_THEMED is exported, so nested shells and zellij panes inherit
-# it and skip both the apply and the reset. Only the outermost fish owns the
-# terminal's colours, and it puts them back when it exits — otherwise an inner
-# shell exiting would strip the palette out from under the shell still running,
-# and sshing into a box with this loadout would leave your local terminal
-# recoloured after you logged out.
 # Every sequence is terminated with ST written as `\e\x5c`, and only one
 # sequence is emitted per printf. Both are deliberate: fish's single quotes are
 # not literal — they collapse `\\` to `\` before printf ever sees the string —
 # so the natural-looking '\e]10;…\e\\\e]11;…' silently loses an escape and
 # prints a stray "e" instead of the second ESC. `\x5c` has no such ambiguity.
-if test "$TERM" != dumb; and not set -q __COZY_TERM_THEMED
-    set -gx __COZY_TERM_THEMED 1
-
-    printf '\e]10;#%s\e\x5c' $__cozy_b05 # foreground
-    printf '\e]11;#%s\e\x5c' $__cozy_b00 # background
-    printf '\e]12;#%s\e\x5c' $__cozy_b05 # cursor
+#
+# The palette is baked into the function body at render time rather than read
+# from the $__cozy_b* variables: a fish function resolves its body when it runs,
+# and those variables are erased at the end of this file.
+function __cozy_apply_terminal --description 'Hand the scheme to the terminal over OSC'
+    printf '\e]10;#%s\e\x5c' {{base05-hex}} # foreground
+    printf '\e]11;#%s\e\x5c' {{base00-hex}} # background
+    printf '\e]12;#%s\e\x5c' {{base05-hex}} # cursor
 
     # ANSI 0–15. One sequence per slot rather than a single multi-pair OSC 4:
     # both are legal, but the per-slot form is what every terminal that
     # implements OSC 4 at all accepts.
-    set -l __cozy_ansi \
-        $__cozy_b00 $__cozy_b08 $__cozy_b0b $__cozy_b0a \
-        $__cozy_b0d $__cozy_b0e $__cozy_b0c $__cozy_b05 \
-        $__cozy_b03 $__cozy_b09 $__cozy_b01 $__cozy_b02 \
-        $__cozy_b04 $__cozy_b06 $__cozy_b0f $__cozy_b07
-    for __cozy_i in (seq 16)
-        printf '\e]4;%d;#%s\e\x5c' (math $__cozy_i - 1) $__cozy_ansi[$__cozy_i]
+    set -l ansi \
+        {{base00-hex}} {{base08-hex}} {{base0B-hex}} {{base0A-hex}} \
+        {{base0D-hex}} {{base0E-hex}} {{base0C-hex}} {{base05-hex}} \
+        {{base03-hex}} {{base09-hex}} {{base01-hex}} {{base02-hex}} \
+        {{base04-hex}} {{base06-hex}} {{base0F-hex}} {{base07-hex}}
+    for i in (seq 16)
+        printf '\e]4;%d;#%s\e\x5c' (math $i - 1) $ansi[$i]
     end
-    set -e __cozy_i
+end
+
+# The mtime of the file minimal rewrites on every attach. Its *contents* (TERM
+# today) are minimal's business; only the fact that it was just rewritten is
+# ours. `path mtime` is a builtin, so this costs no process per prompt, and the
+# path is hard-coded for the same reason minimal hard-codes it in its own hook:
+# a variable of that name could otherwise redirect the check.
+function __cozy_attach_stamp
+    path mtime -- $HOME/.local/state/minimal/attach-env.fish 2>/dev/null
+end
+
+# $__COZY_TERM_THEMED is exported, so nested shells and zellij panes inherit it
+# and skip the initial apply and the reset. Only the outermost fish *owns* the
+# terminal's colours, and it puts them back when it exits — otherwise an inner
+# shell exiting would strip the palette out from under the shell still running,
+# and sshing into a box with this loadout would leave your local terminal
+# recoloured after you logged out.
+if test "$TERM" != dumb; and not set -q __COZY_TERM_THEMED
+    set -gx __COZY_TERM_THEMED 1
+    __cozy_apply_terminal
 
     function __cozy_restore_terminal --on-event fish_exit
         # OSC 110/111/112 reset foreground/background/cursor; OSC 104 with no
@@ -121,6 +136,41 @@ if test "$TERM" != dumb; and not set -q __COZY_TERM_THEMED
         printf '\e]111\e\x5c'
         printf '\e]112\e\x5c'
         printf '\e]104\e\x5c'
+    end
+end
+
+# Re-apply when a *new terminal* attaches, not just once per shell.
+#
+# A session shell is spawned once and outlives the terminals that attach to it,
+# so the palette is a per-attach fact in exactly the way minimal treats TERM as
+# one: it republishes ~/.local/state/minimal/attach-env.fish on every attach and
+# ships a vendor_conf.d hook that sources it. On re-attach the daemon replays a
+# vt100 screen dump of the session, which carries cells and attributes but not
+# the terminal's OSC palette — so without this, a second attach (and especially
+# one from a different terminal) lands on an unthemed surface with nothing left
+# to fix it.
+#
+# On fish_prompt *and* fish_preexec, mirroring minimal's own pair, for the
+# reason it gives: the prompt on screen after a re-attach was drawn before the
+# detach and has already fired its prompt event, so without the preexec half the
+# first command you type would still run under the old terminal's palette.
+#
+# Unguarded by $__COZY_TERM_THEMED, unlike the apply above. The outermost fish
+# hands over to zellij and then sits blocked for the rest of the session, so it
+# is never the one that notices; the fish inside each pane has to. Re-emitting
+# the same palette is idempotent, so panes racing each other after an attach
+# costs nothing. (Whether zellij forwards a pane's OSC set to the host terminal
+# is still unconfirmed — see README's Known gaps.)
+if test "$TERM" != dumb
+    set -g __cozy_attach_seen (__cozy_attach_stamp)
+
+    function __cozy_reapply_terminal --on-event fish_prompt --on-event fish_preexec
+        set -l now (__cozy_attach_stamp)
+        # Equal covers the no-minimal-session case too: both sides stay empty,
+        # so outside a session this never fires and the startup apply stands.
+        test "$now" = "$__cozy_attach_seen"; and return
+        set -g __cozy_attach_seen $now
+        __cozy_apply_terminal
     end
 end
 
@@ -177,7 +227,13 @@ if command -q fzf
     # session. Move the file picker to Alt-T — zellij ignores it, and it
     # still works in a bare terminal. Ctrl-R (history) and Alt-C (cd) don't
     # collide with zellij's defaults, so they're left as-is.
+    #
+    # Bound in insert mode as well as the default one. `bind` with no `-M`
+    # touches only the default mode, which is all a vi-mode user is *not* in
+    # while typing — so without the second line the rebinding silently does
+    # nothing for them and Alt-T inserts a literal character instead.
     bind \et fzf-file-widget
+    bind -M insert \et fzf-file-widget
 
     set -gx FZF_DEFAULT_OPTS '--height 40% --layout=reverse --border'
     if command -q fd
@@ -193,6 +249,13 @@ end
 # $fish_greeting is the banner, set up in the colours section above. Clear it
 # with `set fish_greeting` here to go back to a silent shell.
 
+# Forces the command line to be redrawn after every command, so a prompt that
+# reports state the last command changed — starship's git status, its exit-code
+# indicator — is repainted rather than left showing what was true before it ran.
+#
+# Inherited from the config this loadout was built from; the specific artefact
+# it was added for isn't recorded, and fish redraws on its own in the common
+# case. If you never see it do anything, it is safe to delete.
 function __force_repaint --on-event fish_postexec
     commandline -f repaint
 end

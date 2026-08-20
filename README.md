@@ -51,14 +51,19 @@ To build and install the loadout you need:
 Plus the usual POSIX userland — `find`, `sed`, `sort`, `head`, `wc`, `tr`,
 `mkdir`, `rm` — which any Unix already has.
 
+`just check` additionally uses `fish` and `dash` to syntax-check the two files
+that are shipped as code, and a `python3` with `tomllib` (3.11+) to parse the
+generated loadout TOML. Each is skipped with a message if it isn't there, so the
+recipe still runs — it just checks less.
+
 That is the whole list. Two things it deliberately does **not** include:
 
 - **Crate dependencies.** The renderer has none, so `cargo` never reaches the
   network and the build works offline.
-- **The tools being themed.** You do not need fish, helix, zellij, starship,
-  bat, delta, broot or bottom installed to build or install the loadout — no
-  recipe invokes any of them. minimal installs them when the loadout is
-  applied, and the on-attach setup runs inside the session.
+- **The tools being themed.** You do not need helix, zellij, starship, bat,
+  delta, broot or bottom installed to build or install the loadout — no recipe
+  invokes any of them. minimal installs them when the loadout is applied, and
+  the session setup runs inside the session.
 
 ---
 
@@ -76,6 +81,8 @@ That is the whole list. Two things it deliberately does **not** include:
 | `just vendored` | List the vendored upstream schemes by name |
 | `just fetch-schemes` | Clone the upstream scheme collection |
 | `just test` | Run the renderer's tests |
+| `just check` | Everything CI runs: tests, both schemes rendered, syntax and TOML checks |
+| `just check-schemes` | Render every vendored scheme and check each result parses |
 | `just clean` | Drop build artifacts (leaves `schemes/vendor/` alone) |
 
 ### Choosing a scheme
@@ -107,36 +114,43 @@ read `build/`.
 
 ### Installing
 
-`just install` unzips into `~/.config/minimal/loadouts/`. Applying the loadout
-is minimal's job; the patches in `build/cozy.toml` then land in `~/.config`.
+`just install` replaces `~/.config/minimal/loadouts/cozy/` and unzips over it.
+Applying the loadout is minimal's job; the patches in `build/cozy.toml` then land
+in `~/.config`.
 
 Every theme file is named after the scheme —
 `~/.config/helix/themes/gruvbox-dark-hard.toml`, not a fixed name holding
 whatever colours you last built. One consequence: installing a *different*
-scheme leaves the previous one's theme files behind in `~/.config`. They are
-inert, just extra entries in `hx --health`, `bat --list-themes` and broot's
-skins directory, and nothing removes them automatically.
+scheme leaves the previous one's theme files behind **in the session's
+`~/.config`**. They are inert, just extra entries in `hx --health`,
+`bat --list-themes` and broot's skins directory, and nothing removes them
+automatically. The loadout directory itself is rebuilt on every `just install`,
+so stale files don't pile up there.
 
 ### What happens on attach
 
-`min attach` drops you straight into fish, which starts zellij. minimal's attach
-shell is `bash --noprofile -l` and reads no startup files, so the loadout
-arranges this through `PROMPT_COMMAND`, which bash evaluates before its first
-prompt.
+`min attach` drops you straight into fish, which starts zellij. The session's
+shell is `bash --noprofile --rcfile <daemon rc> -i` and reads none of your
+startup files, so the loadout arranges the handover through `PROMPT_COMMAND`,
+which bash evaluates before its first prompt. The one thing that costs is
+minimal's orientation banner, which the same variable would otherwise print;
+your terminal's `TERM` is kept current by the daemon regardless.
 
-Two bits of setup the patch system can't do run as **lifecycle hooks**, declared
-in the loadout and shipped as scripts in `cozy/hooks/`:
+The setup the patch system can't do runs as a **lifecycle hook**, declared in the
+loadout and shipped as a script in `cozy/hooks/`:
 
 - **`on_activate`** — when the session is created — points git at delta's
   config, and builds bat's theme cache. delta has no config file of its own and
-  reads `[delta]` out of git config, so the loadout ships an include; bat can't
-  see a theme until its cache is built, and delta reads that same cache for
-  in-diff highlighting, so without it both are off-scheme and delta falls back
-  to Monokai.
+  reads its settings out of git config, so the loadout ships an include; that
+  include is also what makes delta git's pager in the first place, without which
+  none of its styling is ever reached. bat can't see a theme until its cache is
+  built, and delta reads that same cache for in-diff highlighting, so without it
+  both are off-scheme and delta falls back to Monokai.
 
-There is no `on_attach` hook, on purpose: declaring one stops fish from being
-able to set the terminal background. See AGENTS.md if you're tempted to add
-one.
+There is no `on_attach` hook. One was tried and the terminal background stopped
+being set while it existed; that was never explained, and there is now reason to
+think it was a different bug with the same symptom — see AGENTS.md if you're
+tempted to add one.
 
 Pointing git at the include is **the only thing the loadout writes outside
 `~/.config`**. It appends a single `include.path` entry and checks first, so an
@@ -162,13 +176,42 @@ include of your own is never replaced or duplicated.
 4. **zellij and the terminal surface is untested.** fish sets the terminal's own
    background, foreground, cursor and 16-colour table over OSC escapes, which is
    what colours the surface behind things that don't paint their own — the
-   prompt, `bat`, `delta`, bottom's widget text. Only the outermost fish emits
-   them, which happens before zellij starts, so the intended path doesn't depend
-   on zellij forwarding them. Whether it forwards a *set* to the host terminal
-   hasn't been confirmed in a real session. Terminals that don't implement a
-   sequence swallow it silently, so the failure mode is "nothing happens" — the
-   Linux console ignores these entirely, and Apple Terminal ignores the
-   background one.
+   prompt, `bat`, `delta`, bottom's widget text. The first apply happens in the
+   outermost fish, before zellij starts, so the intended path doesn't depend on
+   zellij forwarding them; the per-attach re-apply (below) does, because by then
+   the only fish running a prompt is inside a pane. Whether zellij forwards a
+   *set* to the host terminal hasn't been confirmed in a real session.
+   Terminals that don't implement a sequence swallow it silently, so the failure
+   mode is "nothing happens" — the Linux console ignores these entirely, and
+   Apple Terminal ignores the background one.
+
+5. **Re-attaching takes one keypress to come back on-scheme.** A session's shell
+   is started once and outlives the terminals that attach to it, so the palette
+   has to be re-sent per attach — minimal replays the screen when you attach,
+   and a screen replay carries no terminal colours. The config re-sends on the
+   next prompt or command, watching the same file minimal rewrites on every
+   attach to keep `TERM` current. So the first moment after a re-attach can show
+   the previous terminal's colours; pressing return fixes it.
+
+6. **Detaching leaves your local terminal wearing the scheme.** Nothing in the
+   session can notice a detach — fish is still running in there — and what
+   minimal sends the departing terminal resets text attributes and modes but not
+   colours. If that bothers you, reset them where you launch from:
+
+   ```fish
+   function mina
+       min session attach $argv
+       printf '\e]110\e\x5c\e]111\e\x5c\e]112\e\x5c\e]104\e\x5c'
+   end
+   ```
+
+7. **The loadout can collide with a project.** Contributions from a loadout and
+   from a project's `minimal.toml` are merged, and the same variable with two
+   different values — or the same patch destination from two different sources —
+   fails the activation rather than picking a winner. This loadout contributes
+   `SHELL`, `EDITOR`, `PAGER`, `PROMPT_COMMAND` and thirteen patches under
+   `~/.config`, so a project that sets `EDITOR` to anything but `hx` will not
+   activate alongside it. The way out is your user policy's `ignore` list.
 
 ---
 

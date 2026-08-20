@@ -1,3 +1,17 @@
+# The one file in the loadout that has nothing to do with colours: rust-analyzer
+# settings, carried here because they are editor preferences and the editor is
+# what this loadout configures. Rendered with `copy = true` — no placeholders, no
+# scheme name — so it is byte-identical for every scheme.
+#
+# rust-analyzer itself is deliberately NOT in the loadout's package list: a
+# toolchain belongs to the project that needs it, not to a terminal theme.
+# Without it helix simply reports the language server as unavailable, and
+# everything else in the loadout is unaffected.
+#
+# One cost worth knowing: it is a second `dest` under ~/.config/helix, so a
+# project or another loadout patching `.config/helix/languages.toml` conflicts
+# with this one and fails activation rather than merging.
+
 [[language]]
 language-servers = ["rust-analyzer"]
 name = "rust"

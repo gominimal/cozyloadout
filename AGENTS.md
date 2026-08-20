@@ -1,6 +1,3 @@
-| `on_activate` fires on a real session | verified — `min session activate` reported it running |
-| Any `on_attach` hook breaks fish's OSC 11 background | observed; mechanism unexplained |
-| Patches applied before `on_activate` | **unmeasured** — session `$HOME` is isolated, no non-interactive probe |
 # AGENTS.md
 
 Working notes for this repo. [README.md](README.md) covers using the loadout;
@@ -16,7 +13,7 @@ this covers changing it.
    Edit `templates/cozy.toml` for packages and vars, the manifest for patches.
 3. **Re-render and look at the diff** after touching a template:
    `just render && git diff --no-index <old> build/` or just read `build/`.
-4. **Don't commit build artifacts.** `.gitignore` covers `build/`, `cozy.zip`,
+4. **Don't commit build artifacts.** `.gitignore` covers `build/`, `*.zip`,
    `tools/cozy-theme/target/` and `schemes/vendor/`.
 
 ## Architecture
@@ -40,7 +37,14 @@ templates/manifest.toml┘
 
 One `[[file]]` per output: `template`, `out`, `dest`, and `copy = true` for
 files with no colours in them (only `helix/languages.toml` today). `{slug}` in
-`out`/`dest` expands to the scheme slug.
+`out`/`dest` expands to the scheme slug and `{loadout}` to the loadout's name
+(`--loadout`, `LOADOUT` in the justfile, `cozy` by default) — the latter is what
+keeps a renamed loadout from shipping a file called `cozy-delta.gitconfig`.
+
+Values are quoted strings or bare `true`/`false`, and may carry a trailing
+`# comment`. Anything else is an error naming the line: the parser used to
+`trim_matches('"')`, which turned `out = "bat/config" # note` into a filename
+with the comment still attached and rendered to it without complaint.
 
 Adding a file to the loadout is: drop the template in `templates/`, add a
 `[[file]]` block, `just render`, read `build/`. Nothing else — the patches list
@@ -58,12 +62,16 @@ is declared so an old toolchain fails clearly; that floor is *derived* (it's
 where `[char; N]` gained its `Pattern` impl, used in `split_kv`) and has never
 been tested — development was on 1.97.1.
 
-`just test` runs 12 unit tests. They cover both scheme formats, the quoted-`#`
+`just test` runs 15 unit tests. They cover both scheme formats, the quoted-`#`
 parsing hazard, luma-derived variant, `mix` against hand-computed values,
-placeholder errors, and slug/UUID behaviour. Tests each get a **private temp
-directory** — the slug comes from the filename and tests run in parallel in one
-process, so a shared path both clobbers content across threads and collapses
-distinct slugs. Two rounds of confusing failures came from exactly that.
+placeholder errors, slug/UUID behaviour, and the manifest parser — including the
+value-with-a-trailing-comment case, which used to be accepted and silently
+rendered to a path with the comment still glued on. Tests each get a **private
+temp directory** — the slug comes from the filename and tests run in parallel in
+one process, so a shared path both clobbers content across threads and collapses
+distinct slugs. Two rounds of confusing failures came from exactly that; a fixed
+path under the system temp dir has the same problem across concurrent runs, so
+everything goes through `temp_dir()`.
 
 ## Template grammar
 
@@ -85,7 +93,9 @@ drop in. `XX` is `00`–`0F`, uppercase.
 | `{{mix-rgb base0B base0A 50}}` | `165, 182, 76` | Same, in broot's form |
 
 Metadata: `{{scheme-name}}`, `{{scheme-slug}}`, `{{scheme-author}}`,
-`{{scheme-system}}`, `{{scheme-variant}}`, `{{scheme-uuid}}`.
+`{{scheme-system}}`, `{{scheme-variant}}`, `{{scheme-uuid}}`, and
+`{{loadout-name}}` — the loadout's own name, for the files that have to spell it
+(the delta include's path, the hook's `include.path` check).
 `templates/cozy.toml` additionally gets `{{patches}}`.
 
 Sections: `{{#dark}}…{{/dark}}` and `{{#light}}…{{/light}}` keep their body only
@@ -133,54 +143,67 @@ Declared in `templates/cozy.toml`, scripts in `templates/hooks/`:
 on_activate = { type = "external", value = "./hooks/on-activate.sh" }
 ```
 
-**Do not add an `on_attach` hook.** There was one, briefly, as a safety net for
-the bat cache. Declaring *any* `on_attach` hook stops fish's OSC 11 from taking
-effect, so the terminal background never gets set; `min session activate
---no-hooks` restores it. The hook script was not the cause — captured on a pty
-it writes zero bytes, and it runs before fish anyway, so fish's sequence should
-win regardless. `on_attach` is the only event that runs on the attached terminal
-("the other three have no terminal and their output is captured into the daemon
-log"), which is what singles it out. Whatever the mechanism is, it lives in the
-attach path, and minimal was being actively developed when this surfaced —
-re-test before reintroducing one.
+**Do not add an `on_attach` hook without re-testing from scratch.** There was
+one, briefly, as a safety net for the bat cache, and while it existed the
+terminal background stopped being set; `min session activate --no-hooks`
+restored it. That was never explained — the hook script writes zero bytes when
+captured on a pty — and the observation is now doubtful, because the loadout had
+a *second* bug at the time that produces the same symptom on its own: the OSC
+palette was emitted once per shell, so any attach after the first landed on an
+unthemed surface whether a hook existed or not (see *The terminal surface*).
+Both were live at once, and only one of them was understood.
 
-If something genuinely needs to happen per-attach, put it in the fish config:
-that is what sets the terminal colours in the first place, and it demonstrably
-coexists with them.
+What is known about the attach path, from the source rather than from the
+symptom: `Host::attach` publishes the connection env, flushes a `vt100` screen
+dump of the session to the newly attached client, installs the binding, and only
+then runs the `on_attach` hooks, each of which gets the session's pty slave
+opened fresh for write. Nothing there resets a palette. The screen dump does not
+carry one either, which is the actual reason a re-attach comes up unthemed.
+
+If something genuinely needs to happen per-attach, prefer the fish config: it
+already re-applies the palette per attach off the same signal minimal uses for
+`TERM`, and it demonstrably coexists with everything else.
 
 Schema, per <https://minimal.dev/docs/reference/loadouts>: `[[lifecycle_hooks]]`
 is an array of tables; events are `on_activate`, `on_destroy`, `on_attach`,
 `on_detach`; each value is `{ type = "inline"|"external", value = …, timeout = …
 }` with timeout defaulting to 60s and **capped at 300s — over the cap the file
 is rejected at parse time**. External `value` resolves against the directory
-beside the loadout file, which for `cozy.toml` is `cozy/` — exactly where the
-renderer puts things, so `./hooks/x.sh` just works. Setup hooks run in
-declaration order, teardown in reverse. Scripts run under POSIX `sh` unless a
-shebang overrides.
+beside the loadout file, named after the loadout — `cozy.toml`'s scripts live in
+`cozy/`, exactly where the renderer puts things, so `./hooks/x.sh` just works.
+Setup hooks run in declaration order, teardown in reverse. Scripts run under
+POSIX `sh` unless a shebang overrides, and are fed to the interpreter on stdin
+rather than as a file argument.
 
 Four things to keep in mind when editing these:
 
 1. **`on_activate` must never exit non-zero.** "A failing `on_activate` fails
-   the activation — the session does not become attachable." Both scripts end in
-   a bare `exit 0` and guard every step. Verified: with no tools on `PATH` at
-   all, and with a `bat` that exits 3, both still exit 0.
+   the activation — the session does not become attachable." The script ends in
+   a bare `exit 0` and guards every step. Verified: with no tools on `PATH` at
+   all, and with a `bat` that exits 3, it still exits 0.
 2. **No `grep`.** It is *not* in the loadout's package list — `ripgrep` is, and
    coreutils doesn't ship grep. The first draft used `grep -q` for the
    already-configured check; with grep absent the negation inverts and appends a
-   duplicate `include.path` on every activation. Both scripts now use `case`,
-   which is a shell builtin. Verified: three activations with no grep on `PATH`
-   leave exactly one entry.
-3. **POSIX `sh`, not bash.** Check with `dash -n build/cozy/hooks/*.sh`.
-4. **Patch ordering against `on_activate` is undocumented and unmeasured.** It
-   is not guaranteed the `.tmTheme` exists when the activate hook runs, so the
-   hook only builds the cache if the file is there. It could not be measured:
-   session `` is isolated from the host, and `min session attach` has no
-   non-interactive command flag to probe with. Symptom if the ordering is
-   unlucky: `bat --list-themes` in a fresh session omits the scheme, and delta
-   falls back to Monokai. Fix it in the fish config, not with an on_attach hook.
+   duplicate `include.path` on every activation. The script uses `case`, which
+   is a shell builtin. Verified: three activations with no grep on `PATH` leave
+   exactly one entry.
+3. **POSIX `sh`, not bash.** `just check` runs `dash -n` over the rendered
+   hooks.
+4. **Patches land before `on_activate`** — settled from the source, not
+   measured end-to-end. A loadout's patches become filesystem mappings on the
+   sandbox (`EnvPatches` → `Vec<common::FsMapping>`), established when the
+   container is built, and a hook run is not even planned unless there is a
+   session leader pid to inject into. The `.tmTheme` is therefore on disk when
+   the hook runs; the hook still checks, because the check is one stat and a
+   wrong assumption here would otherwise cost the activation. Symptom to watch
+   for if that is ever wrong: `bat --list-themes` in a fresh session omits the
+   scheme, and delta falls back to Monokai. Fix it in the fish config, not with
+   an `on_attach` hook.
 
-The daemon was unreachable on this machine, so the hooks have been run directly
-against throwaway `$HOME`s but **never observed firing from a real session**.
+`min session activate` has reported running the hook, but its **effects have
+never been observed from inside a real session** — the daemon was unreachable
+for most of this work, and a session's `$HOME` is isolated from the host. What
+has been tested is the script itself, run directly against throwaway `$HOME`s.
 
 ### PROMPT_COMMAND — the shell handover
 
@@ -189,12 +212,21 @@ PROMPT_COMMAND = "unset PROMPT_COMMAND; command -v fish >/dev/null && exec fish"
 ```
 
 **Lifecycle hooks cannot replace this**, which is counterintuitive enough to be
-worth writing down. The attach shell is `bash --noprofile -l`, sourcing no
-startup files; there is no documented way to choose what you land in; and
-`on_attach` runs *before* that bash and is timeout-capped, so a hook cannot be
-your interactive session — it would be killed at ≤300s and drop you into bash
-anyway. The reference is explicit: "Interactive setup happens through
-environment variables instead." `PROMPT_COMMAND` is that environment variable.
+worth writing down. The session shell is `bash --noprofile --rcfile <daemon rc>
+-i` — spawned once when the session is created, not per attach — and it sources
+none of your startup files; the one rc it reads is the daemon's own, which
+installs the `DEBUG` trap that keeps `TERM` current and nothing else. There is
+no documented way to choose what you land in. And a hook cannot be your
+interactive session: it is a separate process the daemon spawns against the
+session's pty, and it is timeout-capped, so it would be killed at ≤300s and drop
+you into bash anyway. The reference is explicit: "Interactive setup happens
+through environment variables instead." `PROMPT_COMMAND` is that environment
+variable.
+
+Setting it replaces the launcher's baseline value, and the only thing that costs
+is the orientation banner. `TERM` is deliberately *not* carried by it — the
+daemon uses a shell-owned trap precisely so that a loadout replacing this
+variable stays cheap.
 
 Filed upstream as `minimal#957` — it works, but a shell-specific side door isn't
 an interface.
@@ -232,12 +264,19 @@ Survivable when run by hand once; a trap when it runs automatically. The hook
 checks `--get-all` first and uses `--add`, matching on basename so an entry
 already added as an absolute path is recognised rather than duplicated.
 
-The bat step probes `bat --list-themes` (~8ms measured) and only rebuilds when
-the scheme is absent, so the steady state is one cheap check.
+The bat step checks the `.tmTheme` is on disk and then rebuilds the cache
+unconditionally. An earlier draft probed `bat --list-themes` (~8ms measured) to
+skip a rebuild when the scheme was already cached, which was pointless here: the
+hook runs once per session, against a session that has just been created, so the
+cache is always cold and the probe never skipped anything.
+
+The include this points git at also carries `core.pager`/`interactive.diffFilter`
+— without them delta is styled but never invoked, and diffs page through
+`$PAGER` (which this loadout sets to `bat`) instead.
 
 This setup has lived in three places: `just` recipes run by hand, then a
 guarded block in the fish config, now lifecycle hooks. Each move was a real
-improvement; the *logic* has barely changed, so read the hook scripts rather
+improvement; the *logic* has barely changed, so read the hook script rather
 than reinventing it.
 
 ## Per-tool notes
@@ -248,7 +287,8 @@ than reinventing it.
 | `zellij/themes/theme.kdl` | zellij | UI-component spec (0.41+), not the legacy base-colors block: it states every surface explicitly, so a light scheme doesn't fight the format's dark assumptions |
 | `fish/config.fish` | fish | Hex set explicitly, not via ANSI names; also sets the terminal surface and ANSI table over OSC |
 | `bat/themes/theme.tmTheme` | bat, delta | Sublime `.tmTheme` — the only format bat can load. Scopes mirror the helix theme |
-| `delta/delta.gitconfig` | delta | An include, not a gitconfig. Diff backgrounds are blends |
+| `delta/delta.gitconfig` | delta | An include, not a gitconfig. Sets `core.pager` too, or none of the styling runs. Diff backgrounds are blends |
+| `helix/languages.toml` | helix | The one file with no colours in it — `copy = true`. rust-analyzer settings; the toolchain is the project's to supply |
 | `starship/starship.toml` | starship | Restyles modules only, no `format` |
 | `broot/skins/skin.hjson` | broot | Decimal `rgb()`, plus the `good_to_bad` ramp |
 | `bottom/bottom.toml` | bottom | `[styles]` only; no palette indirection, so hex is inline throughout |
@@ -293,31 +333,84 @@ accents, so a program asking for bright green gets `base01`, a surface grey.
 That's the standard base16 trade, and why fish itself sets hex rather than
 relying on the table.
 
+### The palette is a per-attach fact
+
+The non-obvious part, and the source of a bug that lived here for a while: a
+session shell is spawned **once**, when the session is created, and outlives
+every terminal that attaches to it. The palette therefore cannot be applied once
+per shell. It was, guarded by an exported `__COZY_TERM_THEMED`, and the result
+was that only whichever attach happened to be live for those OSC bytes got a
+themed surface — every later one, and any attach from a different terminal, came
+up unthemed with the guard preventing recovery.
+
+This is the same problem minimal solves for `TERM`, so the fix uses the same
+signal. minimal rewrites `~/.local/state/minimal/attach-env.fish` on **every**
+attach and ships a `vendor_conf.d` hook that sources it from `fish_prompt` and
+`fish_preexec`; the config watches that file's mtime from the same two events
+and re-emits the palette when it changes. Both events, for minimal's own stated
+reason: after a re-attach the prompt on screen was drawn before the detach and
+has already fired its prompt event, so without the preexec half the first
+command you type still runs under the old terminal's palette.
+
+Two consequences worth knowing:
+
+- **Recovery is one keypress, not instant.** Nothing fires on attach itself —
+  the daemon replays a `vt100` screen dump, which restores cells and attributes
+  but carries no OSC palette state. The next prompt or command re-applies.
+- **The watcher is unguarded by `__COZY_TERM_THEMED`,** unlike the initial
+  apply. The outermost fish hands over to zellij and then sits blocked for the
+  rest of the session, so it can never be the one to notice; the fish inside
+  each pane has to. Re-emitting is idempotent, so panes racing costs nothing.
+
+**Detach still leaves the host terminal recoloured**, and that one cannot be
+fixed from in here. `fish_exit` doesn't fire on a detach — fish is still running
+in the session — and no in-session event does. What the daemon sends the
+departing terminal is `Host::unwind_codes`: input-mode diffs, `\e[?1049l`,
+`\e[?25h`, `\e[m`, `\e[?1004l`. That is exactly the right list to add OSC
+`104`/`110`/`111`/`112` to, and it is a one-line change upstream. Until then the
+README documents a host-side wrapper.
+
 ## Verifying changes
 
 ```sh
-just test                                    # 12 unit tests
-just render minimal-dark && just render minimal-light
-fish --no-execute build/cozy/fish/config.fish   # fish syntax check
+just check           # tests, both schemes rendered, syntax checks, TOML parse
+just check-schemes   # every vendored upstream scheme (needs `just fetch-schemes`)
 ```
 
-Beyond that, the checks that have actually caught bugs here:
+Both run in CI (`.github/workflows/ci.yml`). Every check below has caught a real
+bug here at least once, which is why they are recipes now rather than a list of
+things to remember:
 
-- **Render the whole upstream collection.** Loop `schemes/vendor/base16` and
-  `base24` through the binary; 529 files, expect zero failures. `tinted8` is an
-  8-colour system and is correctly rejected.
+- **The unit tests.** 15 of them, covering both parsers.
+- **Both checked-in schemes rendered.** A template that only works for a dark
+  scheme is the easy mistake.
+- **`dash -n` over the rendered hooks.** They run under POSIX `sh` and carry no
+  shebang, so a bashism is a runtime failure in the one script that must never
+  fail.
+- **`fish --no-execute` over the rendered config.**
 - **Parse the generated `cozy.toml` with a real TOML parser.** This is what
   caught the inline-table bug — every scheme was producing invalid TOML.
-  See *Environment* below for finding a Python with `tomllib`.
-- **Walk the quick start in a throwaway clone** with `build/`, `cozy.zip`,
-  `schemes/vendor/` and `target/` removed. This caught `just schemes` exiting 1
-  on a fresh clone — `find` errors on the not-yet-existing vendor directories
-  and `set -o pipefail` propagated it, which took out bare `just` as well since
-  the default recipe calls it.
-- **Build offline** with `CARGO_NET_OFFLINE=true` and an empty `CARGO_HOME`, to
-  keep the no-dependencies claim honest.
+  `just _toml` finds a Python with `tomllib`, including the nix-store one the
+  box in *Environment* needs; it says so loudly rather than passing silently
+  when there is none to be found.
+- **Render the whole upstream collection** (`just check-schemes`).
+  `schemes/vendor/base16` and `base24`, ~530 files, expect zero failures, and
+  the result parsed each time. `tinted8` is an 8-colour system and is correctly
+  rejected.
+- **Walk the quick start from a clean tree** — CI does this with `just clean &&
+  just && just theme && just bundle`. It caught `just schemes` exiting 1 on a
+  fresh clone: `find` errors on the not-yet-existing vendor directories and
+  `set -o pipefail` propagated it, which took out bare `just` as well since the
+  default recipe calls it.
+- **Build offline** with `CARGO_NET_OFFLINE=true`, to keep the
+  no-dependencies claim honest.
+
+Two things CI cannot do, so do them by hand when you touch that code:
+
 - **Sandbox `$HOME`** when testing the first-run setup — it writes
-  `~/.gitconfig`. `env HOME=/tmp/somewhere fish …`.
+  `~/.gitconfig`. `env HOME=/tmp/somewhere sh build/cozy/hooks/on-activate.sh`.
+- **Attach twice, from two different terminals**, when you touch the OSC block.
+  The failure mode it guards against only appears on the second attach.
 
 Colour changes are best checked by diffing the *set* of colours in a rendered
 file against a known-good one, rather than diffing the files, since comments and
@@ -325,8 +418,10 @@ structure move around.
 
 ## Environment
 
-Notes for this machine specifically; verify rather than assume if things look
-odd.
+Notes for **one particular dev machine** — a Darwin host with a nix userland —
+not for this repo in general, and not for CI, which is plain Ubuntu with GNU
+tools. If none of the below matches what you are looking at, you are on a
+different box and it does not apply to you. Verify rather than assume.
 
 - **The tool shell is fish**, so bash-isms (`set -- $x`, arrays, `[[`) fail
   silently or oddly in one-liners. Write a script to a scratchpad file and run
@@ -358,13 +453,18 @@ Worth knowing before relying on any of it:
 | Hooks are idempotent, tolerate missing/broken tools, preserve other git includes | verified against throwaway `$HOME`s |
 | Hook scripts are POSIX-sh clean | verified with `dash -n` |
 | `just` recipes | all run except `install` against the real `~/.config` |
-| Lifecycle hook schema and semantics | taken from the loadouts reference, not observed |
 | `on_activate` fires on a real session | verified — `min session activate` reported running it |
-| Any `on_attach` hook breaks fish's OSC 11 background | observed; `--no-hooks` restores it, mechanism unexplained |
-| Patches applied before `on_activate` | **unmeasured** — session `$HOME` is isolated, and attach has no non-interactive probe |
+| Lifecycle hook schema and semantics | from the loadouts reference; the specifics below are from minimal's source |
+| Loadout identity is the filename, `name` is obsolete | read in `sessions::core::loadout` — a declared `name` loads with a warning and is discarded |
+| Session shell is `bash --noprofile --rcfile <daemon rc> -i`, spawned once per session | read in `minimald::session_host` |
+| Patches applied before `on_activate` | **settled from the source, not measured**: patches are sandbox fs mappings made at container build, and a hook needs a live session leader |
+| Re-attach carries no OSC palette | read in `minimald::session_host` — the attach flush is a `vt100` screen dump |
+| Detach leaves the palette on the host terminal | read in `Host::unwind_codes` — it resets SGR, alt screen, cursor, focus reporting, and no OSC colours |
+| Any `on_attach` hook breaks fish's OSC 11 background | **doubtful** — observed once, but the once-per-shell palette bug produces the same symptom and was live at the same time. Re-test |
 | Rust floor of 1.71 | **derived, never tested** — only 1.97.1 available |
-| `ctrl-w` detaches, per the fish greeting | **unverified** — not in `min --help`, `min session attach --help`, or the binary's strings |
+| `ctrl-w` detaches, per the fish greeting | verified — documented in the CLI reference and in minimal's own orientation banner |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
+| The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |
 
 ## Appendix: the Minimal palettes
 

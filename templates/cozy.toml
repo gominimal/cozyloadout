@@ -2,7 +2,10 @@
 # Edit templates/cozy.toml (packages, vars) or templates/manifest.toml
 # (the patches list) instead.
 
-name = "cozy"
+# No `name`: a loadout is identified by its filename stem, so this file being
+# installed as loadouts/{{loadout-name}}.toml is what names it. The field is
+# obsolete — a file that still carries one loads with a warning that it is no
+# longer required, and the filename wins regardless.
 description = "A cozy developer setup — {{scheme-name}}"
 
 packages = [
@@ -37,6 +40,11 @@ patches = [
 {{patches}}
 ]
 
+# Vars compose across every contributor, and the same name with a *different*
+# value is a hard conflict that fails activation — there is no precedence
+# between a loadout and the project. So a project whose `minimal.toml` sets
+# EDITOR to anything but `hx` will not activate alongside this loadout; the way
+# out is the user policy's `ignore` list, which drops all contributors of a name.
 [vars]
 SHELL  = "fish"
 EDITOR = "hx"
@@ -45,14 +53,22 @@ PAGER  = "bat"
 # Hand `min attach` over to fish, which in turn auto-starts zellij.
 #
 # Lifecycle hooks do NOT replace this, though they look like they should. The
-# attach shell is `bash --noprofile -l` and sources no startup files, there is
-# no documented way to choose what you land in, and on_attach runs *before* that
-# bash and is timeout-capped (60s default, 300s max) — so a hook cannot be your
-# interactive session. The loadouts reference says as much: "Interactive setup
-# happens through environment variables instead."
+# session shell is `bash --noprofile --rcfile <daemon rc> -i`; it reads none of
+# your startup files (the one rc it does read is the daemon's own, which installs
+# the DEBUG trap that keeps TERM current), and there is no documented way to
+# choose what you land in. Nor can a hook stand in for it: a hook is a separate
+# process the daemon spawns against the session's pty, not the shell you are
+# talking to, and it is timeout-capped at 60s by default and 300s at most. The
+# loadouts reference says as much: "Interactive setup happens through
+# environment variables instead."
 #
 # PROMPT_COMMAND is that environment variable: bash takes it from the
 # environment and evaluates it before drawing the first prompt.
+#
+# Setting it here replaces the launcher's baseline value, which costs the
+# orientation banner and nothing else — TERM is kept current by a daemon-owned
+# DEBUG trap that no composition can reach, precisely so that replacing this
+# variable stays cheap.
 #
 # `unset PROMPT_COMMAND` first, for two reasons: it fires once rather than on
 # every prompt, and unset drops it from the exported environment too, so the
@@ -75,25 +91,26 @@ PROMPT_COMMAND = "unset PROMPT_COMMAND; command -v fish >/dev/null && exec fish"
 #
 # External rather than inline: the scripts are long enough to want comments, and
 # an external `value` resolves against the directory beside this file — which is
-# the loadout's own `cozy/` directory, where the renderer already puts them.
+# the loadout's own `{{loadout-name}}/` directory, where the renderer already
+# puts them.
 #
-# on_activate only. There is deliberately NO on_attach hook: it is the one event
-# that runs on your attached terminal, and having any on_attach hook at all stops
-# fish's OSC 11 from taking effect, so the terminal background never gets set.
-# The hook script itself emits nothing — captured on a pty, it writes zero bytes
-# — so this is something about how the attach path handles a terminal-attached
-# hook, not about what the script does. Re-test before adding one back.
+# on_activate only. There is deliberately NO on_attach hook: it was tried once
+# as a safety net for the bat cache, and the terminal background stopped being
+# set while it existed. That was never explained, and it is worth knowing that
+# the loadout also had a second bug at the time which produces the same symptom
+# on its own — the palette was emitted once per shell, so any attach after the
+# first landed unthemed whether a hook existed or not. The fish config now
+# re-applies per attach, so re-test from scratch before concluding anything
+# about on_attach.
 #
-# It existed only as a safety net for the case where `patches` land after
-# on_activate, leaving the .tmTheme absent when the cache is built. That
-# ordering is still undocumented and still unmeasured — session `$HOME` is
-# isolated from the host, so the hook's effects can't be observed from outside,
-# and `min session attach` has no non-interactive `--command` flag to probe with.
+# The safety net itself is no longer needed: patches are filesystem mappings
+# established when the sandbox is built, and a hook cannot run before there is a
+# session leader to run it in, so the .tmTheme is on disk by the time
+# on_activate fires. The hook still checks, because the check is one stat.
 #
 # If `bat --list-themes` inside a fresh session does not list the scheme, that
-# is this gap: patches landed after the hook. The fix is a rebuild in the fish
-# config, NOT an on_attach hook — the fish config sets the terminal colours
-# itself and demonstrably coexists with them.
+# assumption is what to re-examine first — and the fix is a rebuild in the fish
+# config, NOT an on_attach hook.
 [[lifecycle_hooks]]
-description = "cozy: point git at delta's include, build bat's theme cache"
+description = "{{loadout-name}}: point git at delta's include, build bat's theme cache"
 on_activate = { type = "external", value = "./hooks/on-activate.sh" }

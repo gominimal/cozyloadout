@@ -8,6 +8,11 @@ SCHEMES := "schemes"
 BUILD   := "build"
 RENDER  := "cargo run --quiet --release --manifest-path tools/cozy-theme/Cargo.toml --"
 
+# The loadout's name. It is the stem of the file minimal identifies the loadout
+# by, the directory its hook scripts are anchored in, and the `{loadout}` token
+# in templates/manifest.toml — so changing it here renames all three together.
+LOADOUT := "cozy"
+
 # Show the recipes and the schemes on hand.
 default:
     @just --list --unsorted
@@ -32,8 +37,12 @@ _render scheme:
     # Resolve into a variable first. A command substitution used directly as an
     # argument has its exit status discarded even under `set -e`, so inlining
     # this would run the renderer on "" after a failed lookup.
-    path=$(just _resolve {{scheme}})
-    {{RENDER}} "$path" --templates templates --out {{BUILD}}
+    #
+    # Quoted: `{{scheme}}` is pasted into this script as literal text, so an
+    # unquoted one hands the shell whatever the caller typed —
+    # `just theme '$(...)'` would run it.
+    path=$(just _resolve "{{scheme}}")
+    {{RENDER}} "$path" --templates templates --out {{BUILD}} --loadout {{LOADOUT}}
 
 # Resolve a scheme argument to a path: an existing path is used as-is, a bare
 # name is searched for anywhere under schemes/ (the upstream collection nests
@@ -137,27 +146,121 @@ fetch-schemes:
 bundle:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ ! -f "{{BUILD}}/cozy.toml" ]]; then
+    if [[ ! -f "{{BUILD}}/{{LOADOUT}}.toml" ]]; then
         echo "nothing built yet — run \`just theme <scheme>\`" >&2
         exit 1
     fi
-    rm -f cozy.zip
-    cd "{{BUILD}}" && zip -qr ../cozy.zip cozy.toml cozy
-    echo "cozy.zip"
+    rm -f {{LOADOUT}}.zip
+    cd "{{BUILD}}" && zip -qr ../{{LOADOUT}}.zip {{LOADOUT}}.toml {{LOADOUT}}
+    echo "{{LOADOUT}}.zip"
 
 # There is nothing to run afterwards: bat's theme cache and delta's gitconfig
 # include are handled by the loadout's lifecycle hooks.
 [doc('Install the bundled loadout into ~/.config/minimal/loadouts/')]
 install: bundle
-    mkdir -p ~/.config/minimal/loadouts
-    unzip -oq cozy.zip -d ~/.config/minimal/loadouts
-    @echo "installed. Apply the loadout and attach."
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir=~/.config/minimal/loadouts
+    mkdir -p "$dir"
+    # Delete the loadout tree before unzipping over it. `unzip -o` overwrites
+    # but never removes, so without this every scheme you have ever installed
+    # leaves its <slug>.tmTheme, <slug>.toml, <slug>.kdl and <slug>.hjson behind
+    # in the loadout directory forever. Only this loadout's own generated tree
+    # is removed — nothing else under loadouts/ is touched.
+    rm -rf "$dir/{{LOADOUT}}"
+    unzip -oq {{LOADOUT}}.zip -d "$dir"
+    echo "installed into $dir. Apply the loadout and attach."
 
 # Run the renderer's tests.
 test:
     cargo test --quiet --release --manifest-path tools/cozy-theme/Cargo.toml
 
+# Everything CI runs, and everything worth running before a commit: the unit
+# tests, both checked-in schemes rendered, the shell and fish files syntax
+# checked, and the generated loadout TOML parsed by something that is not our
+# own parser. Each of these has caught a real bug — see AGENTS.md.
+[doc('Run the full local check suite (tests, renders, syntax, TOML validity)')]
+check: test
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for scheme in minimal-dark minimal-light; do
+        echo "--- $scheme"
+        just render "$scheme"
+        just _validate
+    done
+    echo "--- ok"
+
+# Syntax and validity checks over whatever is currently in build/. Split out so
+# `check` and `check-schemes` can both use it.
+_validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    # POSIX sh, not bash: minimal runs hook scripts under sh unless a shebang
+    # says otherwise, and these deliberately carry none. dash is the strictest
+    # sh commonly to hand; fall back to whatever /bin/sh is.
+    for hook in {{BUILD}}/{{LOADOUT}}/hooks/*.sh; do
+        if command -v dash >/dev/null 2>&1; then dash -n "$hook"; else sh -n "$hook"; fi
+    done
+    if command -v fish >/dev/null 2>&1; then
+        fish --no-execute {{BUILD}}/{{LOADOUT}}/fish/config.fish
+    else
+        echo "  (skipped: no fish to syntax-check the config with)" >&2
+    fi
+    just _toml {{BUILD}}/{{LOADOUT}}.toml
+
+# Parse a TOML file with a real parser. This is what caught the generated
+# cozy.toml being invalid TOML for every scheme — minimal's parser tolerated the
+# wrapped inline tables it used to emit, so nothing else noticed.
+_toml file:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    py=""
+    for candidate in python3 python3.13 python3.12 python3.11; do
+        if command -v "$candidate" >/dev/null 2>&1 \
+           && "$candidate" -c 'import tomllib' 2>/dev/null; then
+            py="$candidate"; break
+        fi
+    done
+    # AGENTS.md: the system python3 on the dev box is 3.9 with no tomllib, and a
+    # newer one lives in the nix store under a path that keeps changing.
+    if [[ -z "$py" ]]; then
+        for candidate in /nix/store/*/bin/python3.1[1-9]; do
+            if [[ -x "$candidate" ]] && "$candidate" -c 'import tomllib' 2>/dev/null; then
+                py="$candidate"; break
+            fi
+        done
+    fi
+    if [[ -z "$py" ]]; then
+        echo "NOT CHECKED: {{file}} — no python with tomllib on this machine" >&2
+        exit 0
+    fi
+    "$py" -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "{{file}}"
+
+# Renders every vendored scheme and parses the result. Slow (a few minutes for
+# ~530 schemes) and needs `just fetch-schemes` first, so it is not part of
+# `just check`; CI runs it on its own.
+[doc('Render every vendored upstream scheme and check each result parses')]
+check-schemes:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dirs=()
+    for d in "{{SCHEMES}}/vendor/base16" "{{SCHEMES}}/vendor/base24"; do
+        [[ -d "$d" ]] && dirs+=("$d")
+    done
+    if (( ${#dirs[@]} == 0 )); then
+        echo "no vendored schemes — run \`just fetch-schemes\` first" >&2
+        exit 1
+    fi
+    n=0
+    while IFS= read -r scheme; do
+        just render "$scheme" >/dev/null
+        just _toml {{BUILD}}/{{LOADOUT}}.toml
+        n=$((n + 1))
+    done < <(find "${dirs[@]}" \( -name '*.yaml' -o -name '*.yml' \) | sort)
+    echo "$n schemes rendered, every generated {{LOADOUT}}.toml parses"
+
 # Drop build artefacts. Leaves schemes/vendor/ alone.
 clean:
-    rm -rf {{BUILD}} cozy.zip
+    rm -rf {{BUILD}} {{LOADOUT}}.zip
     cargo clean --quiet --manifest-path tools/cozy-theme/Cargo.toml

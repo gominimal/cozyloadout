@@ -4,8 +4,9 @@
 # Edit templates/hooks/on-activate.sh instead; see AGENTS.md.
 #
 # Runs once, when the session is created. Declared as a lifecycle hook in
-# cozy.toml; minimal runs hook scripts under POSIX sh unless a shebang says
-# otherwise, so this file deliberately has no shebang and no bashisms.
+# {{loadout-name}}.toml; minimal runs hook scripts under POSIX sh unless a
+# shebang says otherwise, so this file deliberately has no shebang and no
+# bashisms.
 #
 # EVERY PATH THROUGH THIS FILE MUST EXIT 0. A failing on_activate fails the
 # activation and the session never becomes attachable — nothing here is worth
@@ -37,8 +38,8 @@ slug='{{scheme-slug}}'
 if command -v git >/dev/null 2>&1; then
     existing=$(git config --global --get-all include.path 2>/dev/null || true)
     case "$existing" in
-        *cozy-delta.gitconfig*) ;; # already pointed at ours, in any spelling
-        *) git config --global --add include.path '~/.config/git/cozy-delta.gitconfig' || true ;;
+        *{{loadout-name}}-delta.gitconfig*) ;; # already pointed at ours, in any spelling
+        *) git config --global --add include.path '~/.config/git/{{loadout-name}}-delta.gitconfig' || true ;;
     esac
 fi
 
@@ -47,9 +48,10 @@ fi
 # rebuilt. delta reads the same cache for in-diff highlighting, so skipping this
 # leaves both off-scheme and delta falls back to Monokai.
 #
-# Whether `patches` are applied before or after on_activate is not documented,
-# so this only fires when the theme file is actually on disk. hooks/on-attach.sh
-# covers the other ordering.
+# Guarded on the theme file existing. Patches are filesystem mappings made when
+# the sandbox is built and this hook cannot run before there is a session leader
+# to run it in, so it should always be there — the check costs one stat and
+# keeps a wrong assumption from turning into a failed activation.
 if command -v bat >/dev/null 2>&1 && [ -f "$HOME/.config/bat/themes/$slug.tmTheme" ]; then
     bat cache --build >/dev/null 2>&1 || true
 fi

@@ -1,6 +1,7 @@
 # Build output. `just theme` deletes and rewrites build/ on every run.
+# The zip is named after the loadout (LOADOUT in the justfile).
 /build/
-/cozy.zip
+/*.zip
 
 # Renderer build artifacts.
 /tools/cozy-theme/target/

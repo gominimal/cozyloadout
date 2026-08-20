@@ -68,7 +68,6 @@ const SLOTS: [&str; 16] = [
     "base09", "base0A", "base0B", "base0C", "base0D", "base0E", "base0F",
 ];
 
-#[allow(dead_code)]
 struct Scheme {
     slug: String,
     name: String,
@@ -352,6 +351,44 @@ struct Entry {
     copy: bool,
 }
 
+/// One right-hand side: a quoted string or a bare boolean.
+enum Value {
+    Str(String),
+    Bool(bool),
+}
+
+/// Parse a `key = value` right-hand side, allowing a trailing `# comment`.
+///
+/// Worth writing out rather than reaching for `trim_matches('"')`, which is the
+/// obvious version and is wrong: it turns `out = "bat/config"  # note` into
+/// `bat/config" # note` and then writes a file under that name without a word of
+/// complaint. The manifest is the most comment-heavy file in the repo, and
+/// silently rendering to a garbage path is exactly the failure mode the template
+/// grammar refuses to have.
+fn parse_value(raw: &str) -> Result<Value, String> {
+    let raw = raw.trim();
+    if let Some(rest) = raw.strip_prefix('"') {
+        let end = rest.find('"').ok_or_else(|| format!("unterminated string: {raw:?}"))?;
+        let tail = rest[end + 1..].trim();
+        if !tail.is_empty() && !tail.starts_with('#') {
+            return Err(format!("trailing {tail:?} after a quoted value"));
+        }
+        return Ok(Value::Str(rest[..end].to_string()));
+    }
+    // Bare: only booleans, and only the two spellings TOML has. `copy = yes`
+    // used to read as false.
+    let bare = match raw.find('#') {
+        Some(i) => raw[..i].trim(),
+        None => raw,
+    };
+    match bare {
+        "true" => Ok(Value::Bool(true)),
+        "false" => Ok(Value::Bool(false)),
+        "" => Err("no value".into()),
+        other => Err(format!("{other:?} is neither a quoted string nor true/false")),
+    }
+}
+
 /// Enough TOML for `[[file]]` tables of string and boolean keys. Deliberately
 /// not a general parser — the manifest is ours, and a real one would be the
 /// tool's only dependency.
@@ -388,14 +425,19 @@ fn parse_manifest(path: &Path) -> Result<Vec<Entry>, String> {
         let e = cur
             .as_mut()
             .ok_or_else(|| format!("{}:{}: key outside [[file]]", path.display(), n + 1))?;
-        let v = v.trim();
-        let sval = || v.trim_matches('"').to_string();
-        match k.trim() {
-            "template" => e.0 = sval(),
-            "out" => e.1 = sval(),
-            "dest" => e.2 = Some(sval()),
-            "copy" => e.3 = v.starts_with("true"),
-            other => return Err(format!("{}:{}: unknown key {other:?}", path.display(), n + 1)),
+        let at = |msg: String| format!("{}:{}: {msg}", path.display(), n + 1);
+        let key = k.trim();
+        let value = parse_value(v).map_err(|why| at(format!("{key}: {why}")))?;
+        match (key, value) {
+            ("template", Value::Str(s)) => e.0 = s,
+            ("out", Value::Str(s)) => e.1 = s,
+            ("dest", Value::Str(s)) => e.2 = Some(s),
+            ("copy", Value::Bool(b)) => e.3 = b,
+            ("template" | "out" | "dest", _) => {
+                return Err(at(format!("{key} takes a quoted string")));
+            }
+            ("copy", _) => return Err(at("copy takes true or false".into())),
+            (other, _) => return Err(at(format!("unknown key {other:?}"))),
         }
     }
     flush(cur, &mut entries)?;
@@ -464,18 +506,29 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn build(args: &Args) -> Result<(), String> {
+    // The loadout name is the stem of the file minimal identifies the loadout
+    // by, and the name of the directory its hook scripts are anchored in, so it
+    // has to be a single path component. minimal applies the same rule.
+    if args.loadout.is_empty() || args.loadout.contains(['/', '\\']) {
+        return Err(format!(
+            "--loadout {:?}: must be a non-empty name, with no slashes",
+            args.loadout
+        ));
+    }
+
     let scheme = Scheme::load(&args.scheme)?;
     let manifest_path =
         args.manifest.clone().unwrap_or_else(|| args.templates.join("manifest.toml"));
     let entries = parse_manifest(&manifest_path)?;
-    let vars = scheme.vars();
+    let mut vars = scheme.vars();
+    vars.insert("loadout-name".into(), args.loadout.clone());
 
     let root = args.out.join(&args.loadout);
     if root.exists() {
         fs::remove_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     }
 
-    let sub = |s: &str| s.replace("{slug}", &scheme.slug);
+    let sub = |s: &str| s.replace("{slug}", &scheme.slug).replace("{loadout}", &args.loadout);
     let mut patches = String::new();
 
     for e in &entries {
@@ -496,9 +549,9 @@ fn build(args: &Args) -> Result<(), String> {
             // table, so the wrapped `{ dest = …,\n source = … }` form this
             // file used to be written in was not actually valid TOML — it
             // survived only because minimal's parser tolerates it.
-            let _ = write!(
+            let _ = writeln!(
                 patches,
-                "    {{ dest = \"{}\", source = \"~/.config/minimal/loadouts/{}/{}\" }},\n",
+                "    {{ dest = \"{}\", source = \"~/.config/minimal/loadouts/{}/{}\" }},",
                 sub(dest),
                 args.loadout,
                 out_rel
@@ -511,7 +564,6 @@ fn build(args: &Args) -> Result<(), String> {
     // wasn't rendered.
     let toml_src = args.templates.join(format!("{}.toml", args.loadout));
     let body = fs::read_to_string(&toml_src).map_err(|e| format!("{}: {e}", toml_src.display()))?;
-    let mut vars = vars;
     vars.insert("patches".into(), patches.trim_end().trim_end_matches(',').to_string());
     let body =
         render(&body, &vars, &scheme).map_err(|e| format!("{}: {e}", toml_src.display()))?;
@@ -542,19 +594,34 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// The slug comes from the filename, and tests run in parallel in one
-    /// process, so every call gets a private directory. A shared path would
-    /// both clobber content across threads and collapse distinct slugs.
-    fn scheme_for(slug: &str, text: &str) -> Scheme {
+    /// A private directory per call. The slug comes from the filename and tests
+    /// run in parallel in one process, so a shared path would both clobber
+    /// content across threads and collapse distinct slugs — and a *fixed* path
+    /// under the system temp dir is worse still, since it can be owned by
+    /// another user or another checkout's test run. Every test that touches the
+    /// filesystem goes through here or [`temp_dir`].
+    fn temp_dir() -> PathBuf {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir()
             .join(format!("cozy-theme-test-{}", std::process::id()))
             .join(n.to_string());
         fs::create_dir_all(&dir).unwrap();
-        let p = dir.join(format!("{slug}.yaml"));
+        dir
+    }
+
+    /// Write `text` to `<private dir>/<slug>.yaml` and load it.
+    fn scheme_for(slug: &str, text: &str) -> Scheme {
+        let p = temp_dir().join(format!("{slug}.yaml"));
         fs::write(&p, text).unwrap();
         Scheme::load(&p).unwrap()
+    }
+
+    /// Write `text` to a private directory and parse it as a manifest.
+    fn manifest_for(text: &str) -> Result<Vec<Entry>, String> {
+        let p = temp_dir().join("manifest.toml");
+        fs::write(&p, text).unwrap();
+        parse_manifest(&p)
     }
 
     const CURRENT: &str = r##"
@@ -680,9 +747,7 @@ base0f: d65d0e
 
     #[test]
     fn missing_slots_are_rejected() {
-        let dir = std::env::temp_dir().join("cozy-theme-test-partial");
-        fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("partial.yaml");
+        let p = temp_dir().join("partial.yaml");
         fs::write(&p, "palette:\n  base00: \"#000000\"\n").unwrap();
         let err = match Scheme::load(&p) { Ok(_) => panic!("expected failure"), Err(e) => e };
         assert!(err.contains("missing 15 of 16 slots"), "{err}");
@@ -693,9 +758,7 @@ base0f: d65d0e
         // The upstream collection ships tinted8 schemes alongside base16 ones.
         // They have named 8-colour keys, so every slot is "missing" — the error
         // should name the system rather than imply a corrupt base16 file.
-        let dir = std::env::temp_dir().join("cozy-theme-test-tinted8");
-        fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("nord.yaml");
+        let p = temp_dir().join("nord.yaml");
         fs::write(
             &p,
             "scheme:\n  system: \"tinted8\"\n  name: \"Nord\"\npalette:\n  black: \"#2e3440\"\n",
@@ -707,6 +770,69 @@ base0f: d65d0e
         };
         assert!(err.contains("tinted8"), "{err}");
         assert!(err.contains("no base16 slots"), "{err}");
+    }
+
+    #[test]
+    fn manifest_parses_entries() {
+        let m = manifest_for(
+            r#"
+            # a comment
+            [[file]]
+            template = "fish/config.fish"
+            out      = "fish/config.fish"
+            dest     = ".config/fish/config.fish"
+
+            [[file]]
+            template = "helix/languages.toml"
+            out      = "helix/languages.toml"
+            copy     = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].out, "fish/config.fish");
+        assert_eq!(m[0].dest.as_deref(), Some(".config/fish/config.fish"));
+        assert!(!m[0].copy);
+        assert_eq!(m[1].dest, None);
+        assert!(m[1].copy);
+    }
+
+    #[test]
+    fn manifest_values_keep_their_trailing_comments_out() {
+        // The failure this guards: `trim_matches('"')` leaves the comment glued
+        // to the value, and the renderer then writes a file called
+        // `config.fish" # note` without complaining.
+        let m = manifest_for(
+            r#"
+            [[file]]
+            template = "bat/config"   # no colours in here
+            out      = "bat/config"
+            copy     = false          # ...but the scheme name is
+            "#,
+        )
+        .unwrap();
+        assert_eq!(m[0].template, "bat/config");
+        assert!(!m[0].copy);
+    }
+
+    #[test]
+    fn manifest_rejects_what_it_cannot_understand() {
+        let bad = [
+            // Unquoted string: would have been taken as-is before.
+            "[[file]]\ntemplate = bat/config\nout = \"bat/config\"\n",
+            // `copy = yes` used to read as false.
+            "[[file]]\ntemplate = \"a\"\nout = \"b\"\ncopy = yes\n",
+            // Junk after a closing quote.
+            "[[file]]\ntemplate = \"a\" oops\nout = \"b\"\n",
+            "[[file]]\ntemplate = \"unterminated\nout = \"b\"\n",
+            "[[file]]\ntemplate = \"a\"\nout = \"b\"\nwat = \"x\"\n",
+            "template = \"a\"\n",         // key outside [[file]]
+            "[[file]]\ntemplate = \"a\"\n", // no `out`
+            "# nothing but a comment\n",
+        ];
+        for m in bad {
+            assert!(manifest_for(m).is_err(), "should have been rejected:\n{m}");
+        }
     }
 
     #[test]

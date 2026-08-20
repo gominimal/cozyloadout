@@ -8,5 +8,10 @@ locked_commit = "d0c6b61c4eb29c35d22e65979ad1d72ed974c80d"
 [defaults]
 state_key = "dev"
 
+[stack]
+use = "rust"
+runtime_packages = []
+
+
 [session] # min attach
 packages = []

@@ -5,22 +5,39 @@
 #
 # delta has no config file of its own; it reads its settings out of git config.
 # This file is therefore an *include*, not a replacement for your ~/.gitconfig —
-# the loadout drops it at ~/.config/git/cozy-delta.gitconfig and git is pointed
-# at it by the on_activate lifecycle hook, with:
+# the loadout drops it at ~/.config/git/{{loadout-name}}-delta.gitconfig and git
+# is pointed at it by the on_activate lifecycle hook, with:
 #
-#     git config --global --add include.path ~/.config/git/cozy-delta.gitconfig
+#     git config --global --add include.path ~/.config/git/{{loadout-name}}-delta.gitconfig
 #
 # --add rather than a plain set, and only after checking the existing values:
 # `git config --global include.path X` replaces what is already there, which
 # would silently drop an include of your own.
 #
 # Syntax highlighting inside diffs comes from bat's theme cache, so this depends
-# on cozy/bat/themes/{{scheme-slug}}.tmTheme being installed and bat's cache
-# rebuilt — also handled on attach.
+# on {{loadout-name}}/bat/themes/{{scheme-slug}}.tmTheme being installed and bat's cache
+# rebuilt — which the on_activate lifecycle hook does.
 #
 # Every style value is quoted on purpose: in git config `#` starts a comment, so
 # an unquoted `minus-style = syntax #341919` parses as an empty value and delta
 # silently falls back to its defaults.
+
+# Styling delta is not enough to make git *use* it: delta is a pager, and git
+# picks one from GIT_PAGER, then core.pager, then $PAGER, then its built-in
+# less. Without the two settings below, every `[delta]` section in this file is
+# inert and diffs page through whatever $PAGER holds — which the loadout sets to
+# `bat`. `diffFilter` is the same wiring for `git add -p`, where delta filters
+# the diff rather than paging it.
+#
+# Note this include is *appended* to your git config, and git takes the last
+# value of a single-valued key, so these win over a core.pager you set earlier.
+# That is the intent — the loadout is what put delta in the session — but it is
+# the one place the include overrides rather than adds.
+[core]
+	pager = delta
+
+[interactive]
+	diffFilter = delta --color-only
 
 [delta]
 	features = {{scheme-slug}}

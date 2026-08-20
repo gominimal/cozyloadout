@@ -1,0 +1,62 @@
+# The checks AGENTS.md lists under "Verifying changes". Each of them has caught
+# a real bug in this repo at least once, and all of them used to be manual.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # fish for `fish --no-execute`, dash for the POSIX-sh hook check, zip for
+      # `just bundle`. The runner already has cargo, python3 (3.12, so tomllib)
+      # and unzip.
+      #
+      # `cargo install just` rather than a third-party setup action: it costs a
+      # minute or so, and it keeps this workflow's supply chain to actions/
+      # checkout plus crates.io, which the repo already depends on.
+      - name: Install the tools the recipes need
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends fish dash zip
+          cargo install just --locked
+
+      # The renderer has no dependencies, which is a claim worth keeping honest:
+      # with the registry unreachable, a build that reaches for one fails here
+      # rather than in someone's offline session.
+      - name: Build offline
+        env:
+          CARGO_NET_OFFLINE: "true"
+        run: cargo build --release --manifest-path tools/cozy-theme/Cargo.toml
+
+      - name: Check
+        run: just check
+
+      # The quick start, from a tree with nothing built. Catches recipes that
+      # only work once build/ or schemes/vendor/ already exists — `just schemes`
+      # exiting 1 on a fresh clone took out bare `just` this way.
+      - name: Walk the quick start
+        run: |
+          just clean
+          just
+          just theme
+          just bundle
+
+  # Separate job: it clones ~530 upstream schemes and renders every one, which
+  # is minutes rather than seconds.
+  all-schemes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the tools the recipes need
+        run: cargo install just --locked
+      - run: just fetch-schemes
+      - run: just check-schemes
