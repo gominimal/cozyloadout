@@ -14,4 +14,4 @@ runtime_packages = []
 
 
 [session] # min attach
-packages = []
+packages = ["just", "util-linux"]
