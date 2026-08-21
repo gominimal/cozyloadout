@@ -1,8 +1,10 @@
 # cozy
 
 A themed terminal loadout for [minimal](https://github.com/gominimal/pkgs):
-fish, helix, zellij, starship, bat, delta, broot and bottom, all wearing the
-same base16 colour scheme.
+fish, helix, zellij, starship, bat, delta, broot, bottom, atuin, lazygit and
+tealdeer, all wearing the same base16 colour scheme — plus jq, difftastic, duf
+and man-page rendering, which are themed through the environment rather than a
+config file.
 
 Rather than shipping hand-maintained config files, this repo ships *templates*
 and a small renderer. You hand it a base16 scheme; it generates every config
@@ -61,9 +63,9 @@ That is the whole list. Two things it deliberately does **not** include:
 - **Crate dependencies.** The renderer has none, so `cargo` never reaches the
   network and the build works offline.
 - **The tools being themed.** You do not need helix, zellij, starship, bat,
-  delta, broot or bottom installed to build or install the loadout — no recipe
-  invokes any of them. minimal installs them when the loadout is applied, and
-  the session setup runs inside the session.
+  delta, broot, bottom, atuin, lazygit or tealdeer installed to build or
+  install the loadout — no recipe invokes any of them. minimal installs them
+  when the loadout is applied, and the session setup runs inside the session.
 
 ---
 

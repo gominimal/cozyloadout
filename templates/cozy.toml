@@ -33,7 +33,8 @@ packages = [
   "iproute2",
   "procps-ng",
   "man-db",
-  "zip",
+  # No `zip` counterpart: the MPR has no zip-creating package, only `unzip`.
+  # `tar` covers archive creation.
   "unzip",
   "jq",
   "patch",
@@ -48,11 +49,11 @@ packages = [
   "util-linux",
   "tokei",
   "hyperfine",
-  "bandwich",
+  "bandwhich",
   "gh",
   "grep",
   "sed",
-  "awk",
+  "gawk", # the package is `gawk`; there is no `awk`
   "findutils",
   "tar",
   "gzip",

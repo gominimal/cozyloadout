@@ -292,6 +292,10 @@ than reinventing it.
 | `starship/starship.toml` | starship | Restyles modules only, no `format` |
 | `broot/skins/skin.hjson` | broot | Decimal `rgb()`, plus the `good_to_bad` ramp |
 | `bottom/bottom.toml` | bottom | `[styles]` only; no palette indirection, so hex is inline throughout |
+| `atuin/themes/theme.toml` | atuin | The second tool with theme-name indirection after helix. Keys are the `Meaning` enum in PascalCase — the camelCase in atuin's source is a `strum` Display impl, not the serde one |
+| `atuin/config.toml` | atuin | Names the slug the theme file renders to; the two entries move together. Also carries preferences, as helix's config does |
+| `lazygit/config.yml` | lazygit, delta, difftastic | Colours inline, like bottom's. `git.diffRenderers` wires up delta (`stdinFilter`) and difftastic (`extDiff` — difft takes paths, not stdin) |
+| `tealdeer/config.toml` | tealdeer | `[style.*]` blocks; colours are an externally-tagged enum, so truecolour is `{ rgb = { r = …, g = …, b = … } }`. `auto_update` matters: a cold cache means `tldr` errors on arrival |
 
 ### Format footguns
 
@@ -315,6 +319,25 @@ than reinventing it.
 - **just** `--list` shows only the **last** line of a preceding comment block.
   Recipes with multi-line comments carry a `[doc('…')]` attribute, or the
   listing displays a fragment of prose.
+- **The template grammar has no escape, and that includes comments.**
+  `expand_sections` and `render` walk the whole file before either knows what
+  the file is, so a dark/light marker named in prose counts towards the
+  open/close balance and a doubled-brace placeholder in prose is an unknown
+  name. Both are hard render errors. This bites twice here: describing the
+  section markers in a comment, and quoting lazygit's own `diffContext`
+  template variable, which is spelled with the same doubled braces. Say what
+  the construct does instead of writing it out.
+- **lazygit** is strict about *keys* and silent about *values*. An unknown key
+  fails startup — good — but `theme.GetTextStyle` falls through when a colour
+  is neither an attribute name, a name in its `ColorMap`, nor a valid hex
+  value, so a typo'd triplet is an unstyled widget with no message. broot's
+  failure mode, on a tool that otherwise validates.
+- **tealdeer** is the reverse: `RawConfig` has no `deny_unknown_fields`, so a
+  mistyped section is ignored and the page renders unstyled.
+- **atuin** resolves a theme by *filename* (`themes/<name>.toml`, where
+  `<name>` is what `config.toml` asks for). The `name` inside the theme file is
+  its own declaration and does not select it — keep them equal anyway, and
+  remember they are two manifest entries that have to move together.
 
 ## The terminal surface
 
@@ -465,6 +488,10 @@ Worth knowing before relying on any of it:
 | `ctrl-w` detaches, per the fish greeting | verified — documented in the CLI reference and in minimal's own orientation banner |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
 | The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |
+| atuin, lazygit and tealdeer config *schemas* | verified against the upstream source at the versions the MPR pins (atuin 18.19.0, lazygit 0.64.1, tealdeer 1.8.1) — the generated files were deserialised with those crates' derives transcribed and `deny_unknown_fields` on, so every key is one upstream reads |
+| Those three configs *in a running tool* | **unverified** — none of the three was installed where this was written. Schema-correct is not the same as looking right |
+| `col -bx` + `MANROFFOPT=-c` is what bat needs for man pages | derived — groff emits SGR rather than overstrike from 1.23 on and the MPR pins 1.24.1, so `-c` is required rather than cargo-culted. Not run |
+| atuin must init *after* fzf to win ctrl-r | **derived, not measured** — both bind the key and last writer wins. If ctrl-r ever gives a flat history search, this ordering is the first thing to check |
 
 ## Appendix: the Minimal palettes
 

@@ -96,3 +96,31 @@ dest     = ".config/broot/skins/{slug}.hjson"
 template = "bottom/bottom.toml"
 out      = "bottom/bottom.toml"
 dest     = ".config/bottom/bottom.toml"
+
+# atuin is the second tool after helix with real theme-name indirection: the
+# config names a theme and atuin goes looking for `<name>.toml` in themes/. The
+# two entries have to move together — config.toml renders {{scheme-slug}} into
+# its `[theme] name`, and the theme file renders to {slug}.toml.
+[[file]]
+template = "atuin/config.toml"
+out      = "atuin/config.toml"
+dest     = ".config/atuin/config.toml"
+
+[[file]]
+template = "atuin/themes/theme.toml"
+out      = "atuin/themes/{slug}.toml"
+dest     = ".config/atuin/themes/{slug}.toml"
+
+# lazygit has no theme-name concept — colours are inline, like bottom's. It also
+# wires up delta and difftastic as diff renderers, both of which the loadout
+# ships; delta picks up its own styling from the git include below.
+[[file]]
+template = "lazygit/config.yml"
+out      = "lazygit/config.yml"
+dest     = ".config/lazygit/config.yml"
+
+# tealdeer's directory is named after the crate, not the `tldr` command.
+[[file]]
+template = "tealdeer/config.toml"
+out      = "tealdeer/config.toml"
+dest     = ".config/tealdeer/config.toml"
