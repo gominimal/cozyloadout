@@ -38,7 +38,6 @@ packages = [
   "unzip",
   "jq",
   "patch",
-  "rsync",
   "openssh",
   "ca-certificates",
   "atuin",
