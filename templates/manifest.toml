@@ -75,6 +75,17 @@ template = "delta/delta.gitconfig"
 out      = "delta/{loadout}-delta.gitconfig"
 dest     = ".config/git/{loadout}-delta.gitconfig"
 
+# git's own settings — conflict style, diff algorithm, move detection, and
+# difftastic wired up as `git dft`. A second include rather than more of the
+# delta one, so a file named after delta doesn't end up deciding how merge
+# conflicts are formatted; the same hook adds both. `copy = true`: no colours
+# and no scheme name, so it is identical for every scheme.
+[[file]]
+template = "git/git.gitconfig"
+out      = "git/{loadout}-git.gitconfig"
+dest     = ".config/git/{loadout}-git.gitconfig"
+copy     = true
+
 [[file]]
 template = "starship/starship.toml"
 out      = "starship/starship.toml"

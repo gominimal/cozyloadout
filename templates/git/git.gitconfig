@@ -1,0 +1,105 @@
+# Git settings that the loadout's own tools depend on.
+#
+# Rendered with `copy = true` — no colours, no scheme name — so it is
+# byte-identical for every scheme. Anything here that needs the palette belongs
+# in delta/delta.gitconfig instead, which is themed.
+#
+# This is a *second* include, separate from the delta one, and the split is on
+# purpose. delta has no config file of its own and reads `[delta]` out of git
+# config, so that file is delta's config in the only place delta will look for
+# it. This file is not that: it is git's own settings, and mixing the two would
+# leave a file named after delta quietly deciding how merge conflicts are
+# formatted. The on_activate lifecycle hook adds both with `--add`, checking
+# each first — see the note there about why `--add` and not a plain set.
+#
+# Both are includes, so every value here loses to the same key set later in your
+# own config. That is the intended precedence: these are defaults for a session
+# that would otherwise have none, not policy. (delta's `core.pager` is the one
+# deliberate exception, and it is documented as such in that file.)
+#
+# In git config `#` starts a comment anywhere on the line, including inside a
+# value, so any value that could contain one has to be quoted. None here do —
+# but the delta include has several, and the rule is the same file format.
+
+# --- Conflict markers ------------------------------------------------------
+# zdiff3 adds the common ancestor to a conflict hunk and hoists the lines both
+# sides agree on out of the marked region, so what you are shown is the part
+# that actually disagrees. `diff3` without the `z` is the same idea without the
+# hoisting; the plain default shows no ancestor at all, which is what makes a
+# three-way conflict guesswork.
+#
+# Requires git 2.35 (Jan 2022). An older git treats an unknown value here as an
+# error on the conflicting merge, not at config-parse time, so this is the one
+# setting in the file that fails late if the session's git is too old. The MPR
+# ships 2.55.
+[merge]
+	conflictstyle = zdiff3
+
+[diff]
+	# histogram is patience with a heuristic for low-occurrence lines. It is
+	# slower than myers on very large files and produces markedly better hunks
+	# on the reindent-and-move changes that are hardest to read — which is the
+	# same class of change `colorMoved` below exists for.
+	algorithm = histogram
+
+	# Detect moved blocks and mark them as moved rather than as a delete plus
+	# an unrelated add.
+	#
+	# This is half a feature on its own: git marks moved lines by recolouring
+	# them, and what that looks like is then entirely up to the pager. delta's
+	# `map-styles` in the other include is the half that turns git's hardcoded
+	# bold cyan into something on-scheme. Enabling this without that is a
+	# visible regression, so the two are commented as a pair.
+	colorMoved = default
+
+	# Treat a block as moved even if its indentation changed, which is what
+	# happens whenever code moves into or out of a conditional. Without this
+	# the reindent alone disqualifies the block and it shows up as a rewrite —
+	# the exact case the setting above is for.
+	colorMovedWS = allow-indentation-change
+
+	# difftastic as `git difftool`, not as `diff.external`.
+	#
+	# `diff.external` would route *every* `git diff` through difft, which
+	# replaces delta everywhere and breaks anything that consumes the output as
+	# a patch: difft emits a side-by-side syntactic comparison, not a unified
+	# diff, so `git diff | patch` and `git diff > x.patch` stop producing
+	# anything applicable. Wiring it as a difftool keeps delta as the default
+	# and puts difft one word away — `git dft`, aliased below.
+	tool = difftastic
+
+[difftool]
+	# Don't ask "view file N? [Y/n]" before each file. The prompt exists for
+	# GUI difftools that open a window per file and block; difft prints to
+	# stdout and returns, so the prompt is pure friction here.
+	prompt = false
+
+[difftool "difftastic"]
+	# $LOCAL and $REMOTE are the paths git hands a difftool — $LOCAL a temp
+	# copy of the old blob, $REMOTE the worktree file.
+	#
+	# The quotes are difftastic's documented spelling and they do NOT survive:
+	# `"` delimits a quoted section in git's config grammar and is removed, so
+	# `git config --get` reads back `difft $LOCAL $REMOTE`. That looks like a
+	# word-splitting bug waiting for a path with a space in it, and it isn't —
+	# git difftool passes each path to the tool as one argument rather than
+	# re-splitting the expanded string. Verified by substituting a probe script
+	# for difft in a repo named "my repo" holding "a file.txt": two arguments,
+	# both spaces intact, with and without the quotes.
+	#
+	# So the quotes are decoration. They are kept because upstream writes them
+	# that way and someone comparing this file against difftastic's README
+	# should find the same line, not a cleverer one.
+	cmd = difft "$LOCAL" "$REMOTE"
+
+[pager]
+	# `git difftool` doesn't page by default, on the assumption the tool is
+	# interactive. difft isn't — it writes a long, colourful report to stdout
+	# and exits — so without this a multi-file `git dft` scrolls straight past
+	# you. Sends it through $PAGER, which the loadout sets to bat.
+	difftool = true
+
+[alias]
+	# `git dft` / `git dft HEAD~1` — difftool takes the same arguments diff
+	# does, so anything you would write after `git diff` works unchanged.
+	dft = difftool

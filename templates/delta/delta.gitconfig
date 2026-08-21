@@ -61,6 +61,29 @@
 	zero-style = "syntax"
 	whitespace-error-style = "#{{base00-hex}} #{{base08-hex}}"
 
+	# Moved lines. Requires `diff.colorMoved`, which the loadout's other git
+	# include sets — the two halves are useless apart, so if you drop one, drop
+	# both.
+	#
+	# The mechanism is worth knowing, because it is not delta's usual one:
+	# delta cannot detect a moved block itself. git does that, and with
+	# `colorMoved` on it marks the result by *recolouring* those lines in the
+	# diff it hands its pager — bold magenta for the old location, bold cyan for
+	# the new. `map-styles` matches on those incoming colours and substitutes
+	# its own. So the two keys below are not palette choices; they are git's
+	# hardcoded move colours, spelled the way delta names them (`purple` is
+	# git's magenta), and they must be matched verbatim or the rule never fires.
+	#
+	# Without this the lines still render — in git's bold cyan, off-scheme, with
+	# the syntax highlighting overwritten, which is worse than not detecting
+	# moves at all. Verified against git 2.55 / delta 0.19.
+	#
+	# base0E (purple) and base0D (blue) over base00 at 15%, the same blend the
+	# minus/plus bodies use, so a moved block reads as a third kind of change
+	# next to them rather than as an unrelated highlight. Foreground stays
+	# "syntax" for the same reason it does above.
+	map-styles = "bold purple => syntax #{{mix base0E base00 15}}, bold cyan => syntax #{{mix base0D base00 15}}"
+
 	# Gutter
 	line-numbers-minus-style = "#{{base08-hex}}"
 	line-numbers-plus-style = "#{{base0B-hex}}"

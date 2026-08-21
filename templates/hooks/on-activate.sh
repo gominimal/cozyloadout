@@ -17,30 +17,50 @@ set -u
 
 slug='{{scheme-slug}}'
 
-# --- delta -----------------------------------------------------------------
-# delta has no config file of its own; it reads [delta] out of git config, so
-# point git at the include the loadout ships.
+# --- git includes ----------------------------------------------------------
+# The loadout ships two git includes and points git at both:
+#
+#   {{loadout-name}}-delta.gitconfig  delta's own settings. delta has no config
+#                            file and reads [delta] out of git config, so this
+#                            is the only place it will look. Themed.
+#   {{loadout-name}}-git.gitconfig    git's settings — conflict style, diff
+#                            algorithm, move detection, difftastic as `git
+#                            dft`. Not themed.
 #
 # --add after checking the existing values, never a plain set: `git config
 # --global include.path X` REPLACES what is already there, which would silently
 # drop an include of your own. Matching on the basename means an entry added as
 # an absolute path is recognised rather than duplicated.
 #
-# The `~` stays literal — git expands it, the shell must not. This step does not
-# depend on the patch having landed: git ignores an include whose file is
-# missing, and picks it up as soon as it appears.
+# Neither step depends on its patch having landed: git ignores an include whose
+# file is missing, and picks it up as soon as it appears.
 #
-# `case` rather than grep: grep is not in the loadout's package list (ripgrep
-# is, and coreutils does not ship grep), so it may not exist in the session. If
-# it were missing, `! ... | grep -q` would evaluate true and append a duplicate
-# include on every activation. Pattern matching is a shell builtin and can't
-# fail that way.
-if command -v git >/dev/null 2>&1; then
-    existing=$(git config --global --get-all include.path 2>/dev/null || true)
-    case "$existing" in
-        *{{loadout-name}}-delta.gitconfig*) ;; # already pointed at ours, in any spelling
-        *) git config --global --add include.path '~/.config/git/{{loadout-name}}-delta.gitconfig' || true ;;
+# `case` rather than grep: pattern matching is a shell builtin, so it cannot
+# fail the way a missing `grep` would — `! ... | grep -q` on a grep that isn't
+# there evaluates true and appends a duplicate include on every activation.
+# (grep *is* in the package list now, unlike when this was written. The builtin
+# is still the right tool: it depends on nothing.)
+add_include() {
+    # $1: basename of the include, below ~/.config/git/.
+    case "$existing_includes" in
+        *"$1"*) return 0 ;; # already pointed at ours, in any spelling
     esac
+    # The `~` stays literal — git expands it, the shell must not. Tilde
+    # expansion does not happen inside double quotes, so "$1" interpolating is
+    # not in tension with that.
+    git config --global --add include.path "~/.config/git/$1" || true
+    # Track what we just added. The variable is read from git once, before the
+    # first call, so without this a second include whose name contains the
+    # first would not be the only thing that goes wrong — a repeated name in
+    # the list below would be added twice.
+    existing_includes="$existing_includes
+$1"
+}
+
+if command -v git >/dev/null 2>&1; then
+    existing_includes=$(git config --global --get-all include.path 2>/dev/null || true)
+    add_include '{{loadout-name}}-delta.gitconfig'
+    add_include '{{loadout-name}}-git.gitconfig'
 fi
 
 # --- bat -------------------------------------------------------------------
@@ -54,6 +74,76 @@ fi
 # keeps a wrong assumption from turning into a failed activation.
 if command -v bat >/dev/null 2>&1 && [ -f "$HOME/.config/bat/themes/$slug.tmTheme" ]; then
     bat cache --build >/dev/null 2>&1 || true
+fi
+
+# --- fish completions ------------------------------------------------------
+# fish already completes a good part of the loadout — delta, just, jq, tokei,
+# duf, glow, gh and lazygit are built into fish itself, and the MPR packages
+# drop broot, sd, starship and zoxide into /usr/share/fish/vendor_completions.d.
+# What is left uncovered is the part of the loadout you type most often: rg,
+# bat, atuin and procs complete nothing at all.
+#
+# Those four can each print their own fish completions, so they are generated
+# here rather than checked in. A vendored file would be frozen at whatever
+# version was current when it was written; the binary in the session always
+# describes itself. It also leaves the repo's rule intact that nothing in the
+# *build* invokes the tools being themed — this runs in the session, not the
+# build.
+#
+# Measured rather than assumed, by counting candidates with and without each
+# generated file (`complete -C 'rg --'` and friends):
+#
+#   rg     0 ->  105      bat    0 -> 47   (`bat cache --`: 0 -> 10)
+#   procs  0 ->   32      atuin  9 -> 31   (`atuin search --`: 0 -> 27)
+#
+# gh was in this list and came out again: `gh --` offers two candidates with or
+# without a generated file, which reads like a gap and isn't — gh genuinely has
+# two top-level flags, and fish's own completion covers it to full depth
+# (`gh pr create --` gives the same 22 either way). Check a subcommand, not the
+# top level, before adding anything here.
+#
+# The rest are deliberately not covered. eza, fd, hyperfine, dust, bottom,
+# difftastic and hexyl generate completions at package-build time and ship them
+# as files, none of which is in the MPR package, and no version of them can
+# produce one at runtime — `fd --help` has no completion flag to find. Covering
+# those means vendoring static files into this repo, which is a different
+# decision with a maintenance cost attached.
+#
+# vendor_completions.d rather than ~/.config/fish/completions, which is where
+# this obviously belongs and is the wrong answer: that directory is the
+# *highest* precedence entry in $fish_complete_path, so writing there would put
+# the loadout ahead of a completion you wrote yourself, and silently replace it
+# on the next activation. Under vendor_completions.d, yours wins.
+#
+# This is the second and last thing the loadout writes outside ~/.config — the
+# other is git's include.path, above. Both are noted in the README.
+comp_dir="${XDG_DATA_HOME:-$HOME/.local/share}/fish/vendor_completions.d"
+
+# Generate one completion file, or leave what is already there alone.
+#
+# Built in a temp file and moved into place only once the generator has both
+# succeeded and produced something. A half-written file matters more here than
+# it usually would: fish executes a completion file as a script, so a truncated
+# one is a syntax error reported on every tab press for that command, forever.
+gen_completion() {
+    _cmd=$1
+    _out=$2
+    shift 2
+    command -v "$_cmd" >/dev/null 2>&1 || return 0
+    _tmp="$comp_dir/.$_out.tmp"
+    if "$@" >"$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
+        mv -f "$_tmp" "$comp_dir/$_out" 2>/dev/null || rm -f "$_tmp"
+    else
+        rm -f "$_tmp"
+    fi
+    return 0
+}
+
+if command -v fish >/dev/null 2>&1 && mkdir -p "$comp_dir" 2>/dev/null; then
+    gen_completion rg    rg.fish    rg --generate complete-fish
+    gen_completion bat   bat.fish   bat --completion fish
+    gen_completion atuin atuin.fish atuin gen-completions --shell fish
+    gen_completion procs procs.fish procs --gen-completion-out fish
 fi
 
 exit 0

@@ -141,22 +141,37 @@ your terminal's `TERM` is kept current by the daemon regardless.
 The setup the patch system can't do runs as a **lifecycle hook**, declared in the
 loadout and shipped as a script in `cozy/hooks/`:
 
-- **`on_activate`** — when the session is created — points git at delta's
-  config, and builds bat's theme cache. delta has no config file of its own and
+- **`on_activate`** — when the session is created — does three things:
+
+  **Points git at the two includes.** delta has no config file of its own and
   reads its settings out of git config, so the loadout ships an include; that
   include is also what makes delta git's pager in the first place, without which
-  none of its styling is ever reached. bat can't see a theme until its cache is
-  built, and delta reads that same cache for in-diff highlighting, so without it
-  both are off-scheme and delta falls back to Monokai.
+  none of its styling is ever reached. The second include is git's own
+  settings — `zdiff3` conflict markers, the histogram diff algorithm, moved-block
+  detection, and difftastic wired up as `git dft`.
+
+  **Builds bat's theme cache.** bat can't see a theme until its cache is built,
+  and delta reads that same cache for in-diff highlighting, so without it both
+  are off-scheme and delta falls back to Monokai.
+
+  **Generates fish completions** for `rg`, `bat`, `atuin` and `procs`, which are
+  the tools in the loadout that fish cannot complete on its own. Each one prints
+  its own, so they are generated from the binaries in the session rather than
+  checked in and left to go stale. The tools that can only emit completions at
+  package-build time — `eza`, `fd`, `hyperfine`, `dust`, `bottom`, `difftastic`,
+  `hexyl` — are not covered.
 
 There is no `on_attach` hook. One was tried and the terminal background stopped
 being set while it existed; that was never explained, and there is now reason to
 think it was a different bug with the same symptom — see AGENTS.md if you're
 tempted to add one.
 
-Pointing git at the include is **the only thing the loadout writes outside
-`~/.config`**. It appends a single `include.path` entry and checks first, so an
-include of your own is never replaced or duplicated.
+Those first and third steps are **the only things the loadout writes outside
+`~/.config`**. The git one appends `include.path` entries and checks first, so an
+include of your own is never replaced or duplicated. The completions go to
+`$XDG_DATA_HOME/fish/vendor_completions.d`, which is *lower* precedence than
+`~/.config/fish/completions` — so a completion you wrote yourself still wins, and
+is never overwritten.
 
 ---
 
@@ -211,9 +226,14 @@ include of your own is never replaced or duplicated.
    from a project's `minimal.toml` are merged, and the same variable with two
    different values — or the same patch destination from two different sources —
    fails the activation rather than picking a winner. This loadout contributes
-   `SHELL`, `EDITOR`, `PAGER`, `PROMPT_COMMAND` and thirteen patches under
+   `SHELL`, `EDITOR`, `PAGER`, `PROMPT_COMMAND` and eighteen patches under
    `~/.config`, so a project that sets `EDITOR` to anything but `hx` will not
    activate alongside it. The way out is your user policy's `ignore` list.
+
+   `VISUAL` is deliberately *not* in that list even though the loadout sets it:
+   it is exported from the fish config rather than declared in `[vars]`, so it
+   never takes part in composition and cannot fail an activation. Anything the
+   shell can set is set there for exactly this reason.
 
 ---
 

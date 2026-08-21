@@ -2,6 +2,29 @@
 
 status is-interactive; or exit
 
+# --- PATH ---
+# A minimal session starts with PATH=/usr/bin:/bin:/usr/sbin:/sbin:/home/.local/bin
+# (sandbox2's `command_env`), so `pip --user` and anything else honouring
+# ~/.local/bin is already reachable and the per-language directories are not.
+# Everything below is a language toolchain's default install prefix, which is
+# where `cargo install`, `go install` and a `--prefix`-configured npm put the
+# binaries you asked them to put somewhere.
+#
+# `fish_add_path` skips directories that don't exist, so listing a toolchain
+# nobody installed costs nothing and adds nothing — no guards needed. It also
+# skips entries already present, which is why ~/.local/bin can be named here
+# without ending up in PATH twice.
+#
+# `--global`, not the default universal: a universal variable is written to
+# ~/.config/fish/fish_variables and persists, so the default would have every
+# session accumulating entries into a file the loadout doesn't manage. Global
+# is rebuilt from this line on each shell and leaves nothing behind.
+#
+# Above the aliases on purpose. Every `command -q` below is a PATH lookup, so a
+# tool installed into one of these directories is invisible to all of them if
+# this runs afterwards.
+fish_add_path --global $HOME/.cargo/bin $HOME/go/bin $HOME/.local/bin
+
 # --- Aliases ---
 if command -q eza
     alias eza 'eza --icons auto --git'
@@ -232,6 +255,54 @@ if command -q broot
     broot --print-shell-function fish | source
 end
 
+# --- Key bindings ---
+# Modal editing, to match the editor the loadout ships. fish has no helix
+# preset — `fish_default_key_bindings`, `fish_vi_key_bindings` and
+# `fish_hybrid_key_bindings` are the entire set — so hybrid is as close as it
+# gets: vi's modes (normal/insert/visual, and helix's normal/insert/select is
+# the same shape) with the emacs bindings kept in every one of them. Straight
+# vi mode drops ctrl-a, ctrl-e, ctrl-k and alt-. in insert mode, which are the
+# keys the rest of this file's tooling assumes you still have.
+#
+# starship was already configured for this and had nothing to report it: its
+# [character] block sets vimcmd_symbol, vimcmd_replace_symbol and
+# vimcmd_visual_symbol, none of which can render while the shell is in emacs
+# mode. Turning this on is what makes those four lines do something.
+#
+# Placed above the fzf and atuin blocks. Order turns out *not* to be
+# load-bearing — switching preset runs `bind --erase --all --preset`, which
+# clears preset bindings only, so bindings those tools add with a plain `bind`
+# survive a later switch (verified both ways round on fish 4.8). It is written
+# this way anyway, because the tools bind against whatever mode set is in
+# effect and reading it in that order is how you would expect it to work.
+#
+# The one genuine interaction is atuin's, and it resolves itself: atuin binds
+# `?` in the default mode, which under a modal preset is *normal* mode rather
+# than the mode you type in. Its handler checks `$fish_key_bindings` by name
+# and suppresses the literal insert for exactly `fish_vi_key_bindings` and
+# `fish_hybrid_key_bindings`, so normal-mode `?` isn't shadowed by a stray
+# question mark. That check is on the value of this variable, so setting it to
+# either of those two names is what keeps atuin correct — a third preset, or a
+# wrapper function with another name, would silently lose that.
+if test "$TERM" != dumb
+    set -g fish_key_bindings fish_hybrid_key_bindings
+
+    # Cursor shape per mode — the other half of the mode indicator, and the
+    # half you see without looking away from what you are typing.
+    set -g fish_cursor_default block
+    set -g fish_cursor_insert line
+    set -g fish_cursor_visual block
+    set -g fish_cursor_replace underscore
+    set -g fish_cursor_replace_one underscore
+
+    # fish only emits the cursor-shape escape for terminals it recognises, and
+    # inside a session it is inspecting zellij rather than the terminal zellij
+    # is drawing to. Forcing it is the difference between a mode indicator and
+    # a prompt glyph you have to go looking for. Terminals that don't implement
+    # the sequence ignore it, the same way they ignore the OSC palette above.
+    set -g fish_vi_force_cursor 1
+end
+
 # --- fzf (fuzzy finder) ---
 if command -q fzf
     fzf --fish | source
@@ -245,6 +316,10 @@ if command -q fzf
     # touches only the default mode, which is all a vi-mode user is *not* in
     # while typing — so without the second line the rebinding silently does
     # nothing for them and Alt-T inserts a literal character instead.
+    #
+    # Not hypothetical: the Key bindings section above puts every shell into a
+    # modal preset, so the default mode here is normal mode and the second line
+    # is the one that carries Alt-T for the mode you actually type in.
     bind \et fzf-file-widget
     bind -M insert \et fzf-file-widget
 
@@ -323,6 +398,27 @@ end
 # the terminal. Decided by a dark/light section pair, as the duf alias is.
 if command -q difft
     set -gx DFT_BACKGROUND {{#dark}}dark{{/dark}}{{#light}}light{{/light}}
+end
+
+# $EDITOR is set in cozy.toml's [vars]; $VISUAL is the same answer for the
+# programs that ask the other question. The two are not synonyms: $EDITOR is
+# the fallback for when a full-screen editor can't be hosted — historically a
+# line printer, today a pipe or a dumb terminal — and $VISUAL is the one to use
+# when it can. Tools that distinguish them check $VISUAL first, so setting only
+# $EDITOR quietly asks for the degraded answer everywhere that cares.
+#
+# Not in [vars], for the reason given there: every name added to it is another
+# chance for a project's minimal.toml to disagree and fail the activation
+# outright, so anything that can live in the shell config does.
+#
+# $GIT_EDITOR is deliberately *not* set, though it would be the obvious third
+# line. git resolves $GIT_EDITOR before core.editor, so setting it would put
+# the loadout ahead of an editor you chose yourself in your own gitconfig.
+# Leaving it unset lets git fall through core.editor to $VISUAL, which reaches
+# the same place here without overruling anyone. It is the same restraint the
+# git includes are written with.
+if command -q hx
+    set -gx VISUAL hx
 end
 
 # --- Misc ---
