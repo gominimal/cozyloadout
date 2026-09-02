@@ -91,16 +91,19 @@ The loadout writes outside `~/.config` in exactly two places: it appends `includ
 
 ## What's In It
 
-Themed from the palette, one config file each:
+Always installed — the shell and the tools the config builds itself around:
 
 | | |
 | --- | --- |
-| **Shell and session** | fish, starship, zellij, atuin |
-| **Editing and reading** | helix, bat, broot |
-| **Git** | delta, lazygit, git |
-| **System** | bottom, tealdeer |
+| **Shell and session** | fish, starship, zellij |
+| **Editing and reading** | helix, bat |
+| **Search and navigation** | ripgrep, fd, eza, zoxide, sd |
+| **Git and system** | git, delta, gh, procs, bottom |
 
-Also installed and configured through the environment: jq, difftastic, duf, eza, fd, ripgrep, fzf, zoxide, procs, dust, hexyl, tokei, hyperfine, bandwhich, glow, gh, man-page rendering, `claude-code`, and the GNU userland.
+Optional, offered by the wizard and dropped with their configs if you decline
+them: atuin, lazygit, broot, tealdeer, fzf, jq, difftastic, claude-code, dust,
+duf, hexyl, tokei, hyperfine, bandwhich, glow and kittyview. The split lives in
+`templates/packages.toml`, along with the GNU userland every session gets.
 
 ## Building and Testing
 

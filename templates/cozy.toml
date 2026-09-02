@@ -8,56 +8,11 @@
 # longer required, and the filename wins regardless.
 description = "A cozy developer setup — {{scheme_name}}"
 
+# The package list is generated from templates/packages.toml, which splits it
+# into core userland, the tools this loadout themes, and optional extras. Edit
+# that file, not this one.
 packages = [
-  "fish",
-  "starship",
-  "zellij",
-  "helix",
-  "bat",
-  "broot",
-  "delta",
-  "fd",
-  "ripgrep",
-  "eza",
-  "git",
-  "procs",
-  "bottom",
-  "glow",
-  "zoxide",
-  "claude-code",
-  "fzf",
-  "sd",
-  "less",
-  "coreutils",
-  "inetutils",
-  "iproute2",
-  "procps-ng",
-  "man-db",
-  # No `zip` counterpart: the MPR has no zip-creating package, only `unzip`.
-  # `tar` covers archive creation.
-  "unzip",
-  "jq",
-  "patch",
-  "openssh",
-  "ca-certificates",
-  "atuin",
-  "tealdeer",
-  "dust",
-  "duf",
-  "hexyl",
-  "util-linux",
-  "tokei",
-  "hyperfine",
-  "bandwhich",
-  "gh",
-  "grep",
-  "sed",
-  "gawk", # the package is `gawk`; there is no `awk`
-  "findutils",
-  "tar",
-  "gzip",
-  "lazygit",
-  "difftastic",
+{{packages}}
 ]
 
 # The patches list is generated from templates/manifest.toml, so it can never

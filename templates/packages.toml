@@ -1,0 +1,168 @@
+# What the loadout installs, in three groups.
+#
+# The generated `cozy.toml` carries a flat `packages` list, because that is what
+# minimal's loadout schema takes. This file is where the list comes from, split
+# so the wizard can offer the optional third to the user and so the reason each
+# package is here is written down somewhere.
+#
+# Declining an optional package drops its config too: manifest entries carry a
+# `package`, and the renderer skips the ones whose package was not selected. So
+# a tool being themed is no reason for it to be mandatory — atuin, broot,
+# lazygit and tealdeer are all themed and all optional.
+#
+# What makes them safe to drop is that nothing assumes them: the fish config
+# guards every tool it touches with `command -q`, and the hook's
+# `gen_completion` returns early when a binary is missing. One caveat, noted
+# inline on difftastic.
+#
+# Adding a package: put it in the group that matches why it is there, run
+# `just theme`, and read `build/cozy.toml`. The list is generated, so there is
+# no second place to update.
+
+# ---------------------------------------------------------------------------
+
+[base]
+title = "Core userland"
+about = """
+The tools any Linux session needs regardless of which loadout is applied: the \
+GNU userland, the things that read manuals and archives, and git. Nothing here \
+is about the cozy loadout in particular — a session without these is missing \
+parts of a working shell, not parts of a theme.\
+"""
+packages = [
+    "ca-certificates",
+    "coreutils",
+    "findutils",
+    "gawk",       # the package is `gawk`; there is no `awk`
+    "git",
+    "grep",
+    "gzip",
+    "inetutils",
+    "iproute2",
+    "less",
+    "man-db",
+    "openssh",
+    "patch",
+    "procps-ng",
+    "sed",
+    # No `zip` counterpart: the MPR has no zip-creating package, only `unzip`.
+    # `tar` covers archive creation.
+    "tar",
+    "unzip",
+    "util-linux",
+]
+
+# ---------------------------------------------------------------------------
+
+[cozy]
+title = "The cozy terminal"
+about = """
+What makes a session feel like this loadout rather than a bare shell: the \
+shell and multiplexer themselves, the editor and pager, and the search and \
+navigation tools the fish config builds its aliases and keybindings around. \
+Removing one of these does not make a smaller cozy session, it makes a \
+different one.\
+"""
+packages = [
+    "bat",
+    "bottom",
+    "delta",
+    "eza",
+    "fd",
+    "fish",
+    "gh",
+    "helix",
+    "procs",
+    "ripgrep",
+    "sd",
+    "starship",
+    "zellij",
+    "zoxide",
+]
+
+# ---------------------------------------------------------------------------
+# Optional. `default` is what the wizard preselects — on for the tools the fish
+# config actively wires up, off for the ones that are simply available.
+
+[[optional]]
+name = "fzf"
+about = "Fuzzy finder, wired into fish's history and file widgets."
+default = true
+
+[[optional]]
+name = "jq"
+about = "JSON on the command line. Guarded in the fish config."
+default = true
+
+[[optional]]
+name = "difftastic"
+# Caveat: `templates/git/git.gitconfig` wires this up as `git dft`. A gitconfig
+# alias cannot check whether its binary exists, so dropping this leaves `git
+# dft` failing when run. Nothing else notices.
+about = "Structural diffing that compares syntax, not lines. Wired up as `git dft`."
+default = true
+
+[[optional]]
+name = "claude-code"
+about = "Anthropic's coding agent, for a session you intend to use one in."
+default = true
+
+[[optional]]
+name = "dust"
+about = "Disk usage as a tree, sorted by what is actually large."
+default = false
+
+[[optional]]
+name = "duf"
+about = "Free space, in a table you can read. Aliased to follow the scheme."
+default = false
+
+[[optional]]
+name = "hexyl"
+about = "A hex viewer with colour for the byte classes."
+default = false
+
+[[optional]]
+name = "tokei"
+about = "Counts lines of code by language."
+default = false
+
+[[optional]]
+name = "hyperfine"
+about = "Benchmarks a command properly, with warmups and statistics."
+default = false
+
+[[optional]]
+name = "bandwhich"
+about = "Shows what is using the network, by process and connection."
+default = false
+
+[[optional]]
+name = "glow"
+about = "Renders markdown in the terminal."
+default = false
+
+[[optional]]
+name = "kittyview"
+about = "Displays images in the terminal, for terminals that support it."
+default = false
+
+[[optional]]
+name = "atuin"
+about = "Shell history that syncs, searches and survives across sessions."
+default = true
+
+[[optional]]
+name = "lazygit"
+about = "A terminal UI for git: staging hunks, rebasing, browsing branches."
+default = true
+
+[[optional]]
+name = "broot"
+about = "A tree view you can search and navigate, with a file preview pane."
+default = false
+
+[[optional]]
+name = "tealdeer"
+about = "`tldr` pages: the three examples you actually wanted from the manual."
+default = false

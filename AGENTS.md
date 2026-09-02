@@ -9,8 +9,9 @@ this covers changing it.
    every render, and it is gitignored. A change made there evaporates on the
    next `just theme`.
 2. **`cozy.toml` is generated.** Its `patches` list comes from
-   `templates/manifest.toml`, so it can't describe a file that wasn't rendered.
-   Edit `templates/cozy.toml` for packages and vars, the manifest for patches.
+   `templates/manifest.toml`, so it can't describe a file that wasn't rendered,
+   and its `packages` list from `templates/packages.toml`. Edit those, not the
+   generated array — `templates/cozy.toml` is for vars and hooks.
    Patch sources are emitted as `$LOADOUT_ROOT/<path>` — minimal expands that to
    the loadout's own directory, so it needs **minimal 0.5.4 or newer**. Before
    0.5.4 the path had to be spelled out as
@@ -215,6 +216,42 @@ screen. Four tests hold the trade from both ends:
 floor, `padding_is_present_when_there_is_room` and
 `gap_separates_the_options_when_there_is_room` for the ceiling, so the fallback
 cannot quietly become the only path.
+
+### Packages
+
+`templates/packages.toml` splits the package list three ways, and the renderer
+flattens it into `cozy.toml`'s `packages` array — minimal's schema wants a flat
+list, but a flat list has nowhere to record *why* a package is there.
+
+| Group | What it is | Droppable |
+| --- | --- | --- |
+| `base` | GNU userland, man pages, archives, ssh, git — what any session needs whatever loadout is applied | no |
+| `cozy` | the shell, multiplexer, editor, pager and the search/navigation tools the fish config builds its aliases around | no |
+| `optional` | everything else, with a description and a `default` for the wizard to preselect | yes |
+
+**Being themed is not what makes a package required.** A manifest entry can
+carry a `package`, and the renderer skips that entry when the package was not
+selected — so atuin, broot, lazygit and tealdeer are all themed *and* all
+optional: decline one and its config is simply not rendered, its patch not
+listed, its name not installed. The line is about what the loadout *is*: a
+session without `fd` or `zoxide` is a different shell to work in, one without
+`tealdeer` is the same shell with fewer manual pages.
+
+Two tests hold the tagging from both ends, because a wrong tag fails silently:
+`manifest_package_tags_name_real_optional_packages` (a tag naming a package
+that is not optional would never skip anything) and
+`every_optional_themed_tool_tags_its_config` (an untagged optional tool would
+install its config when declined).
+
+What makes declining safe is that nothing assumes these tools: the fish config
+guards all fifteen it touches with `command -q`, and the hook's
+`gen_completion` returns early when a binary is missing. One caveat, noted
+inline in the file: **difftastic** is wired up as `git dft` in
+`templates/git/git.gitconfig`, and a gitconfig alias cannot check whether its
+binary exists, so dropping the package leaves that alias failing when run.
+
+The `[N files]` the renderer prints counts what it actually wrote, not
+`entries.len()` — those stopped agreeing once entries could be skipped.
 
 ## Template grammar
 
