@@ -12,8 +12,10 @@
 #
 # What makes them safe to drop is that nothing assumes them: the fish config
 # guards every tool it touches with `command -q`, and the hook's
-# `gen_completion` returns early when a binary is missing. One caveat, noted
-# inline on difftastic.
+# `gen_completion` returns early when a binary is missing. difftastic is in
+# `cozy` rather than here for exactly that reason — `templates/git/git.gitconfig`
+# wires it up as `git dft`, and a gitconfig alias cannot check whether its
+# binary exists, so declining it would leave a broken alias behind.
 #
 # Adding a package: put it in the group that matches why it is there, run
 # `just theme`, and read `build/cozy.toml`. The list is generated, so there is
@@ -67,6 +69,7 @@ packages = [
     "bat",
     "bottom",
     "delta",
+    "difftastic",
     "eza",
     "fd",
     "fish",
@@ -81,88 +84,103 @@ packages = [
 ]
 
 # ---------------------------------------------------------------------------
-# Optional. `default` is what the wizard preselects — on for the tools the fish
-# config actively wires up, off for the ones that are simply available.
+# Optional. `license` is the `license_spdx` field from the package's definition
+# in the Minimal Public Registry (gominimal/pkgs) — copy it from there rather
+# than guessing when adding a package; the wizard shows it to the user before
+# they install anything.
+#
+# Everything here is preselected: the full set is what the loadout has
+# always installed, so an untouched wizard produces the loadout people already
+# have. `default` exists so that can be revisited per package without changing
+# any code.
 
 [[optional]]
 name = "fzf"
+license = "MIT"
 about = "Fuzzy finder, wired into fish's history and file widgets."
 default = true
 
 [[optional]]
 name = "jq"
+license = "MIT"
 about = "JSON on the command line. Guarded in the fish config."
 default = true
 
-[[optional]]
-name = "difftastic"
-# Caveat: `templates/git/git.gitconfig` wires this up as `git dft`. A gitconfig
-# alias cannot check whether its binary exists, so dropping this leaves `git
-# dft` failing when run. Nothing else notices.
-about = "Structural diffing that compares syntax, not lines. Wired up as `git dft`."
-default = true
 
 [[optional]]
 name = "claude-code"
+license = "LicenseRef-Anthropic-Proprietary"
 about = "Anthropic's coding agent, for a session you intend to use one in."
 default = true
 
 [[optional]]
 name = "dust"
+license = "Apache-2.0"
 about = "Disk usage as a tree, sorted by what is actually large."
-default = false
+default = true
 
 [[optional]]
 name = "duf"
+license = "MIT"
 about = "Free space, in a table you can read. Aliased to follow the scheme."
-default = false
+default = true
 
 [[optional]]
 name = "hexyl"
+license = "Apache-2.0"
 about = "A hex viewer with colour for the byte classes."
-default = false
+default = true
 
 [[optional]]
 name = "tokei"
+license = "MIT OR Apache-2.0"
 about = "Counts lines of code by language."
-default = false
+default = true
 
 [[optional]]
 name = "hyperfine"
+license = "Apache-2.0"
 about = "Benchmarks a command properly, with warmups and statistics."
-default = false
+default = true
 
 [[optional]]
 name = "bandwhich"
+license = "MIT"
 about = "Shows what is using the network, by process and connection."
-default = false
+default = true
 
 [[optional]]
 name = "glow"
+license = "MIT"
 about = "Renders markdown in the terminal."
-default = false
+default = true
 
 [[optional]]
 name = "kittyview"
+license = "Apache-2.0"
 about = "Displays images in the terminal, for terminals that support it."
-default = false
+default = true
 
 [[optional]]
 name = "atuin"
+license = "MIT"
 about = "Shell history that syncs, searches and survives across sessions."
 default = true
 
 [[optional]]
 name = "lazygit"
+license = "MIT"
 about = "A terminal UI for git: staging hunks, rebasing, browsing branches."
 default = true
 
 [[optional]]
 name = "broot"
+license = "MIT"
 about = "A tree view you can search and navigate, with a file preview pane."
-default = false
+default = true
 
 [[optional]]
 name = "tealdeer"
+license = "MIT OR Apache-2.0"
 about = "`tldr` pages: the three examples you actually wanted from the manual."
-default = false
+default = true

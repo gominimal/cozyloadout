@@ -98,10 +98,10 @@ Always installed — the shell and the tools the config builds itself around:
 | **Shell and session** | fish, starship, zellij |
 | **Editing and reading** | helix, bat |
 | **Search and navigation** | ripgrep, fd, eza, zoxide, sd |
-| **Git and system** | git, delta, gh, procs, bottom |
+| **Git and system** | git, delta, difftastic, gh, procs, bottom |
 
 Optional, offered by the wizard and dropped with their configs if you decline
-them: atuin, lazygit, broot, tealdeer, fzf, jq, difftastic, claude-code, dust,
+them: atuin, lazygit, broot, tealdeer, fzf, jq, claude-code, dust,
 duf, hexyl, tokei, hyperfine, bandwhich, glow and kittyview. The split lives in
 `templates/packages.toml`, along with the GNU userland every session gets.
 

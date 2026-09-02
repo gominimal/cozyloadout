@@ -116,10 +116,16 @@ sections for callers who are both in this repo is documentation nobody reads.
 
 ### The wizard
 
-`tools/cozy-theme/src/bin/cozy-wizard.rs`, a second binary in the same package
+`tools/cozy-theme/src/bin/cozy-wizard/`, a second binary in the same package
 (`default-run = "cozy-theme"` keeps a bare `cargo run` pointing at the
-renderer). `just wizard` runs it. Three screens so far: greeting, schemes,
-themes.
+renderer). `just wizard` runs it. Five screens so far: greeting, schemes,
+themes, packages, patches.
+
+It became a directory rather than a single file when it passed 2,500 lines —
+Cargo takes `src/bin/<name>/main.rs` plus submodules. `picker.rs` is the first
+of those: filesystem navigation and selection with no drawing in it, so what a
+listing contains, what is selectable, and what happens at `/` are all testable
+against real temporary directories instead of through a rendered frame.
 
 Its first page asks which fish greeting to install: the mark drawn with Symbols
 for Legacy Computing (`▃🭕🭏🭕🭏 M I N I M A L`, the U+1FB00 block, Unicode 13)
@@ -180,6 +186,43 @@ bat themes assign.
 background equals the *selected scheme's* base00 — not merely that it changed,
 so repainting in some other scheme's colours still fails.
 
+Its fourth page is the optional-package checklist. Space toggles a row, `a`/`n`
+select all or none, and the panel under the list shows the highlighted
+package's description **and SPDX licence**. The licence is there because one of
+these is not like the others: `claude-code` is
+`LicenseRef-Anthropic-Proprietary` and everything else is MIT or Apache-2.0, so
+a non-permissive licence is drawn in the scheme's orange and bold rather than
+the same grey as the rest — `the_proprietary_licence_is_called_out` asserts
+that by reading the rendered cell's style, not its text.
+
+Below the list is a free-text field for packages that are not on it — the
+registry has far more than the fifteen offered, and a loadout is personal, so
+adding `emacs` should not mean editing a TOML file. It introduces the page's
+one piece of real complexity: **focus**. While the field has focus, printable
+keys are text, which means `q` is a letter rather than quit and `space` is a
+space rather than a toggle. `Ctrl-C` still exits from anywhere, because there
+has to be a way out. `typing_q_does_not_quit_the_wizard` and
+`list_keys_do_not_leak_into_the_field` are the tests that matter here.
+
+Typed input is parsed on read, not on each keystroke, so half-finished names
+are allowed to exist. `is_package_name` is deliberately conservative —
+lowercase, digits, `- _ . +` — and the field **echoes what it parsed**, plus any
+name the loadout already installs. Silently dropping half of what someone typed
+would be the worst version of this widget.
+
+The licence strings are copied from each package's `license_spdx` in the
+Minimal Public Registry. **Do not guess one**: it is a claim about someone
+else's software shown at the moment a user agrees to install it.
+
+**The scheme persists across pages and dies with the wizard.** The package page
+paints in the theme chosen on the previous one
+(`the_chosen_theme_persists_onto_the_package_page`), and `main` emits an
+explicit `ResetColor` *before* leaving the alternate screen. Leaving the
+alternate screen restores the primary screen's contents, but the SGR state the
+last frame set belongs to the terminal, not the screen — without the reset,
+quitting from a themed page hands back a shell still wearing someone else's
+colours.
+
 Two things about the terminal that are easy to get backwards, both commented in
 the source: `color_eyre::install()` has to come *before* `ratatui::init()`
 (ratatui's restoring panic hook must be installed last, or a panic leaves you in
@@ -227,7 +270,13 @@ list, but a flat list has nowhere to record *why* a package is there.
 | --- | --- | --- |
 | `base` | GNU userland, man pages, archives, ssh, git — what any session needs whatever loadout is applied | no |
 | `cozy` | the shell, multiplexer, editor, pager and the search/navigation tools the fish config builds its aliases around | no |
-| `optional` | everything else, with a description and a `default` for the wizard to preselect | yes |
+| `optional` | everything else, each with a description; all preselected | yes |
+
+Every optional package is `default = true`, asserted by
+`every_optional_package_is_on_by_default`: the full set is what the loadout has
+always installed, so an untouched wizard has to reproduce the loadout people
+already have. The flag exists so that can be revisited per package without
+touching code.
 
 **Being themed is not what makes a package required.** A manifest entry can
 carry a `package`, and the renderer skips that entry when the package was not
@@ -245,13 +294,87 @@ install its config when declined).
 
 What makes declining safe is that nothing assumes these tools: the fish config
 guards all fifteen it touches with `command -q`, and the hook's
-`gen_completion` returns early when a binary is missing. One caveat, noted
-inline in the file: **difftastic** is wired up as `git dft` in
-`templates/git/git.gitconfig`, and a gitconfig alias cannot check whether its
-binary exists, so dropping the package leaves that alias failing when run.
+`gen_completion` returns early when a binary is missing. **difftastic sits in
+`cozy` for precisely that reason** — `templates/git/git.gitconfig` wires it up
+as `git dft`, and a gitconfig alias has no way to check whether its binary
+exists, so declining it would leave a broken alias behind. Anything that cannot
+be guarded cannot be optional.
 
 The `[N files]` the renderer prints counts what it actually wrote, not
 `entries.len()` — those stopped agreeing once entries could be skipped.
+
+### Remembering answers
+
+`state.rs` is the schema for `.cozy-wizard.toml`, written beside the loadout and
+**gitignored** — the answers are one person's, and belong in a checkout rather
+than in the repository. `--state` points it elsewhere, which is how the tests
+avoid touching a real one.
+
+Three rules, each with a reason:
+
+- **Only a finished run writes.** `completed` is set by `enter` on the last
+  page and by nothing else, so quitting part-way leaves the previous answers
+  intact rather than half-overwriting them.
+- **`packages` is a map, not a list.** A list of chosen names cannot tell "the
+  user turned this off" from "this did not exist yet", so a package added to
+  the loadout later would arrive silently switched off. With the full map an
+  unknown package falls back to its own `default`.
+- **A remembered thing that has gone falls back to the default.** A scheme that
+  is no longer in the collection leaves the cursor at the top; a file or
+  directory that has been deleted is simply not restored. Neither is an error —
+  it is just gone.
+
+**Remembered answers apply on a page's first visit only.** Every page restores
+from the file when it opens; doing that again on a second visit would silently
+undo whatever the user changed this run — go back to check something, come
+forward, and your work is gone. So the themes page prefers the currently
+selected scheme over the remembered one (matched *by name*, so a re-cloned or
+freshly fetched collection does not move the cursor somewhere arbitrary), and
+the packages and patches pages simply do not re-initialise once populated. The
+themes page still re-runs `discover` every time, because the user can go back,
+fetch the collection, and return, and the new schemes should be there.
+`revisiting_a_page_keeps_what_you_changed_this_run` and
+`revisiting_the_patches_page_keeps_this_run_s_choices` hold that.
+
+`esc` steps back one page from everywhere except the first, and every footer
+that has a page behind it says so — `every_page_after_the_first_offers_a_way_back`
+checks the hint is really there, because a key nobody mentions is a key nobody
+presses.
+
+The scheme-collection question is **deliberately not recorded**. Whether to
+clone or pull is about the state of the disk right now, not a preference, and
+answering it once should not answer it forever;
+`the_scheme_fetch_answer_is_never_recorded` asserts the written file never
+mentions it.
+
+A corrupt or hand-edited file reads as defaults rather than failing. This is a
+convenience, and the worst it should ever cost is the convenience.
+
+### The patches page
+
+Two pickers side by side, files on the left and directories on the right, for
+patching your own dotfiles into the session. They are separate rather than one
+browser with a mode because a loadout patches the two differently — a file maps
+to a single `dest`, a directory to a glob — and because seeing both sets of
+choices at once is the point.
+
+Key choices worth keeping:
+
+- **Arrows walk the tree; enter finishes.** Descending is on the arrow that
+  points into the tree, which leaves `enter` meaning what it means on every
+  other page. A file browser that stole `enter` would make this the one screen
+  where finishing is a different key.
+- **Hidden entries are shown.** Patching in dotfiles is the entire use case, so
+  a picker that hid `.config` would be useless.
+- **Directories appear in the file picker but cannot be chosen**, and get no
+  empty checkbox — you walk through them, you do not select them. `Pick::accepts`
+  is the single source of that rule; the drawing code asks it rather than
+  keeping a second copy.
+- **A failed listing keeps its error.** An unreadable directory and an empty one
+  look identical on screen otherwise.
+
+Both pickers start at `$HOME`. Selections survive walking away and coming back,
+and the summary line under them names every path with `~` for the home prefix.
 
 ## Template grammar
 
