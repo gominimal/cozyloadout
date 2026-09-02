@@ -45,7 +45,7 @@ To build and install the loadout you need:
 | Tool | Used for |
 | --- | --- |
 | [`just`](https://github.com/casey/just) | running the recipes |
-| Rust — `cargo` and `rustc`, 1.71+ | building the renderer |
+| Rust — `cargo` and `rustc`, 1.85+ | building the renderer |
 | `bash` | recipe bodies (the multi-line recipes carry a bash shebang) |
 | `zip`, `unzip` | `just bundle` and `just install` |
 | `git` | cloning this repo; also `just fetch-schemes` |
@@ -58,10 +58,12 @@ that are shipped as code, and a `python3` with `tomllib` (3.11+) to parse the
 generated loadout TOML. Each is skipped with a message if it isn't there, so the
 recipe still runs — it just checks less.
 
-That is the whole list. Two things it deliberately does **not** include:
+The renderer depends on three crates — `toml`, `serde` and `uuid` — so the
+first build fetches them from crates.io. Nothing is vendored, and builds after
+that work offline as usual.
 
-- **Crate dependencies.** The renderer has none, so `cargo` never reaches the
-  network and the build works offline.
+One thing the list deliberately does **not** include:
+
 - **The tools being themed.** You do not need helix, zellij, starship, bat,
   delta, broot, bottom, atuin, lazygit or tealdeer installed to build or
   install the loadout — no recipe invokes any of them. minimal installs them

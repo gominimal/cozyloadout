@@ -34,7 +34,7 @@ templates/manifest.toml┘
 | `schemes/` | Scheme YAML. `minimal-dark` and `minimal-light` are checked in |
 | `templates/` | The loadout, with colours as placeholders. The source tree |
 | `templates/manifest.toml` | What gets rendered, and where each result is patched to |
-| `tools/cozy-theme/` | The renderer. Rust, no dependencies |
+| `tools/cozy-theme/` | The renderer. Rust; `toml`, `serde`, `uuid` |
 | `build/` | Output. Gitignored, rewritten every render |
 
 ### The manifest
@@ -56,15 +56,29 @@ follows.
 
 ### The renderer
 
-`tools/cozy-theme/src/main.rs`, ~720 lines, **zero crate dependencies** — the
-scheme format is a flat map and the template grammar is four constructs, so both
-parsers are hand-rolled. That keeps `just theme` buildable with nothing but a
-rustc/cargo pair: no registry fetch, no vendor directory, works offline.
+`tools/cozy-theme/src/main.rs`, ~775 lines. It used to carry **zero crate
+dependencies**, so `just theme` built offline with nothing but a rustc/cargo
+pair. That is no longer true — the setup wizard will pull in ratatui, so the
+property was going anyway, and three deps now do work that was hand-rolled to
+defend it:
 
-Keep it that way unless there's a strong reason not to. `rust-version = "1.71"`
-is declared so an old toolchain fails clearly; that floor is *derived* (it's
-where `[char; N]` gained its `Pattern` impl, used in `split_kv`) and has never
-been tested — development was on 1.97.1.
+| Crate | Replaces |
+| --- | --- |
+| `toml` | ~95 lines of hand-rolled TOML subset for `templates/manifest.toml` |
+| `serde` (derive) | the `[[file]]` block's field mapping and unknown-key rejection |
+| `uuid` (v5) | a hand-rolled FNV-1a/xorshift hash that stamped a **version-4** nibble onto a deterministic value |
+
+18 crates in the tree; a clean build goes from ~0.6s to ~4s.
+
+**The scheme YAML parser stays hand-rolled**, and that is deliberate rather than
+leftover: it ignores nesting entirely, so one code path covers both the current
+(`palette:` block) and legacy (top-level `base00:`) formats, and the obvious
+crate for the job — `serde_yaml` — is archived upstream.
+
+`rust-version = "1.85"` is declared so an old toolchain fails clearly. That
+floor now comes from the *dependencies* (uuid, indexmap, hashbrown), not from
+this crate's source, which still needs no more than 1.71. It has never been
+tested — development was on 1.97.1.
 
 `just test` runs 15 unit tests. They cover both scheme formats, the quoted-`#`
 parsing hazard, luma-derived variant, `mix` against hand-computed values,
@@ -97,7 +111,7 @@ drop in. `XX` is `00`–`0F`, uppercase.
 | `{{mix-rgb base0B base0A 50}}` | `165, 182, 76` | Same, in broot's form |
 
 Metadata: `{{scheme-name}}`, `{{scheme-slug}}`, `{{scheme-author}}`,
-`{{scheme-system}}`, `{{scheme-variant}}`, `{{scheme-uuid}}`, and
+`{{scheme-variant}}`, `{{scheme-uuid}}`, and
 `{{loadout-name}}` — the loadout's own name, for the files that have to spell it
 (the delta include's path, the hook's `include.path` check).
 `templates/cozy.toml` additionally gets `{{patches}}`.
@@ -425,8 +439,8 @@ things to remember:
   fresh clone: `find` errors on the not-yet-existing vendor directories and
   `set -o pipefail` propagated it, which took out bare `just` as well since the
   default recipe calls it.
-- **Build offline** with `CARGO_NET_OFFLINE=true`, to keep the
-  no-dependencies claim honest.
+- **Build with `--locked`**, so a Cargo.lock that has drifted out of step with
+  Cargo.toml fails in CI rather than silently resolving to untested versions.
 
 Two things CI cannot do, so do them by hand when you touch that code:
 
@@ -468,7 +482,7 @@ Worth knowing before relying on any of it:
 
 | Claim | Status |
 | --- | --- |
-| Renders 529/529 upstream base16+base24 schemes | verified |
+| Renders 534/534 upstream base16+base24 schemes | verified — `just check-schemes`, re-run after the toml/uuid migration |
 | Generated `cozy.toml` is valid TOML for every scheme | verified |
 | Renderer builds with no network | verified |
 | `$SHELL` starts fish on attach | verified — needs minimal 0.5.4 |
@@ -485,7 +499,7 @@ Worth knowing before relying on any of it:
 | Re-attach carries no OSC palette | read in `minimald::session_host` — the attach flush is a `vt100` screen dump |
 | Detach leaves the palette on the host terminal | read in `Host::unwind_codes` — it resets SGR, alt screen, cursor, focus reporting, and no OSC colours |
 | Any `on_attach` hook breaks fish's OSC 11 background | **doubtful** — observed once, but the once-per-shell palette bug produces the same symptom and was live at the same time. Re-test |
-| Rust floor of 1.71 | **derived, never tested** — only 1.97.1 available |
+| Rust floor of 1.85 | **derived, never tested** — read off the dependencies' own `rust-version` fields; only 1.97.1 available here |
 | `ctrl-w` detaches, per the fish greeting | verified — documented in the CLI reference and in minimal's own orientation banner |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
 | The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |

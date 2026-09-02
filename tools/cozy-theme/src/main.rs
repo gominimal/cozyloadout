@@ -5,10 +5,12 @@
 //!
 //! See AGENTS.md for the template grammar and the build pipeline.
 
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Colour
@@ -68,11 +70,17 @@ const SLOTS: [&str; 16] = [
     "base09", "base0A", "base0B", "base0C", "base0D", "base0E", "base0F",
 ];
 
+/// Namespace for the per-scheme theme UUIDs. Arbitrary but fixed: changing it
+/// renumbers every generated .tmTheme, which is harmless (they are rebuilt) but
+/// pointless churn. Generated once, for this tool.
+const UUID_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x6f, 0x0c, 0x24, 0x7e, 0x4b, 0x1a, 0x4d, 0x8e, 0x9c, 0x3f, 0xa1, 0x52, 0x7d, 0x88, 0xe0, 0x14,
+]);
+
 struct Scheme {
     slug: String,
     name: String,
     author: String,
-    system: String,
     is_dark: bool,
     palette: BTreeMap<String, Rgb>,
 }
@@ -184,7 +192,6 @@ impl Scheme {
             slug,
             name,
             author: meta.get("author").cloned().unwrap_or_else(|| "unknown".into()),
-            system: meta.get("system").cloned().unwrap_or_else(|| "base16".into()),
             is_dark,
             palette,
         })
@@ -193,24 +200,12 @@ impl Scheme {
     /// Stable per-slug UUID for the .tmTheme. Sublime keys themes by UUID, so
     /// two schemes sharing one would collide; deriving it from the slug keeps
     /// it both unique and reproducible across builds.
+    ///
+    /// v5 (name-based, SHA-1) is what that description *is*. This used to be a
+    /// hand-rolled FNV-1a/xorshift hash with the version-4 nibble stamped on
+    /// top, which claimed "random" for a value that was nothing of the sort.
     fn uuid(&self) -> String {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in self.slug.as_bytes() {
-            h ^= *b as u64;
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-        let mut bytes = [0u8; 16];
-        let mut x = h | 1;
-        for chunk in bytes.chunks_mut(8) {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            chunk.copy_from_slice(&x.to_be_bytes());
-        }
-        bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
-        bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
-        let hx: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        format!("{}-{}-{}-{}-{}", &hx[0..8], &hx[8..12], &hx[12..16], &hx[16..20], &hx[20..32])
+        Uuid::new_v5(&UUID_NAMESPACE, self.slug.as_bytes()).to_string()
     }
 
     fn variant(&self) -> &'static str {
@@ -245,7 +240,6 @@ impl Scheme {
         v.insert("scheme-slug".into(), self.slug.clone());
         v.insert("scheme-name".into(), self.name.clone());
         v.insert("scheme-author".into(), self.author.clone());
-        v.insert("scheme-system".into(), self.system.clone());
         v.insert("scheme-variant".into(), self.variant().into());
         v.insert("scheme-uuid".into(), self.uuid());
         v
@@ -344,107 +338,42 @@ fn render(text: &str, vars: &BTreeMap<String, String>, scheme: &Scheme) -> Resul
 // Manifest
 // ---------------------------------------------------------------------------
 
+/// One `[[file]]` block. `deny_unknown_fields` is what turns a typo'd key into
+/// an error instead of a silently ignored line.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Entry {
     template: String,
     out: String,
     dest: Option<String>,
+    #[serde(default)]
     copy: bool,
 }
 
-/// One right-hand side: a quoted string or a bare boolean.
-enum Value {
-    Str(String),
-    Bool(bool),
+/// The manifest as a whole. `deny_unknown_fields` here rejects a key written
+/// outside any `[[file]]`, which the hand-rolled parser used to catch by hand.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    file: Vec<Entry>,
 }
 
-/// Parse a `key = value` right-hand side, allowing a trailing `# comment`.
+/// Parse `templates/manifest.toml`.
 ///
-/// Worth writing out rather than reaching for `trim_matches('"')`, which is the
-/// obvious version and is wrong: it turns `out = "bat/config"  # note` into
-/// `bat/config" # note` and then writes a file under that name without a word of
-/// complaint. The manifest is the most comment-heavy file in the repo, and
-/// silently rendering to a garbage path is exactly the failure mode the template
-/// grammar refuses to have.
-fn parse_value(raw: &str) -> Result<Value, String> {
-    let raw = raw.trim();
-    if let Some(rest) = raw.strip_prefix('"') {
-        let end = rest.find('"').ok_or_else(|| format!("unterminated string: {raw:?}"))?;
-        let tail = rest[end + 1..].trim();
-        if !tail.is_empty() && !tail.starts_with('#') {
-            return Err(format!("trailing {tail:?} after a quoted value"));
-        }
-        return Ok(Value::Str(rest[..end].to_string()));
-    }
-    // Bare: only booleans, and only the two spellings TOML has. `copy = yes`
-    // used to read as false.
-    let bare = match raw.find('#') {
-        Some(i) => raw[..i].trim(),
-        None => raw,
-    };
-    match bare {
-        "true" => Ok(Value::Bool(true)),
-        "false" => Ok(Value::Bool(false)),
-        "" => Err("no value".into()),
-        other => Err(format!("{other:?} is neither a quoted string nor true/false")),
-    }
-}
-
-/// Enough TOML for `[[file]]` tables of string and boolean keys. Deliberately
-/// not a general parser — the manifest is ours, and a real one would be the
-/// tool's only dependency.
+/// This was ~95 lines of hand-rolled TOML subset, kept only so the tool had no
+/// dependencies. The two hazards it existed to handle are both things a real
+/// parser gets right for free: a trailing `# comment` after a quoted value (the
+/// obvious `trim_matches('"')` leaves the comment glued on, and the renderer
+/// then writes a file with the comment in its name), and `copy = yes`, which is
+/// not TOML and used to read as `false`.
 fn parse_manifest(path: &Path) -> Result<Vec<Entry>, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut entries: Vec<Entry> = Vec::new();
-    let mut cur: Option<(String, String, Option<String>, bool)> = None;
-
-    let flush = |cur: Option<(String, String, Option<String>, bool)>,
-                 entries: &mut Vec<Entry>|
-     -> Result<(), String> {
-        if let Some((template, out, dest, copy)) = cur {
-            if template.is_empty() || out.is_empty() {
-                return Err("[[file]] needs both `template` and `out`".into());
-            }
-            entries.push(Entry { template, out, dest, copy });
-        }
-        Ok(())
-    };
-
-    for (n, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line == "[[file]]" {
-            flush(cur.take(), &mut entries)?;
-            cur = Some((String::new(), String::new(), None, false));
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            return Err(format!("{}:{}: cannot parse {line:?}", path.display(), n + 1));
-        };
-        let e = cur
-            .as_mut()
-            .ok_or_else(|| format!("{}:{}: key outside [[file]]", path.display(), n + 1))?;
-        let at = |msg: String| format!("{}:{}: {msg}", path.display(), n + 1);
-        let key = k.trim();
-        let value = parse_value(v).map_err(|why| at(format!("{key}: {why}")))?;
-        match (key, value) {
-            ("template", Value::Str(s)) => e.0 = s,
-            ("out", Value::Str(s)) => e.1 = s,
-            ("dest", Value::Str(s)) => e.2 = Some(s),
-            ("copy", Value::Bool(b)) => e.3 = b,
-            ("template" | "out" | "dest", _) => {
-                return Err(at(format!("{key} takes a quoted string")));
-            }
-            ("copy", _) => return Err(at("copy takes true or false".into())),
-            (other, _) => return Err(at(format!("unknown key {other:?}"))),
-        }
-    }
-    flush(cur, &mut entries)?;
-    if entries.is_empty() {
+    let manifest: Manifest =
+        toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if manifest.file.is_empty() {
         return Err(format!("{}: no [[file]] entries", path.display()));
     }
-    Ok(entries)
+    Ok(manifest.file)
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +390,6 @@ fn write_file(path: &Path, contents: &str) -> Result<(), String> {
 struct Args {
     scheme: PathBuf,
     templates: PathBuf,
-    manifest: Option<PathBuf>,
     out: PathBuf,
     loadout: String,
 }
@@ -469,7 +397,6 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut scheme = None;
     let mut templates = PathBuf::from("templates");
-    let mut manifest = None;
     let mut out = PathBuf::from("build");
     let mut loadout = "cozy".to_string();
 
@@ -478,13 +405,12 @@ fn parse_args() -> Result<Args, String> {
         let mut val = |flag: &str| it.next().ok_or(format!("{flag} needs a value"));
         match arg.as_str() {
             "--templates" => templates = val("--templates")?.into(),
-            "--manifest" => manifest = Some(val("--manifest")?.into()),
             "--out" => out = val("--out")?.into(),
             "--loadout" => loadout = val("--loadout")?,
             "-h" | "--help" => {
                 println!(
-                    "usage: cozy-theme <scheme.yaml> [--templates DIR] [--manifest FILE] \
-                     [--out DIR] [--loadout NAME]"
+                    "usage: cozy-theme <scheme.yaml> [--templates DIR] [--out DIR] \
+                     [--loadout NAME]"
                 );
                 std::process::exit(0);
             }
@@ -499,7 +425,6 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args {
         scheme: scheme.ok_or("no scheme given (try `cozy-theme --help`)")?,
         templates,
-        manifest,
         out,
         loadout,
     })
@@ -517,9 +442,7 @@ fn build(args: &Args) -> Result<(), String> {
     }
 
     let scheme = Scheme::load(&args.scheme)?;
-    let manifest_path =
-        args.manifest.clone().unwrap_or_else(|| args.templates.join("manifest.toml"));
-    let entries = parse_manifest(&manifest_path)?;
+    let entries = parse_manifest(&args.templates.join("manifest.toml"))?;
     let mut vars = scheme.vars();
     vars.insert("loadout-name".into(), args.loadout.clone());
 
