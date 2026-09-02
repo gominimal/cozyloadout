@@ -31,6 +31,12 @@ Twelve tools get a themed config file, and a dozen more are configured through t
 
 **Minimal Dark** and **Minimal Light** are included, matching the Minimal System design tokens. Any [tinted-theming](https://github.com/tinted-theming/schemes) scheme works too — `just fetch-schemes` pulls the upstream base16 and base24 collection, all of which is rendered in CI.
 
+<p align="center">
+  <img src="docs/cozy-loadout.png" alt="A Minimal session running the cozy loadout in the decaf scheme: one zellij tab split between helix editing Rust on the left, an agent pane top right, and fish with a starship prompt and an eza listing bottom right — all three on the same palette" width="900">
+  <br>
+  <em>helix, an agent, and fish under zellij — one scheme across all of it. Shown in <code>decaf</code>, one of the upstream schemes.</em>
+</p>
+
 ## Quick Start
 
 ```shell
