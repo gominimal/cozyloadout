@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose a new tool, a theming improvement, or another change
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve? What does the current loadout make hard or impossible?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you would like to happen. If you are proposing a new tool, say which package provides it and what it would need themed.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you have considered, and why they fall short.
+    validations:
+      required: false

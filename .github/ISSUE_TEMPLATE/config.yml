@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and discussion
+    url: https://github.com/gominimal/cozyloadout/discussions
+    about: Ask questions and discuss ideas before filing an issue.
+  - name: Minimal documentation
+    url: https://minimal.dev/docs
+    about: Reference documentation for minimal itself, including the loadouts schema.
