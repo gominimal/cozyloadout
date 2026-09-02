@@ -164,22 +164,17 @@ bundle:
     cd "{{BUILD}}" && zip -qr ../{{LOADOUT}}.zip {{LOADOUT}}.toml {{LOADOUT}}
     echo "{{LOADOUT}}.zip"
 
+# Installing is the renderer's own `--install`, so the wizard and this recipe do
+# the same thing by calling the same code rather than by agreeing on a sequence
+# of shell steps. It copies build/ into place, deleting this loadout's old tree
+# first — `unzip -o` overwrites but never removes, so without that every scheme
+# you had ever installed would leave its theme files behind forever.
+#
 # There is nothing to run afterwards: bat's theme cache and delta's gitconfig
 # include are handled by the loadout's lifecycle hooks.
-[doc('Install the bundled loadout into ~/.config/minimal/loadouts/')]
-install: bundle
-    #!/usr/bin/env bash
-    set -euo pipefail
-    dir=~/.config/minimal/loadouts
-    mkdir -p "$dir"
-    # Delete the loadout tree before unzipping over it. `unzip -o` overwrites
-    # but never removes, so without this every scheme you have ever installed
-    # leaves its <slug>.tmTheme, <slug>.toml, <slug>.kdl and <slug>.hjson behind
-    # in the loadout directory forever. Only this loadout's own generated tree
-    # is removed — nothing else under loadouts/ is touched.
-    rm -rf "$dir/{{LOADOUT}}"
-    unzip -oq {{LOADOUT}}.zip -d "$dir"
-    echo "installed into $dir. Apply the loadout and attach."
+[doc('Install what is in build/ into ~/.config/minimal/loadouts/')]
+install:
+    {{RENDER}} --install
 
 # Run the renderer's tests.
 test:

@@ -228,11 +228,13 @@ end
 # against the left margin because any indent would land inside the art, and the
 # blank line separating the mark from the welcome text is a real newline inside
 # the quotes because fish does not expand \n in a double-quoted string.
-set -g fish_greeting (set_color $__cozy_b07)"   ████  ████▄
+{% if greeting == "legacy" %}set -g fish_greeting (set_color $__cozy_b07)"▃🭕🭏🭕🭏 M I N I M A L
+
+"{% else %}set -g fish_greeting (set_color $__cozy_b07)"   ████  ████▄
 ▄▄▄ ▀███▄ ▀███▄
 ▀███  ▀███  ▀███
 
-"(set_color $__cozy_b05)"Welcome to minimal! "(set_color $__cozy_b0d)"ctrl-w"(set_color $__cozy_b05)" to detach"(set_color normal)
+"{% endif %}(set_color $__cozy_b05)"Welcome to minimal! "(set_color $__cozy_b0d)"ctrl-w"(set_color $__cozy_b05)" to detach"(set_color normal)
 
 set -e __cozy_b00 __cozy_b01 __cozy_b02 __cozy_b03 __cozy_b04 __cozy_b05 __cozy_b06 __cozy_b07 \
     __cozy_b08 __cozy_b09 __cozy_b0a __cozy_b0b __cozy_b0c __cozy_b0d __cozy_b0e __cozy_b0f

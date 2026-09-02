@@ -44,7 +44,7 @@ cd cozyloadout
 
 just fetch-schemes             # optional: pull in the upstream schemes
 just theme gruvbox-dark-hard   # render + bundle into cozy.zip
-just install                   # unzip into ~/.config/minimal/loadouts/
+just install                   # install into ~/.config/minimal/loadouts/
 
 min session activate --loadout cozy --attach .
 ```
@@ -60,7 +60,7 @@ Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is check
 | [`just`](https://github.com/casey/just) | running the recipes |
 | Rust — `cargo` and `rustc`, 1.88+ | building the renderer and the wizard |
 | `bash` | recipe bodies |
-| `zip`, `unzip` | `just bundle` and `just install` |
+| `zip` | `just bundle`, which produces the distributable `cozy.zip` |
 | `git` | cloning this repo; also `just fetch-schemes` |
 | Minimal **0.5.4+** | installing the loadout — earlier versions don't support `$LOADOUT_ROOT` patch sources or the `SHELL` handover |
 
@@ -112,7 +112,7 @@ duf, hexyl, tokei, hyperfine, bandwhich, glow and kittyview. The split lives in
 | `just` | List recipes and available schemes |
 | `just theme [scheme]` | Render + bundle. Defaults to `minimal-dark` |
 | `just render [scheme]` | Render only, no zip |
-| `just install` | Bundle and unzip into `~/.config/minimal/loadouts/` |
+| `just install` | Copy `build/` into `~/.config/minimal/loadouts/` |
 | `just schemes` | List what `just theme` will accept |
 | `just vendored` | List the vendored upstream schemes |
 | `just fetch-schemes` | Clone the upstream scheme collection |

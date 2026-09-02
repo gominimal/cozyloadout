@@ -10,7 +10,9 @@ use state::State;
 
 use clap::Parser;
 use color_eyre::eyre::Result;
-use cozy_theme::{discover, mix, OptionalPackage, Packages, Rgb, Scheme, SchemeEntry, SLOTS};
+use cozy_theme::{
+    discover, mix, OptionalPackage, Options, Packages, Rgb, Scheme, SchemeEntry, SLOTS,
+};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::style::ResetColor;
@@ -19,6 +21,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Padding, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
+use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -288,6 +291,128 @@ fn is_package_name(s: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Applying
+// ---------------------------------------------------------------------------
+
+/// What to do with everything chosen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Action {
+    Generate,
+    GenerateAndInstall,
+    SaveOnly,
+    Abort,
+}
+
+impl Action {
+    // Install first: it is the whole point of running the wizard, so it is
+    // what the cursor starts on rather than something to arrow down to.
+    const ALL: [Action; 4] = [
+        Action::GenerateAndInstall,
+        Action::Generate,
+        Action::SaveOnly,
+        Action::Abort,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Action::Generate => "Generate",
+            Action::GenerateAndInstall => "Generate and install",
+            Action::SaveOnly => "Save settings and exit",
+            Action::Abort => "Abort",
+        }
+    }
+
+    fn about(self) -> &'static str {
+        match self {
+            Action::Generate => "Render the loadout into build/. Nothing outside this repo changes.",
+            Action::GenerateAndInstall => {
+                "Render, bundle, and unzip into ~/.config/minimal/loadouts/, replacing what is there."
+            }
+            Action::SaveOnly => "Remember these answers for next time without building anything.",
+            Action::Abort => "Leave without building anything or remembering these answers.",
+        }
+    }
+
+    /// Whether the answers are worth keeping. Abort is the only one that
+    /// throws them away — that is what makes it different from the others.
+    fn saves(self) -> bool {
+        self != Action::Abort
+    }
+}
+
+/// How an action turned out, for the line under the list.
+enum Applied {
+    Idle,
+    Running(&'static str),
+    Ok(String),
+    Failed(String),
+}
+
+/// Render the loadout with everything this wizard collected.
+///
+/// A direct call into the library the `cozy-theme` binary is a thin CLI over,
+/// so the wizard and `just theme` run literally the same code. It used to
+/// spawn that binary instead, which meant finding it on disk and making every
+/// path absolute because the child had its own working directory — two
+/// problems that only existed because of the subprocess.
+fn run_generate(app: &App, repo: &Path, install: bool) -> Result<String, String> {
+    run_generate_to(app, repo, &repo.join("build"), install)
+}
+
+/// The same, with the output directory named — so a test can render somewhere
+/// throwaway instead of over the checkout's `build/`.
+fn run_generate_to(app: &App, repo: &Path, out: &Path, install: bool) -> Result<String, String> {
+    let scheme = app
+        .schemes
+        .get(app.theme_row)
+        .ok_or_else(|| "no scheme selected".to_string())?;
+
+    let options = Options {
+        scheme: scheme.path.clone(),
+        templates: repo.join("templates"),
+        out: out.to_path_buf(),
+        greeting: app.greeting.unwrap_or(Greeting::Blocks).key().to_string(),
+        // Always non-empty, even when nothing is chosen: an empty `with` means
+        // "everything", which is the opposite of an empty checklist. A single
+        // empty string is the explicit empty set.
+        with: {
+            let chosen = app.chosen_packages();
+            if chosen.is_empty() {
+                vec![String::new()]
+            } else {
+                chosen.into_iter().map(str::to_string).collect()
+            }
+        },
+        patch_files: app
+            .pickers
+            .first()
+            .map(|p| p.chosen.iter().cloned().collect())
+            .unwrap_or_default(),
+        patch_dirs: app
+            .pickers
+            .get(1)
+            .map(|p| p.chosen.iter().cloned().collect())
+            .unwrap_or_default(),
+        ..Options::default()
+    };
+    cozy_theme::build(&options).map_err(|e| format!("{e}"))?;
+    let mut report = format!("rendered {} into {}", scheme.name, out.display());
+
+    if install {
+        // In-process, like the render. Shelling out to `just install` printed
+        // the recipe line and unzip's chatter straight through the alternate
+        // screen, which is where the stray output in the wizard came from.
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "HOME is not set".to_string())?;
+        let dest = cozy_theme::install(out, "cozy", &cozy_theme::loadouts_dir(&home))
+            .map_err(|e| format!("{e}"))?;
+        let _ = write!(report, "\ninstalled into {}", dest.display());
+    }
+    Ok(report)
+}
+
+// ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 
@@ -307,6 +432,7 @@ enum Screen {
     Themes,
     Packages,
     Patches,
+    Apply,
 }
 
 struct App {
@@ -359,6 +485,13 @@ struct App {
     /// What the last completed run chose. Consulted as each page opens rather
     /// than all at once, because the scheme list and the package list are only
     /// known once their page is entered.
+    /// The summary page's cursor, and how the chosen action went.
+    action_row: usize,
+    applied: Applied,
+    /// The repo the wizard is configuring — where `build/` and `templates/`
+    /// live, and where `just` is run.
+    repo: PathBuf,
+
     saved: State,
     /// Set only by finishing the last page. Quitting leaves it false, so an
     /// abandoned run does not overwrite the answers from a finished one.
@@ -405,6 +538,9 @@ impl App {
             always: Vec::new(),
             pickers: Vec::new(),
             picker_focus: 0,
+            action_row: 0,
+            applied: Applied::Idle,
+            repo: PathBuf::from("."),
             saved,
             completed: false,
             extra: String::new(),
@@ -495,14 +631,31 @@ impl App {
         self.list_rows.get().max(1)
     }
 
+    /// The repository the wizard is configuring, derived from the schemes
+    /// directory: `<repo>/schemes/vendor`.
+    ///
+    /// The empty check is load-bearing. `Path::new("schemes/vendor")` climbs to
+    /// `"schemes"` and then to `""`, and an empty path is not the current
+    /// directory — it is nothing. Passing it to `Command::current_dir` fails
+    /// with "No such file or directory", which is how generating from a
+    /// default `--schemes` broke.
+    fn repo_root(&self) -> PathBuf {
+        let root = self
+            .schemes_dir
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("."));
+        if root.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            root.to_path_buf()
+        }
+    }
+
     /// `templates/`, found relative to the schemes directory — the same way
     /// `enter_themes` locates the repo the wizard is running inside.
     fn templates_dir(&self) -> PathBuf {
-        self.schemes_dir
-            .parent()
-            .and_then(Path::parent)
-            .unwrap_or(Path::new("."))
-            .join("templates")
+        self.repo_root().join("templates")
     }
 
     fn current_greeting(&self) -> Greeting {
@@ -540,6 +693,7 @@ impl App {
             Screen::Themes => self.on_key_themes(key),
             Screen::Packages => self.on_key_packages(key),
             Screen::Patches => self.on_key_patches(key),
+            Screen::Apply => self.on_key_apply(key),
         }
     }
 
@@ -730,6 +884,60 @@ impl App {
         self.pickers.iter().flat_map(|p| p.chosen.iter()).collect()
     }
 
+    fn enter_apply(&mut self) {
+        self.repo = self.repo_root();
+        self.applied = Applied::Idle;
+        self.screen = Screen::Apply;
+    }
+
+    fn action(&self) -> Action {
+        Action::ALL[self.action_row]
+    }
+
+    fn on_key_apply(&mut self, key: KeyEvent) {
+        // Once the action has run, any key leaves. Naming two specific keys
+        // made people hunt for them, and there is nothing else to do here:
+        // re-running from the same screen would be a second build nobody asked
+        // for, and a failure's message is printed on the way out so it is
+        // still readable after the alternate screen is gone.
+        if matches!(self.applied, Applied::Ok(_) | Applied::Failed(_)) {
+            self.done = true;
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => self.screen = Screen::Patches,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.action_row = self.action_row.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.action_row = (self.action_row + 1).min(Action::ALL.len() - 1);
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.apply(),
+            _ => {}
+        }
+    }
+
+    /// Carry out the highlighted action.
+    fn apply(&mut self) {
+        let action = self.action();
+        // Abort is the one action that does not keep the answers. Everything
+        // else — including generating without installing — counts as having
+        // finished, so `main` writes the state file.
+        self.completed = action.saves();
+        match action {
+            Action::Abort | Action::SaveOnly => self.done = true,
+            Action::Generate | Action::GenerateAndInstall => {
+                let install = action == Action::GenerateAndInstall;
+                self.applied = Applied::Running(action.label());
+                let repo = self.repo.clone();
+                self.applied = match run_generate(self, &repo, install) {
+                    Ok(report) => Applied::Ok(report),
+                    Err(why) => Applied::Failed(why),
+                };
+            }
+        }
+    }
+
     fn on_key_patches(&mut self, key: KeyEvent) {
         let page = self.list_rows();
         let focus = self.picker_focus;
@@ -758,10 +966,7 @@ impl App {
             // Enter finishes rather than descending: descending is on the
             // arrow that points into the tree, which leaves enter free to mean
             // the same thing it means on every other page.
-            KeyCode::Enter => {
-                self.completed = true;
-                self.done = true;
-            }
+            KeyCode::Enter => self.enter_apply(),
             _ => {}
         }
     }
@@ -915,6 +1120,15 @@ fn main() -> Result<()> {
         }
     }
 
+    // The outcome, after the alternate screen is gone. Without this a failure
+    // vanishes with the screen it was drawn on, which is the one message the
+    // user most needs to keep.
+    match &app.applied {
+        Applied::Ok(report) => println!("{report}"),
+        Applied::Failed(why) => eprintln!("failed: {why}"),
+        _ => {}
+    }
+
     let paths = app.chosen_paths();
     if !paths.is_empty() {
         println!(
@@ -972,6 +1186,7 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::Themes => draw_themes(frame, inner, app),
         Screen::Packages => draw_packages(frame, inner, app),
         Screen::Patches => draw_patches(frame, inner, app),
+        Screen::Apply => draw_apply(frame, inner, app),
     }
     frame.render_widget(
         Paragraph::new(Line::from(footer_hints(app))).alignment(Alignment::Center),
@@ -1019,6 +1234,15 @@ fn footer_hints(app: &App) -> Vec<Span<'static>> {
         Screen::Packages if app.focus == Focus::Input => [
             hint("type", "package names"),
             hint("enter/esc", "back to the list"),
+        ]
+        .concat(),
+        Screen::Apply if matches!(app.applied, Applied::Ok(_) | Applied::Failed(_)) => {
+            [hint("any key", "exit")].concat()
+        }
+        Screen::Apply => [
+            hint("↑/↓", "move"),
+            hint("enter", "do it"),
+            hint("esc", "back"),
         ]
         .concat(),
         Screen::Patches => [
@@ -1720,6 +1944,140 @@ fn draw_package_detail(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
 /// Separate rather than one browser with a mode, because a loadout patches the
 /// two differently — a file maps to a single `dest`, a directory to a glob —
 /// and because seeing both sets of choices at once is the point.
+/// The four lines of "here is what you chose".
+///
+/// The scheme-collection answer is deliberately absent: it was about the state
+/// of the disk a moment ago, not a choice worth reviewing.
+fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
+    let row = |k: &'static str, v: String| {
+        Line::from(vec![
+            Span::styled(format!("  {k:<10}"), Style::default().fg(t.comment)),
+            Span::styled(v, Style::default().fg(t.fg)),
+        ])
+    };
+    let files = app.pickers.first().map_or(0, |p| p.chosen.len());
+    let dirs = app.pickers.get(1).map_or(0, |p| p.chosen.len());
+    let extras = app.extra_packages();
+    Paragraph::new(Text::from(vec![
+        row(
+            "greeting",
+            app.greeting
+                .unwrap_or(Greeting::Blocks)
+                .label()
+                .trim()
+                .to_string(),
+        ),
+        row(
+            "theme",
+            app.schemes
+                .get(app.theme_row)
+                .map_or_else(|| "—".to_string(), |e| e.name.clone()),
+        ),
+        row(
+            "packages",
+            if extras.is_empty() {
+                format!("{} optional", app.chosen_packages().len())
+            } else {
+                format!(
+                    "{} optional, including {}",
+                    app.chosen_packages().len(),
+                    extras.join(" ")
+                )
+            },
+        ),
+        row(
+            "patches",
+            if files + dirs == 0 {
+                "none".to_string()
+            } else {
+                format!("{files} file(s), {dirs} director(ies)")
+            },
+        ),
+    ]))
+    .wrap(Wrap { trim: false })
+}
+
+/// The summary and the four things that can be done with it.
+fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
+    let t = app.theme();
+    frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
+
+    let [intro_area, summary_area, list_area, status_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(7),
+        Constraint::Length(9),
+        Constraint::Min(1),
+    ])
+    .areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "Ready.",
+            Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+        )),
+        intro_area,
+    );
+
+    frame.render_widget(summary_paragraph(app, &t), summary_area);
+
+    let items: Vec<ListItem> = Action::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let selected = i == app.action_row;
+            let style = if selected {
+                Style::default()
+                    .fg(t.bg)
+                    .bg(t.blue)
+                    .add_modifier(Modifier::BOLD)
+            } else if *a == Action::Abort {
+                Style::default().fg(t.red)
+            } else {
+                Style::default().fg(t.fg)
+            };
+            ListItem::new(vec![
+                Line::from(Span::styled(format!("  {:<24}", a.label()), style)),
+                Line::from(Span::styled(
+                    format!("    {}", a.about()),
+                    Style::default().fg(t.comment),
+                )),
+            ])
+        })
+        .collect();
+    frame.render_widget(List::new(items), list_area);
+
+    let status = match &app.applied {
+        Applied::Idle => Line::raw(""),
+        Applied::Running(what) => Line::styled(format!("  {what}…"), Style::default().fg(t.cyan)),
+        Applied::Ok(report) => Line::from(vec![
+            Span::styled(
+                "  done  ",
+                Style::default().fg(t.green).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                report.lines().last().unwrap_or_default().to_string(),
+                Style::default().fg(t.comment),
+            ),
+            Span::styled("   press any key to exit", Style::default().fg(t.cyan)),
+        ]),
+        Applied::Failed(why) => Line::from(vec![
+            Span::styled(
+                "  failed  ",
+                Style::default().fg(t.red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                why.lines().next().unwrap_or_default().to_string(),
+                Style::default().fg(t.orange),
+            ),
+            Span::styled("   press any key to exit", Style::default().fg(t.cyan)),
+        ]),
+    };
+    frame.render_widget(
+        Paragraph::new(status).wrap(Wrap { trim: true }),
+        status_area,
+    );
+}
+
 fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
     let t = app.theme();
     frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
@@ -2893,7 +3251,7 @@ mod tests {
     }
 
     #[test]
-    fn arrows_walk_the_tree_and_enter_finishes() {
+    fn arrows_walk_the_tree_and_enter_moves_on() {
         // Enter is `done` on every other page, so descending is on the arrow
         // that points into the tree rather than stealing enter.
         let (mut a, root) = on_patches("walk");
@@ -2915,7 +3273,11 @@ mod tests {
 
         assert!(!a.done);
         a.on_key(press(KeyCode::Enter));
-        assert!(a.done, "enter should finish rather than descend");
+        assert_eq!(
+            a.screen,
+            Screen::Apply,
+            "enter should move on rather than descend"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -3004,9 +3366,14 @@ mod tests {
         a.on_key(press(KeyCode::Esc));
         let theme = a.schemes[a.theme_row].name.clone();
         a.on_key(press(KeyCode::Enter)); // packages -> patches
-        a.on_key(press(KeyCode::Enter)); // finish
+        a.on_key(press(KeyCode::Enter)); // patches -> apply
+        assert_eq!(a.screen, Screen::Apply);
+        for _ in 0..2 {
+            a.on_key(press(KeyCode::Down)); // "save settings and exit"
+        }
+        a.on_key(press(KeyCode::Enter));
 
-        assert!(a.completed, "finishing the last page completes the run");
+        assert!(a.completed, "choosing anything but abort completes the run");
         let st = a.to_state();
         assert_eq!(st.greeting.as_deref(), Some("blocks"));
         assert_eq!(st.theme.as_deref(), Some(theme.as_str()));
@@ -3245,6 +3612,218 @@ mod tests {
         }
     }
 
+    // -- the apply page ----------------------------------------------------
+
+    fn on_apply() -> App {
+        let mut a = on_packages();
+        a.enter_patches();
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Apply);
+        a
+    }
+
+    #[test]
+    fn the_repo_root_is_never_an_empty_path() {
+        // `Path::new("schemes/vendor")` climbs to "schemes" and then to "",
+        // and an empty path is not the current directory — it is nothing.
+        // Passing it to `Command::current_dir` fails, which is exactly how
+        // generating from a default `--schemes` broke.
+        for dir in ["schemes/vendor", "./schemes/vendor", "/abs/schemes/vendor"] {
+            let a = App::with_state(PathBuf::from(dir), State::default());
+            let root = a.repo_root();
+            assert!(
+                !root.as_os_str().is_empty(),
+                "{dir} produced an empty repo root"
+            );
+            assert!(
+                a.templates_dir().starts_with(&root),
+                "templates should sit under the repo root"
+            );
+        }
+    }
+
+    #[test]
+    fn the_summary_reports_every_choice_but_the_fetch() {
+        let mut a = on_apply();
+        let text = flatten(&render_app(&a, 100, 30));
+        for field in ["greeting", "theme", "packages", "patches"] {
+            assert!(
+                text.contains(field),
+                "{field} missing from the summary:\n{text}"
+            );
+        }
+        assert!(
+            text.contains(&a.schemes[a.theme_row].name),
+            "the scheme should be named"
+        );
+        // The scheme-collection question was about the disk a moment ago, not
+        // a choice worth reviewing.
+        for word in ["clone", "Download", "Update the upstream"] {
+            assert!(
+                !text.contains(word),
+                "the summary should not mention {word}"
+            );
+        }
+        a.on_key(press(KeyCode::Esc));
+        assert_eq!(a.screen, Screen::Patches, "esc should still step back");
+    }
+
+    #[test]
+    fn abort_is_the_only_action_that_discards_the_answers() {
+        for (steps, action, saves) in [
+            (0, Action::GenerateAndInstall, true),
+            (1, Action::Generate, true),
+            (2, Action::SaveOnly, true),
+            (3, Action::Abort, false),
+        ] {
+            let mut a = on_apply();
+            for _ in 0..steps {
+                a.on_key(press(KeyCode::Down));
+            }
+            assert_eq!(a.action(), action);
+            assert_eq!(action.saves(), saves, "{action:?}");
+        }
+        // Abort really does neither.
+        let mut a = on_apply();
+        for _ in 0..3 {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Enter));
+        assert!(a.done);
+        assert!(!a.completed, "abort must not write the state file");
+
+        // Save-only finishes without building.
+        let mut b = on_apply();
+        for _ in 0..2 {
+            b.on_key(press(KeyCode::Down));
+        }
+        b.on_key(press(KeyCode::Enter));
+        assert!(
+            b.done && b.completed,
+            "save-only should still be remembered"
+        );
+        assert!(
+            matches!(b.applied, Applied::Idle),
+            "and must not have built anything"
+        );
+    }
+
+    #[test]
+    fn any_key_exits_once_the_action_has_run() {
+        // Naming two specific keys made people hunt for them, and there is
+        // nothing else to do on this screen afterwards.
+        for key in [
+            KeyCode::Char('x'),
+            KeyCode::Char(' '),
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Down,
+            KeyCode::Tab,
+        ] {
+            let mut a = on_apply();
+            a.applied = Applied::Ok("rendered".into());
+            a.on_key(press(key));
+            assert!(a.done, "{key:?} should have exited");
+        }
+        // A failure ends the same way rather than sitting there re-running.
+        for key in [KeyCode::Char('x'), KeyCode::Enter, KeyCode::Esc] {
+            let mut a = on_apply();
+            a.applied = Applied::Failed("git exploded".into());
+            a.on_key(press(key));
+            assert!(a.done, "{key:?} should have exited after a failure");
+        }
+    }
+
+    #[test]
+    fn the_settled_screen_says_how_to_leave() {
+        for applied in [
+            Applied::Ok("rendered something".into()),
+            Applied::Failed("something broke".into()),
+        ] {
+            let mut a = on_apply();
+            a.applied = applied;
+            let text = flatten(&render_app(&a, 110, 30));
+            assert!(text.contains("press any key to exit"), "{text}");
+        }
+    }
+
+    #[test]
+    fn install_is_the_first_thing_offered() {
+        // It is the point of running the wizard; making it the second option
+        // means everyone arrows past the one they wanted.
+        let a = on_apply();
+        assert_eq!(a.action(), Action::GenerateAndInstall);
+        let rows = render_app(&a, 100, 30);
+        let install = rows
+            .iter()
+            .position(|r| r.contains("Generate and install"))
+            .unwrap();
+        let generate = rows
+            .iter()
+            .position(|r| r.contains("Generate") && !r.contains("install"))
+            .unwrap();
+        assert!(install < generate, "install should be listed first");
+    }
+
+    #[test]
+    fn the_cursor_clamps_at_both_ends_of_the_action_list() {
+        let mut a = on_apply();
+        a.on_key(press(KeyCode::Up));
+        assert_eq!(
+            a.action(),
+            Action::GenerateAndInstall,
+            "the cursor starts on install and up should stay there"
+        );
+        for _ in 0..10 {
+            a.on_key(press(KeyCode::Down));
+        }
+        assert_eq!(a.action(), Action::Abort, "down should stop at the end");
+    }
+
+    #[test]
+    fn generate_actually_renders_what_was_chosen() {
+        // The whole point of the page. Runs the real renderer against a
+        // throwaway output directory and reads what came out.
+        let out = temp_dir("apply-generate");
+        std::fs::create_dir_all(&out).unwrap();
+
+        let mut a = on_apply();
+        // A repo whose `build/` is the temp dir: the renderer is told where to
+        // write, so this does not disturb the checkout.
+        a.repo = PathBuf::from("../..");
+        a.greeting = Some(Greeting::Legacy);
+        // Turn everything optional off, so the effect is visible in the output.
+        a.wanted.iter_mut().for_each(|w| *w = false);
+
+        let scheme = a.schemes[a.theme_row].name.clone();
+        let report = run_generate_to(&a, Path::new("../.."), &out, false)
+            .unwrap_or_else(|e| panic!("generate failed: {e}"));
+        assert!(
+            report.contains(&scheme),
+            "the renderer should name the scheme: {report}"
+        );
+
+        let manifest = std::fs::read_to_string(out.join("cozy.toml")).unwrap();
+        assert!(
+            manifest.contains("\"fish\""),
+            "required packages must survive"
+        );
+        assert!(
+            !manifest.contains("\"tealdeer\""),
+            "declined packages must be gone"
+        );
+        assert!(
+            !out.join("cozy/atuin").exists(),
+            "a declined package's config must not be rendered"
+        );
+        let fish = std::fs::read_to_string(out.join("cozy/fish/config.fish")).unwrap();
+        assert!(
+            fish.contains("🭕"),
+            "the legacy greeting should have been chosen"
+        );
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
     #[test]
     #[ignore = "prints frames for eyeballing; run with --ignored --nocapture"]
     fn dump_frames() {
@@ -3296,6 +3875,14 @@ mod tests {
             for row in render_app(&p, w, h) {
                 println!("|{}|", row.trim_end());
             }
+        }
+
+        let mut r = on_packages();
+        r.enter_patches();
+        r.enter_apply();
+        println!("\n=== apply 90x28 ===");
+        for row in render_app(&r, 90, 28) {
+            println!("|{}|", row.trim_end());
         }
 
         let mut q = on_packages();
