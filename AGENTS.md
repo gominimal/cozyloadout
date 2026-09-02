@@ -79,9 +79,9 @@ float-to-int `as` saturates rather than wrapping, so the two "unchecked
 narrowing" lints do not apply. Keep allows local and reasoned like that one
 rather than widening the crate-level config.
 
-`rust-version = "1.85"`, set by the dependencies (`uuid`, `yaml-rust2`, `clap`,
-`hashbrown`) rather than by this crate's own source. Never tested — development
-was on 1.97.1.
+`rust-version = "1.88"`, set by the dependencies rather than by this crate's own
+source — currently `darling`, reached through ratatui. Development is on 1.97.1,
+so the floor is never exercised locally; the `msrv` CI job compiles against it.
 
 One crate was *rejected* after testing: see the handlebars note under Template
 grammar. `serde_yaml` and its forks were rejected too — the original is
@@ -465,7 +465,8 @@ things to remember:
 - **The MSRV job** compiles against the `rust-version` in `Cargo.toml` rather
   than trusting it. The floor was derived by reading the dependencies' own
   manifests, and Dependabot moves it silently — uuid, indexmap and hashbrown
-  already pushed it from 1.71 to 1.85 once.
+  already moved it twice: 1.71 -> 1.85 with the parsers, 1.85 -> 1.88 with
+  ratatui.
 - **A weekly `check-schemes` cron.** `just fetch-schemes` clones tinted-theming
   at HEAD, so the rendered corpus is an input nobody here controls. The schedule
   surfaces an upstream scheme that breaks rendering as upstream drift rather
@@ -551,7 +552,7 @@ Worth knowing before relying on any of it:
 | Re-attach carries no OSC palette | read in `minimald::session_host` — the attach flush is a `vt100` screen dump |
 | Detach leaves the palette on the host terminal | read in `Host::unwind_codes` — it resets SGR, alt screen, cursor, focus reporting, and no OSC colours |
 | Any `on_attach` hook breaks fish's OSC 11 background | **doubtful** — observed once, but the once-per-shell palette bug produces the same symptom and was live at the same time. Re-test |
-| Rust floor of 1.85 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — only 1.97.1 is available here |
+| Rust floor of 1.88 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — only 1.97.1 is available here |
 | `ctrl-w` detaches, per the fish greeting | verified — documented in the CLI reference and in minimal's own orientation banner |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
 | The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |

@@ -7,13 +7,17 @@ edition = "2021"
 # published: this is a build tool for this repo, not a crates.io artifact.
 license = "Apache-2.0"
 publish = false
+# Two binaries live here: the renderer and the wizard. Without this, a bare
+# `cargo run` cannot choose between them and fails — which is exactly what
+# `just render` does under the hood.
+default-run = "cozy-theme"
 
-# Declared so an older toolchain fails with "requires rustc 1.85" rather than a
+# Declared so an older toolchain fails with "requires rustc 1.88" rather than a
 # confusing parse error. The floor is set by the dependencies, not by this
-# crate's own code: uuid 1.26, indexmap 2.14 and hashbrown 0.17 all want 1.85.
-# (Before the deps landed it was 1.71, for `[char; N]`'s Pattern impl in
-# `split_kv` — that is still the floor the crate's own source needs.)
-rust-version = "1.85"
+# crate's own code — currently `darling`, reached through ratatui. It has moved
+# twice already (1.71 -> 1.85 when the parsers landed, 1.85 -> 1.88 with
+# ratatui), which is why CI compiles against it rather than trusting it.
+rust-version = "1.88"
 
 # The tool used to have no dependencies at all, so `just theme` built with
 # nothing but a rustc/cargo pair. That is over: a setup wizard is coming and
@@ -40,6 +44,7 @@ clap = { version = "4.6.6", features = ["derive"] }
 color-eyre = "0.6.5"
 fs-err = "3.3.1"
 minijinja = "2.24.0"
+ratatui = "0.29.0"
 roxmltree = "0.21.1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

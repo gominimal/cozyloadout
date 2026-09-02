@@ -142,6 +142,16 @@ fetch-schemes:
     fi
     just schemes
 
+# Interactive setup for the loadout. Scaffolding for now: it starts, draws a
+# frame and quits on `q`.
+#
+# Not `{{RENDER}}`: that runs the renderer binary. This is a second binary in
+# the same package, so it needs `--bin`. Release rather than debug because a
+# debug ratatui build is noticeably sluggish to redraw.
+[doc('Run the interactive setup wizard')]
+wizard:
+    cargo run --quiet --release --manifest-path tools/cozy-theme/Cargo.toml --bin cozy-wizard
+
 # Bundle whatever is currently in build/ into cozy.zip.
 bundle:
     #!/usr/bin/env bash
