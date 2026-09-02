@@ -100,6 +100,60 @@ distinct slugs. Two rounds of confusing failures came from exactly that; a fixed
 path under the system temp dir has the same problem across concurrent runs, so
 everything goes through `temp_dir()`.
 
+### The wizard
+
+`tools/cozy-theme/src/bin/cozy-wizard.rs`, a second binary in the same package
+(`default-run = "cozy-theme"` keeps a bare `cargo run` pointing at the
+renderer). `just wizard` runs it.
+
+Its first page asks which fish greeting to install: the mark drawn with Symbols
+for Legacy Computing (`▃🭕🭏🭕🭏 M I N I M A L`, the U+1FB00 block, Unicode 13)
+or the block-element mark that ships today (U+2580–U+259F). The newer glyphs are
+missing from many fonts, so both are drawn **unstyled, in the terminal's own
+foreground** — the user is judging their font, and a preview that is not the
+real thing is worthless. `blocks_art_matches_the_shipped_fish_greeting` pins the
+preview to `templates/fish/config.fish` so the two cannot drift.
+
+**The choice is not wired to the render yet.** The wizard prints it and exits;
+nothing reads it.
+
+Two things about the terminal that are easy to get backwards, both commented in
+the source: `color_eyre::install()` has to come *before* `ratatui::init()`
+(ratatui's restoring panic hook must be installed last, or a panic leaves you in
+raw mode on the alternate screen), and `ratatui::restore()` runs unconditionally
+*before* the `?` (or an error report prints onto the alternate screen and
+disappears with it).
+
+Layout heights are constants rather than measurements, because
+`Paragraph::line_count` is behind ratatui's `unstable-rendered-line-info`
+feature. `INTRO_ROWS` was guessed wrong twice, each time silently eating the end
+of a sentence at ordinary terminal widths, so `intro_fits_in_its_rows` renders
+through `TestBackend` at six widths and asserts the last word survives.
+
+**Rows are the scarce dimension, columns are not.** Horizontal padding is free.
+A blank row above and below the art in each option box costs four, and a gap
+between the boxes one more — which an 80x24 terminal does not have spare on top
+of a caption line inside each box. Two things bought the room: the captions ride
+on the bottom border (`title_bottom`, no rows), and the spacer row above the
+first box is gone, since each box carries its own top padding.
+
+What is left is a ladder in `draw`, tried most- to least-generous, first fit
+wins:
+
+| | padding | gap |
+| --- | --- | --- |
+| 80x24 | yes | yes |
+| 60x20 | yes | no |
+| 50x18 | no | yes |
+
+**The art never yields.** Without that rule an unconditional padding clipped the
+block mark to one line at 50x18 — and the mark is the entire point of the
+screen. Four tests hold the trade from both ends:
+`art_survives_a_small_terminal` and `comforts_yield_before_the_art_does` for the
+floor, `padding_is_present_when_there_is_room` and
+`gap_separates_the_options_when_there_is_room` for the ceiling, so the fallback
+cannot quietly become the only path.
+
 ## Template grammar
 
 Templates are **Jinja**, rendered by minijinja. Two settings are load-bearing:
