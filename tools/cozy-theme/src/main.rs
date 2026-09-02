@@ -551,9 +551,8 @@ fn build(args: &Args) -> Result<(), String> {
             // survived only because minimal's parser tolerates it.
             let _ = writeln!(
                 patches,
-                "    {{ dest = \"{}\", source = \"~/.config/minimal/loadouts/{}/{}\" }},",
+                "    {{ dest = \"{}\", source = \"$LOADOUT_ROOT/{}\" }},",
                 sub(dest),
-                args.loadout,
                 out_rel
             );
         }
