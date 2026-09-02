@@ -3,15 +3,29 @@ name = "cozy-theme"
 version = "0.1.0"
 edition = "2021"
 
-# Declared so an older toolchain fails with "requires rustc 1.71" rather than a
-# confusing parse error. 1.71 is where `[char; N]` gained its Pattern impl,
-# which `split_kv` uses; the rest of the crate needs no more than 1.65.
-rust-version = "1.71"
+# Declared so an older toolchain fails with "requires rustc 1.85" rather than a
+# confusing parse error. The floor is set by the dependencies, not by this
+# crate's own code: uuid 1.26, indexmap 2.14 and hashbrown 0.17 all want 1.85.
+# (Before the deps landed it was 1.71, for `[char; N]`'s Pattern impl in
+# `split_kv` — that is still the floor the crate's own source needs.)
+rust-version = "1.85"
 
-# No dependencies on purpose: the scheme format is a flat map and the template
-# grammar is four constructs, so hand-rolling both keeps `just theme` buildable
-# with nothing but a rustc/cargo pair — no registry fetch, no vendor directory.
+# The tool used to have no dependencies at all, so `just theme` built with
+# nothing but a rustc/cargo pair. That is over: a setup wizard is coming and
+# will pull in ratatui, so the offline-buildable property was going to go
+# regardless, and hand-rolled parsers are not worth keeping to defend it.
+#
+# `toml` replaces ~95 lines of hand-rolled TOML subset for templates/manifest.toml.
+# `uuid` replaces a hand-rolled hash that stamped a version-4 nibble onto a
+# deterministic value; v5 is what a name-derived UUID actually is.
+#
+# The scheme YAML parser is still hand-rolled, deliberately: it ignores nesting
+# so one code path covers both the current and legacy scheme formats, and the
+# obvious crate for it (serde_yaml) is archived.
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+uuid = { version = "1", features = ["v5"] }
 
 [profile.release]
 opt-level = 1

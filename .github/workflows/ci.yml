@@ -29,13 +29,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends fish dash zip
           cargo install just --locked
 
-      # The renderer has no dependencies, which is a claim worth keeping honest:
-      # with the registry unreachable, a build that reaches for one fails here
-      # rather than in someone's offline session.
-      - name: Build offline
-        env:
-          CARGO_NET_OFFLINE: "true"
-        run: cargo build --release --manifest-path tools/cozy-theme/Cargo.toml
+      # `--locked` rather than the old offline build: the renderer has
+      # dependencies now, so the property worth enforcing is that Cargo.lock is
+      # committed and in step with Cargo.toml. A lockfile that would need
+      # updating fails here rather than resolving to something untested.
+      - name: Build
+        run: cargo build --release --locked --manifest-path tools/cozy-theme/Cargo.toml
 
       - name: Check
         run: just check
