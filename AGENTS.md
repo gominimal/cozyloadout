@@ -100,11 +100,25 @@ distinct slugs. Two rounds of confusing failures came from exactly that; a fixed
 path under the system temp dir has the same problem across concurrent runs, so
 everything goes through `temp_dir()`.
 
+### The library
+
+`tools/cozy-theme/src/lib.rs` holds what the renderer and the wizard both need:
+`Rgb`, `mix`, `SLOTS`, `Scheme` (the YAML parser) and `discover`. It was split
+out of `main.rs` when the wizard needed to load schemes; the split changed no
+output, verified by hashing all 535 rendered trees before and after.
+
+Anything only the renderer uses — the template engine, the manifest, the build
+— stays in `main.rs`. Pedantic clippy's library-API lints (`missing_errors_doc`,
+`missing_panics_doc`, `must_use_candidate`) are switched off for it in
+`Cargo.toml`: it is an internal crate with `publish = false`, and writing those
+sections for callers who are both in this repo is documentation nobody reads.
+
 ### The wizard
 
 `tools/cozy-theme/src/bin/cozy-wizard.rs`, a second binary in the same package
 (`default-run = "cozy-theme"` keeps a bare `cargo run` pointing at the
-renderer). `just wizard` runs it.
+renderer). `just wizard` runs it. Three screens so far: greeting, schemes,
+themes.
 
 Its first page asks which fish greeting to install: the mark drawn with Symbols
 for Legacy Computing (`▃🭕🭏🭕🭏 M I N I M A L`, the U+1FB00 block, Unicode 13)
@@ -140,6 +154,30 @@ nothing.
 The repo URL and flags live in one place here and one place in the justfile;
 `fetch_matches_the_justfile_recipe` asserts they agree, since a wizard that
 cloned a different repo than the recipe would be worse than no wizard.
+
+Its third page browses every scheme on disk and **re-paints the whole UI in the
+selected one** as the cursor moves. Two things make that affordable: `discover`
+lists names from filenames without parsing anything (the collection is ~480
+schemes after de-duplication, and parsing them all at startup to show twenty
+would be absurd), and only the selected scheme is loaded. A scheme that fails
+to parse leaves the previous colours up rather than blanking the screen — a
+broken file upstream must not wedge the wizard.
+
+`Theme` maps the palette onto the roles the preview paints with, which is a
+mapping rather than a choice: base16 already assigns the meanings. The preview
+shows the palette itself, a starship-style prompt, a syntax-highlighted
+snippet, and a diff whose backgrounds come from `mix()` — the same computation
+`templates/delta/delta.gitconfig` uses, so the one part of the loadout's colour
+that is *computed* rather than picked is visible before you commit to a scheme.
+
+The highlighting is a hand-written span list over a fixed snippet, not a
+grammar. Real highlighting means syntect; for a preview of a snippet we control,
+tagging the spans by hand costs nothing and colours the same slots the helix and
+bat themes assign.
+
+`scrolling_repaints_the_ui_in_the_selected_scheme` asserts the rendered
+background equals the *selected scheme's* base00 — not merely that it changed,
+so repainting in some other scheme's colours still fails.
 
 Two things about the terminal that are easy to get backwards, both commented in
 the source: `color_eyre::install()` has to come *before* `ratatui::init()`
