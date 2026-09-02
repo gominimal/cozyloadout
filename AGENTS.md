@@ -11,6 +11,10 @@ this covers changing it.
 2. **`cozy.toml` is generated.** Its `patches` list comes from
    `templates/manifest.toml`, so it can't describe a file that wasn't rendered.
    Edit `templates/cozy.toml` for packages and vars, the manifest for patches.
+   Patch sources are emitted as `$LOADOUT_ROOT/<path>` — minimal expands that to
+   the loadout's own directory, so it needs **minimal 0.5.4 or newer**. Before
+   0.5.4 the path had to be spelled out as
+   `~/.config/minimal/loadouts/<loadout>/<path>`.
 3. **Re-render and look at the diff** after touching a template:
    `just render && git diff --no-index <old> build/` or just read `build/`.
 4. **Don't commit build artifacts.** `.gitignore` covers `build/`, `*.zip`,
@@ -205,49 +209,45 @@ never been observed from inside a real session** — the daemon was unreachable
 for most of this work, and a session's `$HOME` is isolated from the host. What
 has been tested is the script itself, run directly against throwaway `$HOME`s.
 
-### PROMPT_COMMAND — the shell handover
+### SHELL — the shell handover
+
+```toml
+[vars]
+SHELL = "fish"
+```
+
+minimal launches the session's interactive shell from `$SHELL`, so declaring it
+is the whole handover. **Requires minimal 0.5.4 or newer.**
+
+Before 0.5.4 this did not work: the session shell was `bash --noprofile --rcfile
+<daemon rc> -i` — spawned once when the session is created, not per attach — and
+it sourced none of your startup files; the one rc it read was the daemon's own,
+which installs the `DEBUG` trap that keeps `TERM` current and nothing else.
+There was no way to choose what you landed in, so the loadout went through
+`PROMPT_COMMAND`:
 
 ```toml
 PROMPT_COMMAND = "unset PROMPT_COMMAND; command -v fish >/dev/null && exec fish"
 ```
 
-**Lifecycle hooks cannot replace this**, which is counterintuitive enough to be
-worth writing down. The session shell is `bash --noprofile --rcfile <daemon rc>
--i` — spawned once when the session is created, not per attach — and it sources
-none of your startup files; the one rc it reads is the daemon's own, which
-installs the `DEBUG` trap that keeps `TERM` current and nothing else. There is
-no documented way to choose what you land in. And a hook cannot be your
-interactive session: it is a separate process the daemon spawns against the
-session's pty, and it is timeout-capped, so it would be killed at ≤300s and drop
-you into bash anyway. The reference is explicit: "Interactive setup happens
-through environment variables instead." `PROMPT_COMMAND` is that environment
-variable.
+That is gone. It is recorded here because two of its details cost real time to
+find, and anyone reading an older `cozy.toml` will hit them: the `unset` had to
+come first so the variable fired once and did not survive into fish's exported
+environment (no relaunch loop), and the `command -v` guard was load-bearing —
+`exec` of a missing binary from inside `PROMPT_COMMAND` takes the shell down
+with it (bash 5.3, **exit 127**), so an unguarded version meant every attach
+exited immediately. Setting the variable also replaced the launcher's baseline
+value, which cost minimal's orientation banner. `$SHELL` has none of these
+problems, and the banner comes back.
 
-Setting it replaces the launcher's baseline value, and the only thing that costs
-is the orientation banner. `TERM` is deliberately *not* carried by it — the
-daemon uses a shell-owned trap precisely so that a loadout replacing this
-variable stays cheap.
+**Lifecycle hooks still cannot do this job**, which is counterintuitive enough
+to keep written down. A hook is a separate process the daemon spawns against the
+session's pty, not the shell you are talking to, and it is timeout-capped, so it
+would be killed at ≤300s and drop you into bash anyway.
 
-Filed upstream as `minimal#957` — it works, but a shell-specific side door isn't
-an interface.
-
-Two things about it are load-bearing and were verified, not assumed:
-
-- **`unset` first.** It fires once rather than per-prompt, and unsetting drops
-  it from the *exported* environment too, so the fish it execs into — and any
-  bash nested under that — never sees it. Measured: `PROMPT_COMMAND` count in
-  fish's env is 0. No relaunch loop.
-- **The `command -v` guard.** `exec` of a missing binary behaves differently
-  depending on where it runs. Typed at an interactive prompt it prints
-  `not found` and leaves the shell alive; from inside `PROMPT_COMMAND` it takes
-  the shell down (bash 5.3, **exit 127**). The original suggestion omitted the
-  guard on the belief that a failed exec is survivable. It isn't here —
-  unguarded, a missing fish means every attach exits immediately.
-
-No `$ZELLIJ` guard, deliberately. That's needed when exec'ing zellij directly;
-here fish's own config runs `zellij setup --generate-auto-start`, whose script
-already carries the check. Adding it would be actively wrong — inside a pane
-running bash, exec'ing fish is what you want.
+No `$ZELLIJ` guard anywhere, deliberately. That's needed when exec'ing zellij
+directly; here fish's own config runs `zellij setup --generate-auto-start`,
+whose script already carries the check.
 
 ### Why the delta step uses `--add`
 
@@ -471,7 +471,8 @@ Worth knowing before relying on any of it:
 | Renders 529/529 upstream base16+base24 schemes | verified |
 | Generated `cozy.toml` is valid TOML for every scheme | verified |
 | Renderer builds with no network | verified |
-| `PROMPT_COMMAND` hands over to fish; unset prevents loops | verified against a pty |
+| `$SHELL` starts fish on attach | verified — needs minimal 0.5.4 |
+| `PROMPT_COMMAND` handover (removed) worked; unset prevented loops | was verified against a pty, before removal |
 | Unguarded `exec` in `PROMPT_COMMAND` exits 127 | verified |
 | Hooks are idempotent, tolerate missing/broken tools, preserve other git includes | verified against throwaway `$HOME`s |
 | Hook scripts are POSIX-sh clean | verified with `dash -n` |

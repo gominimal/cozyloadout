@@ -61,7 +61,9 @@ packages = [
 ]
 
 # The patches list is generated from templates/manifest.toml, so it can never
-# fall out of step with what was actually rendered into cozy/.
+# fall out of step with what was actually rendered into cozy/. Sources are
+# written against `$LOADOUT_ROOT`, minimal's expansion for this loadout's own
+# directory — which requires minimal 0.5.4 or newer.
 patches = [
 {{patches}}
 ]
@@ -72,43 +74,15 @@ patches = [
 # EDITOR to anything but `hx` will not activate alongside this loadout; the way
 # out is the user policy's `ignore` list, which drops all contributors of a name.
 [vars]
+# SHELL is what hands `min attach` over to fish, which in turn starts zellij:
+# minimal launches the session's interactive shell from it. That replaces the
+# PROMPT_COMMAND side door this loadout used to carry, which worked but cost
+# minimal's orientation banner and had to guard its own exec. Requires minimal
+# 0.5.4 or newer; before that SHELL was advisory and the session always landed
+# in bash.
 SHELL  = "fish"
 EDITOR = "hx"
 PAGER  = "bat"
-
-# Hand `min attach` over to fish, which in turn auto-starts zellij.
-#
-# Lifecycle hooks do NOT replace this, though they look like they should. The
-# session shell is `bash --noprofile --rcfile <daemon rc> -i`; it reads none of
-# your startup files (the one rc it does read is the daemon's own, which installs
-# the DEBUG trap that keeps TERM current), and there is no documented way to
-# choose what you land in. Nor can a hook stand in for it: a hook is a separate
-# process the daemon spawns against the session's pty, not the shell you are
-# talking to, and it is timeout-capped at 60s by default and 300s at most. The
-# loadouts reference says as much: "Interactive setup happens through
-# environment variables instead."
-#
-# PROMPT_COMMAND is that environment variable: bash takes it from the
-# environment and evaluates it before drawing the first prompt.
-#
-# Setting it here replaces the launcher's baseline value, which costs the
-# orientation banner and nothing else — TERM is kept current by a daemon-owned
-# DEBUG trap that no composition can reach, precisely so that replacing this
-# variable stays cheap.
-#
-# `unset PROMPT_COMMAND` first, for two reasons: it fires once rather than on
-# every prompt, and unset drops it from the exported environment too, so the
-# fish it execs into — and any bash nested under that — never sees it. No loop.
-#
-# The `command -v` guard is load-bearing, not defensive dressing. `exec` of a
-# missing binary behaves differently depending on where it runs: typed at an
-# interactive prompt it prints "not found" and leaves the shell alive, but from
-# inside PROMPT_COMMAND it takes the shell down with it (bash 5.3, exit 127).
-# Unguarded, a missing fish would mean every attach exits immediately — the
-# exact failure the once-only unset is meant to avoid.
-#
-# Upstream tracking issue for a real interface: minimal#957.
-PROMPT_COMMAND = "unset PROMPT_COMMAND; command -v fish >/dev/null && exec fish"
 
 # --- Lifecycle hooks -------------------------------------------------------
 # The two steps minimal's patch system can't do. These used to live in the fish

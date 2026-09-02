@@ -131,12 +131,12 @@ so stale files don't pile up there.
 
 ### What happens on attach
 
-`min attach` drops you straight into fish, which starts zellij. The session's
-shell is `bash --noprofile --rcfile <daemon rc> -i` and reads none of your
-startup files, so the loadout arranges the handover through `PROMPT_COMMAND`,
-which bash evaluates before its first prompt. The one thing that costs is
-minimal's orientation banner, which the same variable would otherwise print;
-your terminal's `TERM` is kept current by the daemon regardless.
+`min attach` drops you straight into fish, which starts zellij. That handover is
+just the `SHELL = "fish"` var: minimal starts the session's interactive shell
+from `$SHELL`. This needs **minimal 0.5.4 or newer** — earlier versions always
+landed you in bash, and the loadout used to work around it with a
+`PROMPT_COMMAND` that exec'd fish before bash's first prompt, at the cost of
+minimal's orientation banner.
 
 The setup the patch system can't do runs as a **lifecycle hook**, declared in the
 loadout and shipped as a script in `cozy/hooks/`:
@@ -226,7 +226,7 @@ is never overwritten.
    from a project's `minimal.toml` are merged, and the same variable with two
    different values — or the same patch destination from two different sources —
    fails the activation rather than picking a winner. This loadout contributes
-   `SHELL`, `EDITOR`, `PAGER`, `PROMPT_COMMAND` and eighteen patches under
+   `SHELL`, `EDITOR`, `PAGER` and eighteen patches under
    `~/.config`, so a project that sets `EDITOR` to anything but `hx` will not
    activate alongside it. The way out is your user policy's `ignore` list.
 
