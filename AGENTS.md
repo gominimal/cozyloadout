@@ -114,8 +114,32 @@ foreground** — the user is judging their font, and a preview that is not the
 real thing is worthless. `blocks_art_matches_the_shipped_fish_greeting` pins the
 preview to `templates/fish/config.fish` so the two cannot drift.
 
-**The choice is not wired to the render yet.** The wizard prints it and exits;
-nothing reads it.
+**The greeting choice is not wired to the render yet.** The wizard prints it and
+exits; nothing reads it.
+
+Its second page offers to fetch the upstream scheme collection, and does. What
+it runs is decided by what is on disk (`FetchKind`):
+
+| On disk | Action |
+| --- | --- |
+| nothing | `git clone --depth 1` |
+| a git checkout | `git pull --ff-only` |
+| a directory that is not a checkout | **refuses** |
+
+That last row is a deliberate divergence from `just fetch-schemes`, which `rm
+-rf`s the directory and re-clones. Deleting a directory the user did not name,
+from a full-screen UI that has just covered the scrollback, is not something to
+do on a keypress — the wizard explains itself and points at the recipe instead.
+
+The git command runs on a **thread**, with the event loop polling on a 100 ms
+tick and a spinner. Inline it would freeze the terminal for the length of a
+clone with no way out of a stalled network but killing the process. With no
+fetch running the loop goes back to blocking on a key, so an idle wizard costs
+nothing.
+
+The repo URL and flags live in one place here and one place in the justfile;
+`fetch_matches_the_justfile_recipe` asserts they agree, since a wizard that
+cloned a different repo than the recipe would be worse than no wizard.
 
 Two things about the terminal that are easy to get backwards, both commented in
 the source: `color_eyre::install()` has to come *before* `ratatui::init()`
