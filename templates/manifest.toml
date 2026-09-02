@@ -110,7 +110,7 @@ dest     = ".config/bottom/bottom.toml"
 
 # atuin is the second tool after helix with real theme-name indirection: the
 # config names a theme and atuin goes looking for `<name>.toml` in themes/. The
-# two entries have to move together — config.toml renders {{scheme-slug}} into
+# two entries have to move together — config.toml renders {{scheme_slug}} into
 # its `[theme] name`, and the theme file renders to {slug}.toml.
 [[file]]
 template = "atuin/config.toml"

@@ -56,29 +56,30 @@ follows.
 
 ### The renderer
 
-`tools/cozy-theme/src/main.rs`, ~775 lines. It used to carry **zero crate
-dependencies**, so `just theme` built offline with nothing but a rustc/cargo
-pair. That is no longer true — the setup wizard will pull in ratatui, so the
-property was going anyway, and three deps now do work that was hand-rolled to
-defend it:
+`tools/cozy-theme/src/main.rs`. It used to carry **zero crate dependencies**, so
+`just theme` built offline with nothing but a rustc/cargo pair. That is no
+longer true — the setup wizard will pull in ratatui, so the property was going
+anyway, and the hand-rolled parsers it justified are gone:
 
 | Crate | Replaces |
 | --- | --- |
-| `toml` | ~95 lines of hand-rolled TOML subset for `templates/manifest.toml` |
-| `serde` (derive) | the `[[file]]` block's field mapping and unknown-key rejection |
+| `yaml-rust2` | the scheme parser — a hand-rolled line splitter that existed for quoting hazards. `default-features = false` drops `encoding_rs`; it only handles non-UTF-8 input and `read_to_string` already requires UTF-8 |
+| `minijinja` | the template engine — section expansion, `{{…}}` substitution, and the `mix` evaluator |
+| `toml` + `serde` | a hand-rolled TOML subset for `templates/manifest.toml` |
 | `uuid` (v5) | a hand-rolled FNV-1a/xorshift hash that stamped a **version-4** nibble onto a deterministic value |
+| `clap` (derive) | hand-rolled flag parsing |
+| `color-eyre` | `Result<_, String>` throughout |
+| `fs-err` | the `format!("{}: {e}", path.display())` prefix repeated at every io call |
 
-18 crates in the tree; a clean build goes from ~0.6s to ~4s.
+`rust-version = "1.85"`, set by the dependencies (`uuid`, `yaml-rust2`, `clap`,
+`hashbrown`) rather than by this crate's own source. Never tested — development
+was on 1.97.1.
 
-**The scheme YAML parser stays hand-rolled**, and that is deliberate rather than
-leftover: it ignores nesting entirely, so one code path covers both the current
-(`palette:` block) and legacy (top-level `base00:`) formats, and the obvious
-crate for the job — `serde_yaml` — is archived upstream.
-
-`rust-version = "1.85"` is declared so an old toolchain fails clearly. That
-floor now comes from the *dependencies* (uuid, indexmap, hashbrown), not from
-this crate's source, which still needs no more than 1.71. It has never been
-tested — development was on 1.97.1.
+One crate was *rejected* after testing: see the handlebars note under Template
+grammar. `serde_yaml` and its forks were rejected too — the original is
+archived, `serde_yml` is deprecated, and `serde_yaml_ng` has not shipped since
+May 2024. `yaml-rust2` has more recent downloads than all of them and contains
+no `unsafe`, where the serde forks parse through transpiled C.
 
 `just test` runs 15 unit tests. They cover both scheme formats, the quoted-`#`
 parsing hazard, luma-derived variant, `mix` against hand-computed values,
@@ -93,37 +94,60 @@ everything goes through `temp_dir()`.
 
 ## Template grammar
 
-An unrecognised placeholder is a hard error, never a pass-through — a stray
-`{{typo}}` in a config file is silently ignored by the tool that reads it, which
-is the worst possible failure mode.
+Templates are **Jinja**, rendered by minijinja. Two settings are load-bearing:
 
-Colour names follow tinted-builder's vocabulary so upstream templates mostly
-drop in. `XX` is `00`–`0F`, uppercase.
+- **`UndefinedBehavior::Strict`** — an unrecognised placeholder is a hard error,
+  never a blank. A stray `{{typo}}` that renders to nothing is silently ignored
+  by the tool that reads the config, which is the worst possible failure mode.
+- **`keep_trailing_newline`** — minijinja drops a template's final newline by
+  default. These are config files and shell scripts; the trailing newline is
+  part of the contract. Leaving this off strips it from *every* rendered file.
+
+Auto-escaping is off (the default for these extensions) and must stay off —
+escaping `&` or `"` would corrupt the outputs.
+
+**Placeholder names are snake_case**, not the dashed tinted-builder spelling,
+because Jinja parses `base00-hex` as a subtraction. `XX` is `00`–`0F`,
+uppercase.
 
 | Placeholder | Expands to | For |
 | --- | --- | --- |
-| `{{baseXX-hex}}` | `4a7aff` | Everything. Write the `#` yourself |
-| `{{baseXX-rgb}}` | `74, 122, 255` | broot's `rgb(…)` form |
-| `{{baseXX-rgb-r/g/b}}` | `74` | Single channels |
-| `{{baseXX-hex-r/g/b}}` | `4a` | Single channels, hex |
-| `{{baseXX-dec-r/g/b}}` | `0.2902` | Formats wanting 0–1 floats |
-| `{{mix base08 base00 15}}` | `341919` | base08 over base00 at 15% |
-| `{{mix-rgb base0B base0A 50}}` | `165, 182, 76` | Same, in broot's form |
-
-Metadata: `{{scheme-name}}`, `{{scheme-slug}}`, `{{scheme-author}}`,
-`{{scheme-variant}}`, `{{scheme-uuid}}`, and
-`{{loadout-name}}` — the loadout's own name, for the files that have to spell it
-(the delta include's path, the hook's `include.path` check).
-`templates/cozy.toml` additionally gets `{{patches}}`.
-
-Sections: `{{#dark}}…{{/dark}}` and `{{#light}}…{{/light}}` keep their body only
-for a matching scheme. They do not nest. Used once, for broot's preview theme.
+| `{{baseXX_hex}}` | `4a7aff` | Everything. Write the `#` yourself |
+| `{{baseXX_rgb}}` | `74, 122, 255` | broot's `rgb(…)` form |
+| `{{baseXX_rgb_r/g/b}}` | `74` | Single channels |
+| `{{ mix('base08','base00',15) }}` | `341919` | base08 over base00 at 15% |
+| `{{ mix_rgb('base0B','base0A',50) }}` | `165, 182, 76` | Same, in broot's form |
 
 `mix` exists because base16 has no dim surface colours: delta's diff backgrounds
-and broot's `good_to_bad` gauge ramp have to be computed from slots. It rounds
-to nearest, so a 50% mix is the true midpoint. The hand-written broot ramp
-values it replaced truncated instead, which is why three of them shifted by one
-channel value in the first render.
+and broot's gauge ramp are computed from slots rather than picked from them. The
+slot arguments are **quoted strings** — bare words are variable references, and
+in an earlier handlebars trial they resolved to empty without erroring.
+
+Metadata: `{{scheme_name}}`, `{{scheme_slug}}`, `{{scheme_author}}`,
+`{{scheme_variant}}`, `{{scheme_uuid}}`, and `{{loadout_name}}` — the loadout's
+own name, for the files that have to spell it (the delta include's path, the
+hook's `include.path` check). `templates/cozy.toml` additionally gets
+`{{patches}}`.
+
+Sections use Jinja's conditional against the `dark` / `light` booleans:
+`{% if dark %}…{% endif %}`. Five uses, all inline on one line — keep them that
+way, since a block spanning newlines brings Jinja's whitespace-control rules
+into play and those change the rendered bytes.
+
+### What this grammar deliberately is not
+
+The dashed `{{baseXX-hex}}` names and `{{#dark}}…{{/dark}}` sections were a
+mustache-ish dialect chosen so upstream tinted-builder templates would mostly
+drop in. Moving to Jinja ends that, which is why the `-hex-r/g/b` and
+`-dec-r/g/b` placeholder families were dropped at the same time — they had no
+consumer in this repo and existed only for that compatibility.
+
+Before settling on minijinja, handlebars was tried because its syntax looked
+like an exact match for the old dialect. It is not, and the failure is worth
+recording: `{{#dark}}` is not a mustache section to handlebars-rust but a
+missing helper, and `{{mix base08 base00 15}}` renders `MIX(,,15)` — bare
+parameters resolve as variables, come back empty, and **strict mode does not
+catch it**. Do not revisit it.
 
 ## Design decisions
 
@@ -482,7 +506,8 @@ Worth knowing before relying on any of it:
 
 | Claim | Status |
 | --- | --- |
-| Renders 534/534 upstream base16+base24 schemes | verified — `just check-schemes`, re-run after the toml/uuid migration |
+| Renders 535/535 upstream base16+base24 schemes | verified — `just check-schemes` |
+| The crate migration changed no output | **verified** — full rendered tree hashed per scheme before and after; all 535 byte-for-byte identical |
 | Generated `cozy.toml` is valid TOML for every scheme | verified |
 | Renderer builds with no network | verified |
 | `$SHELL` starts fish on attach | verified — needs minimal 0.5.4 |

@@ -5,12 +5,16 @@
 //!
 //! See AGENTS.md for the template grammar and the build pipeline.
 
+use clap::Parser;
+use color_eyre::eyre::{bail, eyre, Context, Result};
+use fs_err as fs;
+use minijinja::{Environment, UndefinedBehavior};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+use yaml_rust2::{Yaml, YamlLoader};
 
 // ---------------------------------------------------------------------------
 // Colour
@@ -26,10 +30,10 @@ struct Rgb {
 impl Rgb {
     /// Accepts `#rrggbb` or `rrggbb`, any case. base16 schemes are always
     /// 6-digit; 3-digit shorthand is not part of the format.
-    fn parse(s: &str) -> Result<Rgb, String> {
+    fn parse(s: &str) -> Result<Rgb> {
         let h = s.trim().trim_start_matches('#');
         if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(format!("not a 6-digit hex colour: {s:?}"));
+            bail!("not a 6-digit hex colour: {s:?}");
         }
         let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap();
         Ok(Rgb {
@@ -97,103 +101,91 @@ struct Scheme {
     palette: BTreeMap<String, Rgb>,
 }
 
-/// Split `key: value` and strip a trailing `# comment`, respecting quotes.
-///
-/// The quote handling is the whole reason this isn't a one-liner: scheme values
-/// are frequently `"#141414"`, where a naive comment strip eats the colour.
-fn split_kv(line: &str) -> Option<(String, String)> {
-    let line = line.trim();
-    if line.is_empty() || line.starts_with('#') || line.starts_with("---") {
-        return None;
+/// Collect `baseXX` slots and scalar metadata from a YAML document, at any
+/// depth. Empty scalars are skipped so a scheme with `author: ""` still falls
+/// back to "unknown" rather than reporting an empty author.
+fn walk(
+    node: &Yaml,
+    meta: &mut BTreeMap<String, String>,
+    palette: &mut BTreeMap<String, Rgb>,
+) -> Result<()> {
+    let Yaml::Hash(hash) = node else { return Ok(()) };
+    for (key, value) in hash {
+        let Some(key) = key.as_str() else { continue };
+        let lower = key.to_ascii_lowercase();
+        if lower.len() == 6 && lower.starts_with("base") {
+            // Normalise base0a -> base0A so templates have one spelling.
+            let canon = format!("base{}", key[4..].to_ascii_uppercase());
+            if SLOTS.contains(&canon.as_str()) {
+                // A bare `1d2021` is a YAML string; one that happens to be all
+                // digits lexes as an integer, so accept both spellings.
+                let raw = value
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| value.as_i64().map(|n| n.to_string()))
+                    .ok_or_else(|| eyre!("{canon}: not a scalar"))?;
+                palette.insert(canon.clone(), Rgb::parse(&raw).wrap_err(canon)?);
+            }
+        } else if matches!(value, Yaml::Hash(_)) {
+            walk(value, meta, palette)?;
+        } else if let Some(text) = value.as_str().filter(|s| !s.is_empty()) {
+            meta.entry(lower).or_insert_with(|| text.to_string());
+        }
     }
-    let (k, rest) = line.split_once(':')?;
-    let key = k.trim().trim_matches(['"', '\'']).to_string();
-    let rest = rest.trim();
-
-    let value = if let Some(q) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') {
-        // Quoted: take up to the closing quote, comment or not.
-        let body = &rest[1..];
-        {
-            let end = body.find(q)?;
-            body[..end].to_string()
-        }
-    } else {
-        // Bare: a `#` only starts a comment when preceded by whitespace, so a
-        // legacy scheme's unquoted `base00: 1d2021` survives either way.
-        match rest.find(" #") {
-            Some(i) => rest[..i].trim().to_string(),
-            None => rest.to_string(),
-        }
-    };
-    Some((key, value))
+    Ok(())
 }
 
 impl Scheme {
     /// Handles both scheme formats: the current one with a nested `palette:`
     /// block, and the legacy one with `base00:` at the top level. Nesting is
-    /// ignored entirely — any `baseXX` key anywhere is a slot — which is what
-    /// makes one parser cover both.
-    fn load(path: &Path) -> Result<Scheme, String> {
-        let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    /// ignored entirely — any `baseXX` key at any depth is a slot — which is
+    /// what makes one code path cover both.
+    ///
+    /// The lexing is yaml-rust2's. This used to be a hand-rolled line splitter
+    /// whose entire reason for existing was the quoting hazards: a value of
+    /// `"#141414"` that a naive comment strip eats, and a legacy scheme's bare
+    /// `base00: 1d2021` where `#` only opens a comment after whitespace. A real
+    /// YAML parser gets both right by construction.
+    fn load(path: &Path) -> Result<Scheme> {
+        let text = fs::read_to_string(path)?;
+        let docs = YamlLoader::load_from_str(&text)
+            .wrap_err_with(|| format!("{}: not valid YAML", path.display()))?;
 
         let mut meta: BTreeMap<String, String> = BTreeMap::new();
         let mut palette: BTreeMap<String, Rgb> = BTreeMap::new();
-
-        for line in text.lines() {
-            let Some((key, value)) = split_kv(line) else {
-                continue;
-            };
-            let lower = key.to_ascii_lowercase();
-            if lower.len() == 6 && lower.starts_with("base") {
-                // Normalise base0a -> base0A so templates have one spelling.
-                let canon = format!("base{}", key[4..].to_ascii_uppercase());
-                if SLOTS.contains(&canon.as_str()) {
-                    let rgb = Rgb::parse(&value)
-                        .map_err(|e| format!("{}: {canon}: {e}", path.display()))?;
-                    palette.insert(canon, rgb);
-                }
-            } else if value.is_empty() {
-                continue; // a block header such as `palette:`
-            } else {
-                meta.entry(lower).or_insert(value);
-            }
+        for doc in &docs {
+            walk(doc, &mut meta, &mut palette).wrap_err_with(|| path.display().to_string())?;
         }
 
-        let missing: Vec<&str> = SLOTS
-            .iter()
-            .copied()
-            .filter(|s| !palette.contains_key(*s))
-            .collect();
+        let missing: Vec<&str> =
+            SLOTS.iter().copied().filter(|s| !palette.contains_key(*s)).collect();
         if missing.len() == SLOTS.len() {
             // Most likely a tinted8 scheme (named 8-colour keys) or not a
             // scheme at all — saying "missing all 16" for those reads as a
             // corrupt base16 file rather than the wrong kind of file.
             let system = meta.get("system").map(|s| s.as_str()).unwrap_or("unknown");
-            return Err(format!(
+            bail!(
                 "{}: no base16 slots found — this is a {system:?} scheme, and the loadout \
                  needs base16 or base24",
                 path.display()
-            ));
+            );
         }
         if !missing.is_empty() {
-            return Err(format!(
+            bail!(
                 "{}: scheme is missing {} of 16 slots: {}",
                 path.display(),
                 missing.len(),
                 missing.join(", ")
-            ));
+            );
         }
 
         let slug = slugify(
             path.file_stem()
                 .and_then(|s| s.to_str())
-                .ok_or("scheme path has no file stem")?,
+                .ok_or_else(|| eyre!("scheme path has no file stem"))?,
         );
         if slug.is_empty() {
-            return Err(format!(
-                "{}: filename does not slugify to anything",
-                path.display()
-            ));
+            bail!("{}: filename does not slugify to anything", path.display());
         }
 
         // `variant:` is advisory; the luma of the scheme's own surface decides.
@@ -213,10 +205,7 @@ impl Scheme {
         Ok(Scheme {
             slug,
             name,
-            author: meta
-                .get("author")
-                .cloned()
-                .unwrap_or_else(|| "unknown".into()),
+            author: meta.get("author").cloned().unwrap_or_else(|| "unknown".into()),
             is_dark,
             palette,
         })
@@ -241,41 +230,30 @@ impl Scheme {
         }
     }
 
-    /// Every placeholder a template may reference. Names follow
-    /// tinted-builder's vocabulary so upstream templates mostly drop in.
+    /// Every placeholder a template may reference.
+    ///
+    /// Names are snake_case because minijinja parses `base00-hex` as a
+    /// subtraction. The `-hex-r/g/b` and `-dec-r/g/b` families that used to be
+    /// emitted here are gone: they existed only so upstream tinted-builder
+    /// templates would drop in, and moving to Jinja syntax ended that anyway.
     fn vars(&self) -> BTreeMap<String, String> {
         let mut v = BTreeMap::new();
         for slot in SLOTS {
             let c = self.palette[slot];
             let hex = c.hex();
-            v.insert(format!("{slot}-hex"), hex.clone());
-            v.insert(format!("{slot}-hex-r"), hex[0..2].into());
-            v.insert(format!("{slot}-hex-g"), hex[2..4].into());
-            v.insert(format!("{slot}-hex-b"), hex[4..6].into());
-            v.insert(format!("{slot}-rgb-r"), c.r.to_string());
-            v.insert(format!("{slot}-rgb-g"), c.g.to_string());
-            v.insert(format!("{slot}-rgb-b"), c.b.to_string());
+            v.insert(format!("{slot}_hex"), hex);
+            v.insert(format!("{slot}_rgb_r"), c.r.to_string());
+            v.insert(format!("{slot}_rgb_g"), c.g.to_string());
+            v.insert(format!("{slot}_rgb_b"), c.b.to_string());
             // Convenience triple: broot wants `rgb(126, 200, 151)` and writing
             // that as three placeholders is unreadable.
-            v.insert(format!("{slot}-rgb"), format!("{}, {}, {}", c.r, c.g, c.b));
-            v.insert(
-                format!("{slot}-dec-r"),
-                format!("{:.4}", c.r as f64 / 255.0),
-            );
-            v.insert(
-                format!("{slot}-dec-g"),
-                format!("{:.4}", c.g as f64 / 255.0),
-            );
-            v.insert(
-                format!("{slot}-dec-b"),
-                format!("{:.4}", c.b as f64 / 255.0),
-            );
+            v.insert(format!("{slot}_rgb"), format!("{}, {}, {}", c.r, c.g, c.b));
         }
-        v.insert("scheme-slug".into(), self.slug.clone());
-        v.insert("scheme-name".into(), self.name.clone());
-        v.insert("scheme-author".into(), self.author.clone());
-        v.insert("scheme-variant".into(), self.variant().into());
-        v.insert("scheme-uuid".into(), self.uuid());
+        v.insert("scheme_slug".into(), self.slug.clone());
+        v.insert("scheme_name".into(), self.name.clone());
+        v.insert("scheme_author".into(), self.author.clone());
+        v.insert("scheme_variant".into(), self.variant().into());
+        v.insert("scheme_uuid".into(), self.uuid());
         v
     }
 }
@@ -296,81 +274,69 @@ fn slugify(s: &str) -> String {
 // Template expansion
 // ---------------------------------------------------------------------------
 
-/// Drop `{{#dark}}…{{/dark}}` / `{{#light}}…{{/light}}` sections that don't
-/// apply, unwrapping the one that does. Sections do not nest.
-fn expand_sections(mut text: String, is_dark: bool) -> Result<String, String> {
-    for (name, keep) in [("dark", is_dark), ("light", !is_dark)] {
-        let open = format!("{{{{#{name}}}}}");
-        let close = format!("{{{{/{name}}}}}");
-        loop {
-            let Some(start) = text.find(&open) else { break };
-            let after = start + open.len();
-            let Some(rel) = text[after..].find(&close) else {
-                return Err(format!("unclosed {{{{#{name}}}}} section"));
-            };
-            let body = text[after..after + rel].to_string();
-            let end = after + rel + close.len();
-            text.replace_range(start..end, if keep { &body } else { "" });
-        }
-        if let Some(i) = text.find(&close) {
-            return Err(format!("stray {{{{/{name}}}}} at byte {i}"));
-        }
+/// The template environment: minijinja with the two things this build needs
+/// on top of plain substitution.
+///
+/// `UndefinedBehavior::Strict` is the important setting. A typo'd placeholder
+/// must be a hard error — silently rendering an empty string into a config is
+/// the worst failure this tool can have, because nothing downstream notices.
+///
+/// Auto-escaping stays off (the default for these extensions): every output is
+/// a config file, not HTML, and escaping `&` or `"` would corrupt them.
+fn environment(scheme: &Scheme) -> Environment<'static> {
+    let mut env = Environment::new();
+    env.set_undefined_behavior(UndefinedBehavior::Strict);
+    // minijinja drops a template's final newline by default. These are config
+    // files and shell scripts, so the trailing newline is part of the contract
+    // — without this every rendered file loses it.
+    env.set_keep_trailing_newline(true);
+
+    // {{ mix('base08','base00',15) }} — base16 has no dim surface colours, so
+    // delta's diff backgrounds and broot's gauge ramp are computed from slots
+    // rather than picked from them. `mix_rgb` is the same value in broot's
+    // `r, g, b` form.
+    for (name, as_rgb) in [("mix", false), ("mix_rgb", true)] {
+        let palette = scheme.palette.clone();
+        env.add_function(
+            name,
+            move |fg: String, bg: String, pct: f64| -> Result<String, minijinja::Error> {
+                let slot = |s: &str| {
+                    let canon = format!("base{}", s.trim_start_matches("base").to_ascii_uppercase());
+                    palette.get(&canon).copied().ok_or_else(|| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::InvalidOperation,
+                            format!("{name}: {s:?} is not a palette slot"),
+                        )
+                    })
+                };
+                if !(0.0..=100.0).contains(&pct) {
+                    return Err(minijinja::Error::new(
+                        minijinja::ErrorKind::InvalidOperation,
+                        format!("{name}: {pct} is outside 0–100"),
+                    ));
+                }
+                let c = mix(slot(&fg)?, slot(&bg)?, pct);
+                Ok(if as_rgb { format!("{}, {}, {}", c.r, c.g, c.b) } else { c.hex() })
+            },
+        );
     }
-    Ok(text)
+    env
 }
 
-/// Resolve one `{{ … }}` body: either a variable name or a `mix` call.
-fn eval(expr: &str, vars: &BTreeMap<String, String>, scheme: &Scheme) -> Result<String, String> {
-    let parts: Vec<&str> = expr.split_whitespace().collect();
-    match parts.as_slice() {
-        [name] => vars
-            .get(*name)
-            .cloned()
-            .ok_or_else(|| format!("unknown placeholder {name:?}")),
-
-        // {{mix <fg-slot> <bg-slot> <pct>}} — base16 has no dim surface
-        // colours, so delta's diff backgrounds and broot's gauge ramp are
-        // computed from slots rather than picked from them.
-        [op @ ("mix" | "mix-rgb"), fg, bg, pct] => {
-            let slot = |s: &str| {
-                let canon = format!("base{}", s.trim_start_matches("base").to_ascii_uppercase());
-                scheme
-                    .palette
-                    .get(&canon)
-                    .copied()
-                    .ok_or_else(|| format!("{op}: {s:?} is not a palette slot"))
-            };
-            let pct: f64 = pct
-                .parse()
-                .map_err(|_| format!("{op}: {pct:?} is not a number"))?;
-            if !(0.0..=100.0).contains(&pct) {
-                return Err(format!("{op}: {pct} is outside 0–100"));
-            }
-            let c = mix(slot(fg)?, slot(bg)?, pct);
-            Ok(if *op == "mix" {
-                c.hex()
-            } else {
-                format!("{}, {}, {}", c.r, c.g, c.b)
-            })
-        }
-
-        _ => Err(format!("cannot parse {{{{{expr}}}}}")),
-    }
-}
-
-fn render(text: &str, vars: &BTreeMap<String, String>, scheme: &Scheme) -> Result<String, String> {
-    let text = expand_sections(text.to_string(), scheme.is_dark)?;
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text.as_str();
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let end = after.find("}}").ok_or("unclosed {{")?;
-        out.push_str(&eval(after[..end].trim(), vars, scheme)?);
-        rest = &after[end + 2..];
-    }
-    out.push_str(rest);
-    Ok(out)
+/// Render one template. `dark`/`light` are exposed as booleans so the
+/// scheme-dependent lines read as `{% if dark %}…{% endif %}`.
+fn render(
+    env: &Environment<'static>,
+    name: &str,
+    text: &str,
+    vars: &BTreeMap<String, String>,
+    scheme: &Scheme,
+) -> Result<String> {
+    let mut ctx: BTreeMap<&str, minijinja::Value> =
+        vars.iter().map(|(k, v)| (k.as_str(), minijinja::Value::from(v.clone()))).collect();
+    ctx.insert("dark", minijinja::Value::from(scheme.is_dark));
+    ctx.insert("light", minijinja::Value::from(!scheme.is_dark));
+    env.render_str(text, ctx).wrap_err_with(|| format!("{name}: template error"))
 }
 
 // ---------------------------------------------------------------------------
@@ -405,12 +371,12 @@ struct Manifest {
 /// obvious `trim_matches('"')` leaves the comment glued on, and the renderer
 /// then writes a file with the comment in its name), and `copy = yes`, which is
 /// not TOML and used to read as `false`.
-fn parse_manifest(path: &Path) -> Result<Vec<Entry>, String> {
-    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+fn parse_manifest(path: &Path) -> Result<Vec<Entry>> {
+    let text = fs::read_to_string(path)?;
     let manifest: Manifest =
-        toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        toml::from_str(&text).wrap_err_with(|| path.display().to_string())?;
     if manifest.file.is_empty() {
-        return Err(format!("{}: no [[file]] entries", path.display()));
+        bail!("{}: no [[file]] entries", path.display());
     }
     Ok(manifest.file)
 }
@@ -419,75 +385,50 @@ fn parse_manifest(path: &Path) -> Result<Vec<Entry>, String> {
 // Build
 // ---------------------------------------------------------------------------
 
-fn write_file(path: &Path, contents: &str) -> Result<(), String> {
+fn write_file(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        fs::create_dir_all(parent)?;
     }
-    fs::write(path, contents).map_err(|e| format!("{}: {e}", path.display()))
+    Ok(fs::write(path, contents)?)
 }
 
+/// Render the cozy loadout from a base16 or base24 scheme.
+#[derive(Parser)]
+#[command(name = "cozy-theme", version, about, long_about = None)]
 struct Args {
+    /// Scheme YAML to render (a path, e.g. schemes/minimal-dark.yaml)
     scheme: PathBuf,
+
+    /// Directory holding the templates and manifest.toml
+    #[arg(long, default_value = "templates")]
     templates: PathBuf,
+
+    /// Directory to write the rendered loadout into
+    #[arg(long, default_value = "build")]
     out: PathBuf,
+
+    /// Loadout name — names the .toml and the directory beside it
+    #[arg(long, default_value = "cozy")]
     loadout: String,
 }
 
-fn parse_args() -> Result<Args, String> {
-    let mut scheme = None;
-    let mut templates = PathBuf::from("templates");
-    let mut out = PathBuf::from("build");
-    let mut loadout = "cozy".to_string();
-
-    let mut it = std::env::args().skip(1);
-    while let Some(arg) = it.next() {
-        let mut val = |flag: &str| it.next().ok_or(format!("{flag} needs a value"));
-        match arg.as_str() {
-            "--templates" => templates = val("--templates")?.into(),
-            "--out" => out = val("--out")?.into(),
-            "--loadout" => loadout = val("--loadout")?,
-            "-h" | "--help" => {
-                println!(
-                    "usage: cozy-theme <scheme.yaml> [--templates DIR] [--out DIR] \
-                     [--loadout NAME]"
-                );
-                std::process::exit(0);
-            }
-            other if other.starts_with('-') => return Err(format!("unknown flag {other}")),
-            other => {
-                if scheme.replace(PathBuf::from(other)).is_some() {
-                    return Err("expected exactly one scheme file".into());
-                }
-            }
-        }
-    }
-    Ok(Args {
-        scheme: scheme.ok_or("no scheme given (try `cozy-theme --help`)")?,
-        templates,
-        out,
-        loadout,
-    })
-}
-
-fn build(args: &Args) -> Result<(), String> {
+fn build(args: &Args) -> Result<()> {
     // The loadout name is the stem of the file minimal identifies the loadout
     // by, and the name of the directory its hook scripts are anchored in, so it
     // has to be a single path component. minimal applies the same rule.
     if args.loadout.is_empty() || args.loadout.contains(['/', '\\']) {
-        return Err(format!(
-            "--loadout {:?}: must be a non-empty name, with no slashes",
-            args.loadout
-        ));
+        bail!("--loadout {:?}: must be a non-empty name, with no slashes", args.loadout);
     }
 
     let scheme = Scheme::load(&args.scheme)?;
     let entries = parse_manifest(&args.templates.join("manifest.toml"))?;
     let mut vars = scheme.vars();
-    vars.insert("loadout-name".into(), args.loadout.clone());
+    vars.insert("loadout_name".into(), args.loadout.clone());
 
+    let env = environment(&scheme);
     let root = args.out.join(&args.loadout);
     if root.exists() {
-        fs::remove_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+        fs::remove_dir_all(&root)?;
     }
 
     let sub = |s: &str| {
@@ -501,11 +442,11 @@ fn build(args: &Args) -> Result<(), String> {
         let out_rel = sub(&e.out);
         let dst = root.join(&out_rel);
 
-        let body = fs::read_to_string(&src).map_err(|err| format!("{}: {err}", src.display()))?;
+        let body = fs::read_to_string(&src)?;
         let body = if e.copy {
             body
         } else {
-            render(&body, &vars, &scheme).map_err(|err| format!("{}: {err}", src.display()))?
+            render(&env, &src.display().to_string(), &body, &vars, &scheme)?
         };
         write_file(&dst, &body)?;
 
@@ -527,12 +468,12 @@ fn build(args: &Args) -> Result<(), String> {
     // which is built from the list above so it cannot describe a file that
     // wasn't rendered.
     let toml_src = args.templates.join(format!("{}.toml", args.loadout));
-    let body = fs::read_to_string(&toml_src).map_err(|e| format!("{}: {e}", toml_src.display()))?;
+    let body = fs::read_to_string(&toml_src)?;
     vars.insert(
         "patches".into(),
         patches.trim_end().trim_end_matches(',').to_string(),
     );
-    let body = render(&body, &vars, &scheme).map_err(|e| format!("{}: {e}", toml_src.display()))?;
+    let body = render(&env, &toml_src.display().to_string(), &body, &vars, &scheme)?;
     write_file(&args.out.join(format!("{}.toml", args.loadout)), &body)?;
 
     println!(
@@ -546,12 +487,9 @@ fn build(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-fn main() {
-    let result = parse_args().and_then(|a| build(&a));
-    if let Err(e) = result {
-        eprintln!("cozy-theme: {e}");
-        std::process::exit(1);
-    }
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    build(&Args::parse())
 }
 
 // ---------------------------------------------------------------------------
@@ -584,7 +522,7 @@ mod tests {
     }
 
     /// Write `text` to a private directory and parse it as a manifest.
-    fn manifest_for(text: &str) -> Result<Vec<Entry>, String> {
+    fn manifest_for(text: &str) -> Result<Vec<Entry>> {
         let p = temp_dir().join("manifest.toml");
         fs::write(&p, text).unwrap();
         parse_manifest(&p)
@@ -656,13 +594,38 @@ base0f: d65d0e
     #[test]
     fn quoted_hash_survives_comment_stripping() {
         // The failure this guards: stripping `#`-comments before checking for
-        // quotes turns `"#141414"` into an empty value.
-        assert_eq!(
-            split_kv(r##"  base00: "#141414" # gray-8"##).unwrap().1,
-            "#141414"
+        // quotes turns `"#141414"` into an empty value. yaml-rust2 gets this
+        // right by construction, but the hazard is why the parser exists, so
+        // the case stays covered end to end.
+        let s = scheme_for(
+            "hazards",
+            r##"
+palette:
+  base00: "#141414" # gray-8
+  base01: "#1f1f1f"
+  base02: "#2a2a2a"
+  base03: "#666666"
+  base04: "#8a8a8a"
+  base05: "#d4d4d4"
+  base06: "#e8e8e8"
+  base07: "#f5f5f5"
+  base08: "#ff5f56"
+  base09: "#ff9f43"
+  base0A: "#ffd93d"
+  base0B: "#6bcf7f"
+  base0C: "#4ecdc4"
+  base0D: "#4a7aff"
+  base0E: "#b57edc"
+  base0F: "#8b6f47"
+"##,
         );
-        assert_eq!(split_kv("base00: 1d2021").unwrap().1, "1d2021");
-        assert_eq!(split_kv("base00: 1d2021 # hard").unwrap().1, "1d2021");
+        assert_eq!(s.palette["base00"], Rgb { r: 0x14, g: 0x14, b: 0x14 });
+
+        // A legacy scheme's bare, unquoted value, with and without a comment.
+        let bare = scheme_for("bare", &CURRENT.replace(r##""#141414""##, "1d2021"));
+        assert_eq!(bare.palette["base00"], Rgb { r: 0x1d, g: 0x20, b: 0x21 });
+        let bare_c = scheme_for("bare-c", &CURRENT.replace(r##""#141414""##, "1d2021 # hard"));
+        assert_eq!(bare_c.palette["base00"], Rgb { r: 0x1d, g: 0x20, b: 0x21 });
     }
 
     #[test]
@@ -698,35 +661,37 @@ base0f: d65d0e
     fn renders_vars_sections_and_mix() {
         let s = scheme_for("minimal-dark", CURRENT);
         let v = s.vars();
-        assert_eq!(render("#{{base0D-hex}}", &v, &s).unwrap(), "#4a7aff");
+        let env = environment(&s);
+        let r = |t: &str| render(&env, "test", t, &v, &s).unwrap();
+        assert_eq!(r("#{{base0D_hex}}"), "#4a7aff");
+        assert_eq!(r("rgb({{base00_rgb}})"), "rgb(20, 20, 20)");
+        assert_eq!(r("{{base00_rgb_r}}"), "20");
+        assert_eq!(r("{{ mix('base08','base00',15) }}"), "341919");
+        assert_eq!(r("{{ mix_rgb('base08','base00',15) }}"), "52, 25, 25");
         assert_eq!(
-            render("rgb({{base00-rgb}})", &v, &s).unwrap(),
-            "rgb(20, 20, 20)"
-        );
-        assert_eq!(render("{{base00-rgb-r}}", &v, &s).unwrap(), "20");
-        assert_eq!(
-            render("{{mix base08 base00 15}}", &v, &s).unwrap(),
-            "341919"
-        );
-        assert_eq!(
-            render("{{mix-rgb base08 base00 15}}", &v, &s).unwrap(),
-            "52, 25, 25"
-        );
-        assert_eq!(
-            render("{{#dark}}Ocean{{/dark}}{{#light}}GitHub{{/light}}", &v, &s).unwrap(),
+            r("{% if dark %}Ocean{% endif %}{% if light %}GitHub{% endif %}"),
             "Ocean"
         );
     }
 
     #[test]
     fn unknown_placeholder_is_an_error() {
-        // Passing it through would ship a literal `{{typo}}` into a config file
-        // that the target tool then silently ignores.
+        // Passing it through would ship an empty value into a config file that
+        // the target tool then silently ignores. `UndefinedBehavior::Strict` is
+        // what makes this an error rather than a blank.
         let s = scheme_for("minimal-dark", CURRENT);
-        assert!(render("{{base0G-hex}}", &s.vars(), &s).is_err());
-        assert!(render("{{mix base08 base00}}", &s.vars(), &s).is_err());
-        assert!(render("{{mix base08 base00 150}}", &s.vars(), &s).is_err());
-        assert!(render("{{unclosed", &s.vars(), &s).is_err());
+        let v = s.vars();
+        let env = environment(&s);
+        let bad = |t: &str| render(&env, "test", t, &v, &s).is_err();
+        assert!(bad("{{base0G_hex}}"), "unknown placeholder");
+        assert!(bad("{{ mix('base08','base00') }}"), "too few mix args");
+        assert!(bad("{{ mix('base08','base00',150) }}"), "pct out of range");
+        assert!(bad("{{ mix('base0G','base00',15) }}"), "bad slot");
+        assert!(bad("{{unclosed"), "unclosed delimiter");
+        // The families dropped with the tinted-builder vocabulary must now
+        // fail rather than silently resolve.
+        assert!(bad("{{base00_hex_r}}"), "removed hex-channel family");
+        assert!(bad("{{base00_dec_r}}"), "removed dec-channel family");
     }
 
     #[test]
@@ -737,7 +702,7 @@ base0f: d65d0e
             Ok(_) => panic!("expected failure"),
             Err(e) => e,
         };
-        assert!(err.contains("missing 15 of 16 slots"), "{err}");
+        assert!(err.to_string().contains("missing 15 of 16 slots"), "{err}");
     }
 
     #[test]
@@ -755,6 +720,7 @@ base0f: d65d0e
             Ok(_) => panic!("expected failure"),
             Err(e) => e,
         };
+        let err = err.to_string();
         assert!(err.contains("tinted8"), "{err}");
         assert!(err.contains("no base16 slots"), "{err}");
     }
