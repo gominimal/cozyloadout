@@ -103,13 +103,15 @@ everything goes through `temp_dir()`.
 
 ### The library
 
-`tools/cozy-theme/src/lib.rs` holds what the renderer and the wizard both need:
-`Rgb`, `mix`, `SLOTS`, `Scheme` (the YAML parser) and `discover`. It was split
+`tools/cozy-theme/src/lib.rs` **is** the renderer: `Rgb`, `mix`, `SLOTS`,
+`Scheme` (the YAML parser), `discover`, `Packages`, the minijinja environment,
+the manifest parser, output validation, and `build` behind an `Options` struct.
+`main.rs` is a clap front end over it and the wizard is the other caller. It was split
 out of `main.rs` when the wizard needed to load schemes; the split changed no
 output, verified by hashing all 535 rendered trees before and after.
 
-Anything only the renderer uses — the template engine, the manifest, the build
-— stays in `main.rs`. Pedantic clippy's library-API lints (`missing_errors_doc`,
+Nothing renderer-shaped stays in `main.rs` any more: it is argument parsing
+and a single call. Pedantic clippy's library-API lints (`missing_errors_doc`,
 `missing_panics_doc`, `must_use_candidate`) are switched off for it in
 `Cargo.toml`: it is an internal crate with `publish = false`, and writing those
 sections for callers who are both in this repo is documentation nobody reads.
@@ -302,6 +304,74 @@ be guarded cannot be optional.
 
 The `[N files]` the renderer prints counts what it actually wrote, not
 `entries.len()` — those stopped agreeing once entries could be skipped.
+
+### The apply page
+
+The last screen: a summary of every choice, then four actions.
+
+Install is listed **first**, and is where the cursor starts: it is the point of
+running the wizard, so making it the second option means everyone arrows past
+the one they wanted.
+
+| Action | Builds | Installs | Remembers |
+| --- | --- | --- | --- |
+| Generate and install | yes | yes | yes |
+| Generate | yes | no | yes |
+| Save settings and exit | no | no | yes |
+| Abort | no | no | **no** |
+
+Once an action has run, **any key exits**. Naming two specific keys made people
+hunt for them, and there is nothing else to do on that screen: re-running from
+it would be a second build nobody asked for. The outcome — the rendered path,
+or the error — is printed *after* the alternate screen is torn down, so a
+failure is still readable instead of vanishing with the frame it was drawn on.
+
+Abort is the only one that throws the answers away — that is what makes it
+different from the others, and `abort_is_the_only_action_that_discards_the_answers`
+holds it.
+
+Generating **calls `cozy_theme::build` directly**. The renderer lives in the
+library; the `cozy-theme` binary is a thin CLI over it, and the wizard is the
+other caller. Both run literally the same code, with `Options` in place of a
+command line.
+
+It spawned the binary first, on the reasoning that using the same executable as
+`just theme` kept them from drifting. That reasoning was wrong — a shared
+library gives that more strongly, with no argument serialisation in between —
+and the subprocess cost two hacks that only existed because of it: locating the
+binary on disk (with a `deps/` fallback so tests could find it) and making every
+path absolute, because the child had its own working directory. Both are gone.
+
+Installing is `cozy_theme::install`, in-process too, and `just install` is a
+one-line recipe calling `cozy-theme --install`. So the wizard and the recipe do
+the same thing by running the same code rather than by agreeing on a sequence
+of shell steps.
+
+It is a **directory copy, not zip-then-unzip**. The zip is a distributable
+artifact that `just bundle` produces; installing never needed to go through it,
+and shelling out to `unzip` is where the stray recipe output in the wizard came
+from — `just`'s echoed command line and unzip's chatter went straight through
+the alternate screen. Nothing now uses `unzip` at all.
+
+The old tree is deleted before the copy, for the reason the shell version had
+to: overwriting never removes, so every scheme ever installed would leave its
+theme files behind forever. The destination path is built from the loadout name
+and never taken from a caller, so a sibling loadout cannot be caught in the
+delete — `installing_touches_nothing_but_this_loadout` holds that.
+
+The renderer grew the flags this needs, and they work from the command line too:
+
+| Flag | Effect |
+| --- | --- |
+| `--greeting blocks\|legacy` | which fish mark to install |
+| `--with a,b,c` | which optional packages; **omitted means all**, which is what a plain `just theme` has always produced |
+| `--patch-file`, `--patch-dir` | the user's own files, appended to the patch list; a directory becomes a glob with a trailing-slash dest |
+
+One trap survives the move to a library call: **the repo root must never be an
+empty path.** `Path::new("schemes/vendor")` climbs to `"schemes"` and then to
+`""`, and an empty path is not the current directory — it is nothing. It is
+still used to find `templates/` and to run `just install`, so `repo_root` is
+the one definition and `the_repo_root_is_never_an_empty_path` guards it.
 
 ### Remembering answers
 

@@ -45,7 +45,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       # fish for `fish --no-execute`, dash for the POSIX-sh hook check, zip for
-      # `just bundle`. The runner already has cargo and unzip. No interpreter is
+      # `just bundle`. The runner already has cargo. No interpreter is
       # needed: the renderer validates its own TOML/XML/YAML output.
       #
       # `cargo install` rather than third-party setup actions: it keeps this
