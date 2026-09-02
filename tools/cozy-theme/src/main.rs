@@ -7,7 +7,7 @@
 
 use clap::Parser;
 use color_eyre::eyre::{bail, Context, Result};
-use cozy_theme::{mix, Scheme};
+use cozy_theme::{mix, Packages, Scheme};
 use fs_err as fs;
 use minijinja::{AutoEscape, Environment, UndefinedBehavior};
 use serde::Deserialize;
@@ -122,6 +122,11 @@ struct Entry {
     dest: Option<String>,
     #[serde(default)]
     copy: bool,
+    /// The package this config belongs to, when that package is optional.
+    /// Declining the package drops the config with it — a config installed for
+    /// a binary that is not there is clutter, and it is why being themed is no
+    /// reason for a package to be mandatory.
+    package: Option<String>,
 }
 
 /// The manifest as a whole. `deny_unknown_fields` here rejects a key written
@@ -263,8 +268,23 @@ fn build(args: &Args) -> Result<()> {
 
     let scheme = Scheme::load(&args.scheme)?;
     let entries = parse_manifest(&args.templates.join("manifest.toml"))?;
+    let packages = Packages::load(&args.templates.join("packages.toml"))?;
+    // The plain build installs everything; the wizard is what will narrow this.
+    let selected = packages.all();
     let mut vars = scheme.vars();
     vars.insert("loadout_name".into(), args.loadout.clone());
+    // One quoted name per line, indented to sit inside the array in the
+    // template. Same shape as `patches` below, and generated for the same
+    // reason: the list has one home, and it is templates/packages.toml.
+    vars.insert(
+        "packages".into(),
+        packages
+            .all()
+            .iter()
+            .map(|p| format!("  \"{p}\","))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 
     let env = environment(&scheme);
     let root = args.out.join(&args.loadout);
@@ -277,8 +297,17 @@ fn build(args: &Args) -> Result<()> {
             .replace("{loadout}", &args.loadout)
     };
     let mut patches = String::new();
+    // Counted rather than derived from `entries.len()`: entries whose package
+    // was declined are skipped, so the two numbers stopped agreeing.
+    let mut written = 0usize;
 
     for e in &entries {
+        // Skip configs whose package was declined.
+        if let Some(pkg) = &e.package {
+            if !selected.iter().any(|p| p == pkg) {
+                continue;
+            }
+        }
         let src = args.templates.join(&e.template);
         let out_rel = sub(&e.out);
         let dst = root.join(&out_rel);
@@ -290,6 +319,7 @@ fn build(args: &Args) -> Result<()> {
             render(&env, &src.display().to_string(), &body, &vars, &scheme)?
         };
         write_file(&dst, &body)?;
+        written += 1;
 
         if let Some(dest) = &e.dest {
             // One line per entry. TOML forbids newlines inside an inline
@@ -323,7 +353,7 @@ fn build(args: &Args) -> Result<()> {
         scheme.slug,
         scheme.variant(),
         args.out.display(),
-        entries.len() + 1
+        written + 1
     );
     Ok(())
 }

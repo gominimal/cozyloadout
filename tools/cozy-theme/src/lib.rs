@@ -7,6 +7,7 @@
 
 use color_eyre::eyre::{bail, eyre, Context, Result};
 use fs_err as fs;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -384,6 +385,73 @@ pub fn discover(schemes_dir: &Path) -> Vec<SchemeEntry> {
     seen.into_values().collect()
 }
 
+// ---------------------------------------------------------------------------
+// Packages
+// ---------------------------------------------------------------------------
+
+/// A group of packages that is always installed.
+#[derive(Deserialize)]
+pub struct PackageGroup {
+    pub title: String,
+    pub about: String,
+    pub packages: Vec<String>,
+}
+
+/// A package the user can decline.
+#[derive(Deserialize)]
+pub struct OptionalPackage {
+    pub name: String,
+    pub about: String,
+    /// Whether the wizard preselects it.
+    pub default: bool,
+}
+
+/// `templates/packages.toml`: where the loadout's package list comes from.
+///
+/// The generated `cozy.toml` needs a flat array, because that is minimal's
+/// schema. Keeping the split here means the wizard can offer the optional
+/// third without a second list to keep in step.
+#[derive(Deserialize)]
+pub struct Packages {
+    pub base: PackageGroup,
+    pub cozy: PackageGroup,
+    pub optional: Vec<OptionalPackage>,
+}
+
+impl Packages {
+    pub fn load(path: &Path) -> Result<Packages> {
+        let text = fs::read_to_string(path)?;
+        toml::from_str(&text).wrap_err_with(|| path.display().to_string())
+    }
+
+    /// Every package that will be installed, given the optional ones to keep.
+    /// Sorted and de-duplicated so the generated list is stable whatever order
+    /// the groups are written in.
+    pub fn selected<'a>(&'a self, keep: &dyn Fn(&OptionalPackage) -> bool) -> Vec<&'a str> {
+        let mut names: Vec<&str> = self
+            .base
+            .packages
+            .iter()
+            .chain(&self.cozy.packages)
+            .map(String::as_str)
+            .chain(
+                self.optional
+                    .iter()
+                    .filter(|o| keep(o))
+                    .map(|o| o.name.as_str()),
+            )
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    /// Everything, as the plain build installs it.
+    pub fn all(&self) -> Vec<&str> {
+        self.selected(&|_| true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +525,110 @@ base0d: 83a598
 base0e: d3869b
 base0f: d65d0e
 "#;
+
+    fn packages() -> Packages {
+        Packages::load(Path::new("../../templates/packages.toml")).expect("packages.toml")
+    }
+
+    #[test]
+    fn every_package_appears_exactly_once() {
+        // Three hand-maintained groups; the same name in two of them would
+        // install fine and quietly mean nobody knows which group owns it.
+        let p = packages();
+        let mut all: Vec<&str> = p
+            .base
+            .packages
+            .iter()
+            .chain(&p.cozy.packages)
+            .map(String::as_str)
+            .chain(p.optional.iter().map(|o| o.name.as_str()))
+            .collect();
+        let total = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(
+            all.len(),
+            total,
+            "a package is listed in more than one group"
+        );
+    }
+
+    #[test]
+    fn manifest_package_tags_name_real_optional_packages() {
+        // A manifest entry tagged with a package that does not exist, or that
+        // is not optional, would silently never be skipped — the tag would look
+        // like it was doing something and do nothing.
+        let manifest = include_str!("../../../templates/manifest.toml");
+        let p = packages();
+        let optional: Vec<&str> = p.optional.iter().map(|o| o.name.as_str()).collect();
+        let mut tagged = 0;
+        for line in manifest.lines() {
+            let Some(rest) = line.trim().strip_prefix("package") else {
+                continue;
+            };
+            let name = rest.trim_start_matches([' ', '=']).trim().trim_matches('"');
+            tagged += 1;
+            assert!(
+                optional.contains(&name),
+                "manifest tags a config with {name:?}, which is not an optional package"
+            );
+        }
+        assert!(
+            tagged > 0,
+            "no manifest entry is tagged; the skip is dead code"
+        );
+    }
+
+    #[test]
+    fn every_optional_themed_tool_tags_its_config() {
+        // The other direction: an optional package whose config is *not*
+        // tagged would install its config even when declined.
+        let manifest = include_str!("../../../templates/manifest.toml");
+        for o in packages().optional {
+            // Only tools with a config in the tree are relevant.
+            if !manifest.contains(&format!("template = \"{}/", o.name)) {
+                continue;
+            }
+            assert!(
+                manifest.contains(&format!("package  = \"{}\"", o.name)),
+                "{} is optional and themed, but its manifest entry is not tagged \
+                 — declining it would install a config for a missing binary",
+                o.name
+            );
+        }
+    }
+
+    #[test]
+    fn optional_packages_are_described() {
+        // The wizard shows these one per row; a blank line is a bug the user
+        // sees rather than a lint.
+        for o in packages().optional {
+            assert!(!o.about.trim().is_empty(), "{} has no description", o.name);
+            assert!(
+                o.about.trim_end().ends_with('.'),
+                "{}: description should read as a sentence, got {:?}",
+                o.name,
+                o.about
+            );
+        }
+    }
+
+    #[test]
+    fn declining_everything_still_leaves_a_working_session() {
+        let p = packages();
+        let bare = p.selected(&|_| false);
+        for must in ["fish", "coreutils", "git", "helix", "zellij"] {
+            assert!(
+                bare.contains(&must),
+                "{must} must survive declining every extra"
+            );
+        }
+        assert!(
+            !bare.contains(&"kittyview"),
+            "an optional package leaked into the required set"
+        );
+        assert!(p.all().len() > bare.len(), "optional packages add nothing?");
+    }
 
     #[test]
     fn parses_current_format() {

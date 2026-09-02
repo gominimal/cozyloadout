@@ -93,11 +93,13 @@ dest     = ".config/starship.toml"
 
 [[file]]
 template = "broot/conf.hjson"
+package  = "broot"
 out      = "broot/conf.hjson"
 dest     = ".config/broot/conf.hjson"
 
 [[file]]
 template = "broot/skins/skin.hjson"
+package  = "broot"
 out      = "broot/skins/{slug}.hjson"
 dest     = ".config/broot/skins/{slug}.hjson"
 
@@ -114,11 +116,13 @@ dest     = ".config/bottom/bottom.toml"
 # its `[theme] name`, and the theme file renders to {slug}.toml.
 [[file]]
 template = "atuin/config.toml"
+package  = "atuin"
 out      = "atuin/config.toml"
 dest     = ".config/atuin/config.toml"
 
 [[file]]
 template = "atuin/themes/theme.toml"
+package  = "atuin"
 out      = "atuin/themes/{slug}.toml"
 dest     = ".config/atuin/themes/{slug}.toml"
 
@@ -127,11 +131,13 @@ dest     = ".config/atuin/themes/{slug}.toml"
 # ships; delta picks up its own styling from the git include below.
 [[file]]
 template = "lazygit/config.yml"
+package  = "lazygit"
 out      = "lazygit/config.yml"
 dest     = ".config/lazygit/config.yml"
 
 # tealdeer's directory is named after the crate, not the `tldr` command.
 [[file]]
 template = "tealdeer/config.toml"
+package  = "tealdeer"
 out      = "tealdeer/config.toml"
 dest     = ".config/tealdeer/config.toml"
