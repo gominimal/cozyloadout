@@ -175,12 +175,19 @@ install: bundle
 test:
     cargo test --quiet --release --manifest-path tools/cozy-theme/Cargo.toml
 
+# Pedantic clippy, warnings denied. The lint level lives in Cargo.toml's
+# `[lints.clippy]` so a bare `cargo clippy` sees it too; this recipe only adds
+# the gate. `--all-targets` so the test module is linted as well — it drifts
+# first, since it is the code nobody re-reads.
+lint:
+    cargo clippy --quiet --release --all-targets --manifest-path tools/cozy-theme/Cargo.toml -- -D warnings
+
 # Everything CI runs, and everything worth running before a commit: the unit
-# tests, both checked-in schemes rendered, the shell and fish files syntax
-# checked, and the generated loadout TOML parsed by something that is not our
-# own parser. Each of these has caught a real bug — see AGENTS.md.
-[doc('Run the full local check suite (tests, renders, syntax, TOML validity)')]
-check: test
+# tests, pedantic clippy, both checked-in schemes rendered, the shell and fish
+# files syntax checked, and the generated loadout TOML parsed by something that
+# is not our own parser. Each of these has caught a real bug — see AGENTS.md.
+[doc('Run the full local check suite (tests, lints, renders, syntax, TOML validity)')]
+check: test lint
     #!/usr/bin/env bash
     set -euo pipefail
     for scheme in minimal-dark minimal-light; do

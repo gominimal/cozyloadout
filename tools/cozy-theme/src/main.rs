@@ -43,14 +43,14 @@ impl Rgb {
         })
     }
 
-    fn hex(&self) -> String {
+    fn hex(self) -> String {
         format!("{:02x}{:02x}{:02x}", self.r, self.g, self.b)
     }
 
     /// WCAG relative luminance. Only used to decide dark vs light.
-    fn luminance(&self) -> f64 {
+    fn luminance(self) -> f64 {
         let ch = |v: u8| {
-            let s = v as f64 / 255.0;
+            let s = f64::from(v) / 255.0;
             if s <= 0.03928 {
                 s / 12.92
             } else {
@@ -65,10 +65,17 @@ impl Rgb {
 /// two slots is the true midpoint rather than biased downward.
 fn mix(fg: Rgb, bg: Rgb, pct: f64) -> Rgb {
     let f = pct / 100.0;
+    // `clamp` then `round` keeps the value inside u8 before it is narrowed, so
+    // the cast cannot truncate or wrap. Written as a saturating conversion
+    // rather than `as` so that stays true if the arithmetic above ever changes.
+    // Rust's float-to-int `as` saturates (and maps NaN to 0) rather than
+    // wrapping, and the value is rounded and clamped into 0..=255 before the
+    // narrowing anyway. Both lints are about *unchecked* narrowing; this one is
+    // checked twice over, so allow them here rather than crate-wide.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let c = |a: u8, b: u8| {
-        (b as f64 + f * (a as f64 - b as f64))
-            .round()
-            .clamp(0.0, 255.0) as u8
+        let blended = (f64::from(b) + f * (f64::from(a) - f64::from(b))).round();
+        blended.clamp(0.0, 255.0) as u8
     };
     Rgb {
         r: c(fg.r, bg.r),
@@ -163,7 +170,7 @@ impl Scheme {
             // Most likely a tinted8 scheme (named 8-colour keys) or not a
             // scheme at all — saying "missing all 16" for those reads as a
             // corrupt base16 file rather than the wrong kind of file.
-            let system = meta.get("system").map(|s| s.as_str()).unwrap_or("unknown");
+            let system = meta.get("system").map_or("unknown", String::as_str);
             bail!(
                 "{}: no base16 slots found — this is a {system:?} scheme, and the loadout \
                  needs base16 or base24",
@@ -232,7 +239,7 @@ impl Scheme {
 
     /// Every placeholder a template may reference.
     ///
-    /// Names are snake_case because minijinja parses `base00-hex` as a
+    /// Names are `snake_case` because minijinja parses `base00-hex` as a
     /// subtraction. The `-hex-r/g/b` and `-dec-r/g/b` families that used to be
     /// emitted here are gone: they existed only so upstream tinted-builder
     /// templates would drop in, and moving to Jinja syntax ended that anyway.
@@ -553,7 +560,7 @@ palette:
 "##;
 
     // The pre-2022 layout: no `palette:` block, no `#`, lowercase slot letters.
-    const LEGACY: &str = r##"
+    const LEGACY: &str = r#"
 scheme: "Gruvbox dark, hard"
 author: "Dawid Kurek"
 base00: 1d2021
@@ -572,7 +579,7 @@ base0c: 8ec07c
 base0d: 83a598
 base0e: d3869b
 base0f: d65d0e
-"##;
+"#;
 
     #[test]
     fn parses_current_format() {
@@ -698,10 +705,7 @@ palette:
     fn missing_slots_are_rejected() {
         let p = temp_dir().join("partial.yaml");
         fs::write(&p, "palette:\n  base00: \"#000000\"\n").unwrap();
-        let err = match Scheme::load(&p) {
-            Ok(_) => panic!("expected failure"),
-            Err(e) => e,
-        };
+        let Err(err) = Scheme::load(&p) else { panic!("expected failure") };
         assert!(err.to_string().contains("missing 15 of 16 slots"), "{err}");
     }
 
@@ -716,10 +720,7 @@ palette:
             "scheme:\n  system: \"tinted8\"\n  name: \"Nord\"\npalette:\n  black: \"#2e3440\"\n",
         )
         .unwrap();
-        let err = match Scheme::load(&p) {
-            Ok(_) => panic!("expected failure"),
-            Err(e) => e,
-        };
+        let Err(err) = Scheme::load(&p) else { panic!("expected failure") };
         let err = err.to_string();
         assert!(err.contains("tinted8"), "{err}");
         assert!(err.contains("no base16 slots"), "{err}");

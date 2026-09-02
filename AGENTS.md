@@ -71,6 +71,14 @@ anyway, and the hand-rolled parsers it justified are gone:
 | `color-eyre` | `Result<_, String>` throughout |
 | `fs-err` | the `format!("{}: {e}", path.display())` prefix repeated at every io call |
 
+Lints are **pedantic clippy**, set in `Cargo.toml`'s `[lints.clippy]` so a bare
+`cargo clippy` picks them up; `just lint` adds `-D warnings` and `just check`
+depends on it. One targeted `#[allow]` survives, on the narrowing cast in
+`mix()`: the value is rounded and clamped into `0..=255`, and Rust's
+float-to-int `as` saturates rather than wrapping, so the two "unchecked
+narrowing" lints do not apply. Keep allows local and reasoned like that one
+rather than widening the crate-level config.
+
 `rust-version = "1.85"`, set by the dependencies (`uuid`, `yaml-rust2`, `clap`,
 `hashbrown`) rather than by this crate's own source. Never tested — development
 was on 1.97.1.
