@@ -56,5 +56,14 @@ yaml-rust2 = { version = "0.12.0", default-features = false }
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 
+# Pedantic's library-API lints, switched off for the shared lib. It exists so
+# the renderer and the wizard can share a scheme parser inside one package, not
+# as something published — `publish = false` above. Writing `# Errors` and
+# `# Panics` sections and `#[must_use]` for callers who are both in this repo
+# is documentation nobody reads. Everything else pedantic says still applies.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
 [profile.release]
 opt-level = 1
