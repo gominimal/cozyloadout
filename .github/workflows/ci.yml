@@ -17,8 +17,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # fish for `fish --no-execute`, dash for the POSIX-sh hook check, zip for
-      # `just bundle`. The runner already has cargo, python3 (3.12, so tomllib)
-      # and unzip.
+      # `just bundle`. The runner already has cargo and unzip. No interpreter is
+      # needed: the renderer validates its own TOML/XML/YAML output.
       #
       # `cargo install just` rather than a third-party setup action: it costs a
       # minute or so, and it keeps this workflow's supply chain to actions/

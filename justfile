@@ -214,35 +214,6 @@ _validate:
     else
         echo "  (skipped: no fish to syntax-check the config with)" >&2
     fi
-    just _toml {{BUILD}}/{{LOADOUT}}.toml
-
-# Parse a TOML file with a real parser. This is what caught the generated
-# cozy.toml being invalid TOML for every scheme — minimal's parser tolerated the
-# wrapped inline tables it used to emit, so nothing else noticed.
-_toml file:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    py=""
-    for candidate in python3 python3.13 python3.12 python3.11; do
-        if command -v "$candidate" >/dev/null 2>&1 \
-           && "$candidate" -c 'import tomllib' 2>/dev/null; then
-            py="$candidate"; break
-        fi
-    done
-    # AGENTS.md: the system python3 on the dev box is 3.9 with no tomllib, and a
-    # newer one lives in the nix store under a path that keeps changing.
-    if [[ -z "$py" ]]; then
-        for candidate in /nix/store/*/bin/python3.1[1-9]; do
-            if [[ -x "$candidate" ]] && "$candidate" -c 'import tomllib' 2>/dev/null; then
-                py="$candidate"; break
-            fi
-        done
-    fi
-    if [[ -z "$py" ]]; then
-        echo "NOT CHECKED: {{file}} — no python with tomllib on this machine" >&2
-        exit 0
-    fi
-    "$py" -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "{{file}}"
 
 # Renders every vendored scheme and parses the result. Slow (a few minutes for
 # ~530 schemes) and needs `just fetch-schemes` first, so it is not part of
@@ -261,11 +232,12 @@ check-schemes:
     fi
     n=0
     while IFS= read -r scheme; do
+        # The renderer parses its own TOML, XML and YAML output before writing
+        # any of it, so a render that succeeds has already been validated.
         just render "$scheme" >/dev/null
-        just _toml {{BUILD}}/{{LOADOUT}}.toml
         n=$((n + 1))
     done < <(find "${dirs[@]}" \( -name '*.yaml' -o -name '*.yml' \) | sort)
-    echo "$n schemes rendered, every generated {{LOADOUT}}.toml parses"
+    echo "$n schemes rendered, every generated file parses"
 
 # Drop build artefacts. Leaves schemes/vendor/ alone.
 clean:

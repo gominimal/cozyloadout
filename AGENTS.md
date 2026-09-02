@@ -34,7 +34,7 @@ templates/manifest.toml┘
 | `schemes/` | Scheme YAML. `minimal-dark` and `minimal-light` are checked in |
 | `templates/` | The loadout, with colours as placeholders. The source tree |
 | `templates/manifest.toml` | What gets rendered, and where each result is patched to |
-| `tools/cozy-theme/` | The renderer. Rust; `toml`, `serde`, `uuid` |
+| `tools/cozy-theme/` | The renderer. Rust; see the dependency table under *The renderer* |
 | `build/` | Output. Gitignored, rewritten every render |
 
 ### The manifest
@@ -457,11 +457,14 @@ things to remember:
   shebang, so a bashism is a runtime failure in the one script that must never
   fail.
 - **`fish --no-execute` over the rendered config.**
-- **Parse the generated `cozy.toml` with a real TOML parser.** This is what
-  caught the inline-table bug — every scheme was producing invalid TOML.
-  `just _toml` finds a Python with `tomllib`, including the nix-store one the
-  box in *Environment* needs; it says so loudly rather than passing silently
-  when there is none to be found.
+- **The renderer parses its own generated TOML, XML and YAML** before writing
+  any of it, so a successful render is already a validated one and no external
+  parser is involved. Three bugs came from here, all of them silent in the tool
+  that reads the file: `cozy.toml`'s wrapped inline tables (invalid TOML that
+  minimal's parser tolerated), and the .tmTheme's unescaped `<email@host>` and
+  literal `--` inside an XML comment (bat declines a bad theme and still exits
+  0). Because it runs in the renderer rather than in CI, `just theme <anything>`
+  is covered too — which is where a bad scheme actually reaches a user.
 - **Render the whole upstream collection** (`just check-schemes`).
   `schemes/vendor/base16` and `base24`, ~530 files, expect zero failures, and
   the result parsed each time. `tinted8` is an 8-colour system and is correctly
@@ -499,10 +502,6 @@ different box and it does not apply to you. Verify rather than assume.
   in practice: `\?` is not a BRE quantifier in BSD sed (strip `.yaml` and `.yml`
   separately, not with `\.ya\?ml$`), and bfs is breadth-first so `find | head -1`
   needs an explicit `sort` for deterministic results.
-- **`python3` is 3.9 with no `tomllib`.** A newer one lives in the nix store;
-  find it with
-  `ls /nix/store/*/bin/python3.1[1-9]` and test `import tomllib`. The exact
-  store path changes.
 - **`just` is at `/run/current-system/sw/bin/just`.** There are Linux `just`
   builds in the nix store that will fail with "exec format error" on this
   Darwin host — don't reach for those.
@@ -516,8 +515,11 @@ Worth knowing before relying on any of it:
 | --- | --- |
 | Renders 535/535 upstream base16+base24 schemes | verified — `just check-schemes` |
 | The crate migration changed no output | **verified** — full rendered tree hashed per scheme before and after; all 535 byte-for-byte identical |
+| Legacy unquoted hex that looks numeric (`073642`, `000000`, `1e2021`) parses | verified — regression test; the scheme parser reads raw scalar events precisely because a loaded YAML tree applies implicit typing and destroys these |
+| Every generated `.tmTheme` is well-formed XML | verified — all 533 vendored schemes parsed with a real XML parser; `just check` now gates it |
+| `--loadout` cannot escape `--out` | verified — `--loadout ..` previously deleted a sibling of `--out`; now rejected, with a test |
 | Generated `cozy.toml` is valid TOML for every scheme | verified |
-| Renderer builds with no network | verified |
+| Renderer builds `--locked` in CI | verified — the old no-network check went when the crate dependencies landed |
 | `$SHELL` starts fish on attach | verified — needs minimal 0.5.4 |
 | `PROMPT_COMMAND` handover (removed) worked; unset prevented loops | was verified against a pty, before removal |
 | Unguarded `exec` in `PROMPT_COMMAND` exits 127 | verified |

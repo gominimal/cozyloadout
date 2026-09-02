@@ -49,14 +49,16 @@ To build and install the loadout you need:
 | `bash` | recipe bodies (the multi-line recipes carry a bash shebang) |
 | `zip`, `unzip` | `just bundle` and `just install` |
 | `git` | cloning this repo; also `just fetch-schemes` |
+| minimal **0.5.4+** | *installing* the loadout. Patch sources use `$LOADOUT_ROOT` and the shell handover uses `SHELL`; neither works on 0.5.3 or earlier |
 
 Plus the usual POSIX userland — `find`, `sed`, `sort`, `head`, `wc`, `tr`,
 `mkdir`, `rm` — which any Unix already has.
 
 `just check` additionally uses `fish` and `dash` to syntax-check the two files
-that are shipped as code, and a `python3` with `tomllib` (3.11+) to parse the
-generated loadout TOML. Each is skipped with a message if it isn't there, so the
-recipe still runs — it just checks less.
+that are shipped as code. Either is skipped with a message if it isn't there, so
+the recipe still runs — it just checks less. The generated TOML, XML and YAML
+need no external tool: the renderer parses each file with a real parser before
+writing it, so a render that succeeds has already been validated.
 
 The renderer has crate dependencies (`yaml-rust2`, `minijinja`, `toml`, `uuid`,
 `clap`, `color-eyre`, `fs-err`), so the first build fetches them from crates.io.

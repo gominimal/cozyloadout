@@ -8,13 +8,14 @@
 use clap::Parser;
 use color_eyre::eyre::{bail, eyre, Context, Result};
 use fs_err as fs;
-use minijinja::{Environment, UndefinedBehavior};
+use minijinja::{AutoEscape, Environment, UndefinedBehavior};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-use yaml_rust2::{Yaml, YamlLoader};
+use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser as YamlParser};
+use yaml_rust2::scanner::Marker;
 
 // ---------------------------------------------------------------------------
 // Colour
@@ -65,9 +66,6 @@ impl Rgb {
 /// two slots is the true midpoint rather than biased downward.
 fn mix(fg: Rgb, bg: Rgb, pct: f64) -> Rgb {
     let f = pct / 100.0;
-    // `clamp` then `round` keeps the value inside u8 before it is narrowed, so
-    // the cast cannot truncate or wrap. Written as a saturating conversion
-    // rather than `as` so that stays true if the arithmetic above ever changes.
     // Rust's float-to-int `as` saturates (and maps NaN to 0) rather than
     // wrapping, and the value is rounded and clamped into 0..=255 before the
     // narrowing anyway. Both lints are about *unchecked* narrowing; this one is
@@ -108,38 +106,90 @@ struct Scheme {
     palette: BTreeMap<String, Rgb>,
 }
 
-/// Collect `baseXX` slots and scalar metadata from a YAML document, at any
-/// depth. Empty scalars are skipped so a scheme with `author: ""` still falls
-/// back to "unknown" rather than reporting an empty author.
-fn walk(
-    node: &Yaml,
-    meta: &mut BTreeMap<String, String>,
-    palette: &mut BTreeMap<String, Rgb>,
-) -> Result<()> {
-    let Yaml::Hash(hash) = node else { return Ok(()) };
-    for (key, value) in hash {
-        let Some(key) = key.as_str() else { continue };
+/// One open collection while walking the event stream. A mapping remembers the
+/// key it is waiting on; a sequence never takes keys.
+enum Frame {
+    Map(Option<String>),
+    Seq,
+}
+
+/// Collects `baseXX` slots and scalar metadata from a scheme, at any depth —
+/// nesting is ignored, which is what lets one code path cover both the current
+/// (`palette:` block) and legacy (top-level `base00:`) formats.
+///
+/// This reads the parser's **event stream** rather than a loaded `Yaml` tree,
+/// and that is the whole point. The tree applies YAML's implicit typing, which
+/// destroys colours: a legacy scheme's unquoted `base01: 073642` becomes the
+/// integer 73642 and loses its leading zero, `000000` becomes 0, and `1e2021`
+/// becomes a float. `Event::Scalar` hands back the original lexeme, which is
+/// the only thing a hex colour can be read from.
+#[derive(Default)]
+struct SchemeSink {
+    meta: BTreeMap<String, String>,
+    palette: BTreeMap<String, Rgb>,
+    stack: Vec<Frame>,
+    /// First colour that failed to parse. Kept rather than returned because
+    /// the receiver trait cannot fail; `Scheme::load` reports it.
+    bad: Option<(String, String)>,
+}
+
+impl SchemeSink {
+    /// A key/value pair, with `value` exactly as it was written.
+    fn record(&mut self, key: &str, value: &str) {
         let lower = key.to_ascii_lowercase();
         if lower.len() == 6 && lower.starts_with("base") {
             // Normalise base0a -> base0A so templates have one spelling.
             let canon = format!("base{}", key[4..].to_ascii_uppercase());
             if SLOTS.contains(&canon.as_str()) {
-                // A bare `1d2021` is a YAML string; one that happens to be all
-                // digits lexes as an integer, so accept both spellings.
-                let raw = value
-                    .as_str()
-                    .map(str::to_string)
-                    .or_else(|| value.as_i64().map(|n| n.to_string()))
-                    .ok_or_else(|| eyre!("{canon}: not a scalar"))?;
-                palette.insert(canon.clone(), Rgb::parse(&raw).wrap_err(canon)?);
+                match Rgb::parse(value) {
+                    Ok(rgb) => {
+                        self.palette.insert(canon, rgb);
+                    }
+                    Err(e) => {
+                        if self.bad.is_none() {
+                            self.bad = Some((canon, e.to_string()));
+                        }
+                    }
+                }
             }
-        } else if matches!(value, Yaml::Hash(_)) {
-            walk(value, meta, palette)?;
-        } else if let Some(text) = value.as_str().filter(|s| !s.is_empty()) {
-            meta.entry(lower).or_insert_with(|| text.to_string());
+        } else if !value.is_empty() {
+            self.meta.entry(lower).or_insert_with(|| value.to_string());
         }
     }
-    Ok(())
+
+    /// A nested collection stands where a value would; drop the pending key.
+    fn take_key(&mut self) {
+        if let Some(Frame::Map(slot)) = self.stack.last_mut() {
+            *slot = None;
+        }
+    }
+}
+
+impl MarkedEventReceiver for SchemeSink {
+    fn on_event(&mut self, ev: Event, _mark: Marker) {
+        match ev {
+            Event::MappingStart(..) => {
+                self.take_key();
+                self.stack.push(Frame::Map(None));
+            }
+            Event::SequenceStart(..) => {
+                self.take_key();
+                self.stack.push(Frame::Seq);
+            }
+            Event::MappingEnd | Event::SequenceEnd => {
+                self.stack.pop();
+            }
+            Event::Scalar(text, ..) => match self.stack.last_mut() {
+                Some(Frame::Map(slot @ None)) => *slot = Some(text),
+                Some(Frame::Map(slot)) => {
+                    let key = slot.take().unwrap_or_default();
+                    self.record(&key, &text);
+                }
+                Some(Frame::Seq) | None => {}
+            },
+            _ => {}
+        }
+    }
 }
 
 impl Scheme {
@@ -155,14 +205,14 @@ impl Scheme {
     /// YAML parser gets both right by construction.
     fn load(path: &Path) -> Result<Scheme> {
         let text = fs::read_to_string(path)?;
-        let docs = YamlLoader::load_from_str(&text)
+        let mut sink = SchemeSink::default();
+        YamlParser::new_from_str(&text)
+            .load(&mut sink, true)
             .wrap_err_with(|| format!("{}: not valid YAML", path.display()))?;
-
-        let mut meta: BTreeMap<String, String> = BTreeMap::new();
-        let mut palette: BTreeMap<String, Rgb> = BTreeMap::new();
-        for doc in &docs {
-            walk(doc, &mut meta, &mut palette).wrap_err_with(|| path.display().to_string())?;
+        if let Some((slot, why)) = sink.bad {
+            bail!("{}: {slot}: {why}", path.display());
         }
+        let (meta, palette) = (sink.meta, sink.palette);
 
         let missing: Vec<&str> =
             SLOTS.iter().copied().filter(|s| !palette.contains_key(*s)).collect();
@@ -298,6 +348,20 @@ fn environment(scheme: &Scheme) -> Environment<'static> {
     // — without this every rendered file loses it.
     env.set_keep_trailing_newline(true);
 
+    // Escaping is off for config files, where `&` and `"` are ordinary text and
+    // escaping them would corrupt the output — with exactly one exception. The
+    // .tmTheme is a plist, i.e. XML, and 12 upstream schemes carry an email
+    // address in `author`: unescaped, `<edun@dunfelt.se>` makes the file
+    // malformed, and bat then declines to load the theme while still exiting 0,
+    // so the loadout silently ships with bat and delta unthemed.
+    env.set_auto_escape_callback(|name| {
+        if name.ends_with(".tmTheme") {
+            AutoEscape::Html // XML for our purposes: escapes & < > " '
+        } else {
+            AutoEscape::None
+        }
+    });
+
     // {{ mix('base08','base00',15) }} — base16 has no dim surface colours, so
     // delta's diff backgrounds and broot's gauge ramp are computed from slots
     // rather than picked from them. `mix_rgb` is the same value in broot's
@@ -343,7 +407,8 @@ fn render(
         vars.iter().map(|(k, v)| (k.as_str(), minijinja::Value::from(v.clone()))).collect();
     ctx.insert("dark", minijinja::Value::from(scheme.is_dark));
     ctx.insert("light", minijinja::Value::from(!scheme.is_dark));
-    env.render_str(text, ctx).wrap_err_with(|| format!("{name}: template error"))
+    env.render_named_str(name, text, ctx)
+        .wrap_err_with(|| format!("{name}: template error"))
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +457,49 @@ fn parse_manifest(path: &Path) -> Result<Vec<Entry>> {
 // Build
 // ---------------------------------------------------------------------------
 
+/// Parse a rendered file with a real parser before it is written.
+///
+/// Both formats have shipped broken from here, and both fail *silently* in the
+/// tool that reads them: a `cozy.toml` whose inline tables wrapped across lines
+/// was invalid TOML that minimal's parser happened to tolerate, and a .tmTheme
+/// has been malformed twice — an unescaped `<email@host>` from a scheme's
+/// `author`, and a literal `--` inside an XML comment. bat declines a bad theme
+/// and still exits 0, so the loadout installs with bat and delta unthemed.
+///
+/// This runs on every render rather than only in CI, which is the point: `just
+/// theme <anything>` is where a bad scheme reaches a user.
+fn validate(path: &Path, body: &str) -> Result<()> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("toml") => {
+            toml::from_str::<toml::Value>(body)
+                .wrap_err_with(|| format!("{}: generated file is not valid TOML", path.display()))?;
+        }
+        Some("tmTheme") => {
+            // `allow_dtd` because the plist carries Apple's DOCTYPE. roxmltree
+            // is strict about `--` in comments, which is exactly the check that
+            // matters here — quick-xml accepts those without complaint.
+            let options = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+            roxmltree::Document::parse_with_options(body, options)
+                .wrap_err_with(|| format!("{}: generated file is not valid XML", path.display()))?;
+        }
+        Some("yml" | "yaml") => {
+            YamlParser::new_from_str(body)
+                .load(&mut IgnoreEvents, true)
+                .wrap_err_with(|| format!("{}: generated file is not valid YAML", path.display()))?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A receiver for `validate`, which only cares whether parsing succeeds.
+struct IgnoreEvents;
+impl MarkedEventReceiver for IgnoreEvents {
+    fn on_event(&mut self, _ev: Event, _mark: Marker) {}
+}
+
 fn write_file(path: &Path, contents: &str) -> Result<()> {
+    validate(path, contents)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -419,12 +526,36 @@ struct Args {
     loadout: String,
 }
 
+/// The loadout name is the stem of the file minimal identifies the loadout by,
+/// and the name of the directory its hook scripts are anchored in, so it has to
+/// be a single path component. minimal applies the same rule.
+///
+/// Checking for slashes is not enough, and the gap was destructive rather than
+/// merely wrong: `--loadout ..` put `root` at the *parent* of `--out`, which
+/// `remove_dir_all` below then deleted before writing the tree over the top.
+/// Anything that is not one `Normal` component is rejected — that covers `..`,
+/// `.`, absolute paths and Windows prefixes as well as `a/b`.
+fn is_single_component(name: &str) -> bool {
+    // Separators are rejected outright rather than left to `components()`,
+    // which normalises them away: `sub/` collapses to one Normal component but
+    // would put the manifest at `<out>/sub/.toml` instead of `<out>/sub.toml`.
+    // A backslash is a legal Unix filename character and so would also survive,
+    // but the name is interpolated into the hook script and into paths minimal
+    // reads, and the original guard rejected it — this check is meant to be
+    // strictly stronger than that one, not differently shaped.
+    if name.contains('/') || name.contains('\\') {
+        return false;
+    }
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_))) && components.next().is_none()
+}
+
 fn build(args: &Args) -> Result<()> {
-    // The loadout name is the stem of the file minimal identifies the loadout
-    // by, and the name of the directory its hook scripts are anchored in, so it
-    // has to be a single path component. minimal applies the same rule.
-    if args.loadout.is_empty() || args.loadout.contains(['/', '\\']) {
-        bail!("--loadout {:?}: must be a non-empty name, with no slashes", args.loadout);
+    if !is_single_component(&args.loadout) {
+        bail!(
+            "--loadout {:?}: must be a single path component — no slashes, no `.` or `..`",
+            args.loadout
+        );
     }
 
     let scheme = Scheme::load(&args.scheme)?;
@@ -636,6 +767,33 @@ palette:
     }
 
     #[test]
+    fn legacy_hex_that_looks_numeric_survives() {
+        // Regression: reading colours off a *loaded* YAML tree applies implicit
+        // typing, so an unquoted legacy value like `073642` arrives as the
+        // integer 73642 with its leading zero gone, `000000` as 0, and `1e2021`
+        // as a float. Solarized and any pure-black scheme hit this. The parser
+        // reads raw scalar events precisely so it cannot.
+        for (raw, want) in [
+            ("073642", Rgb { r: 0x07, g: 0x36, b: 0x42 }),
+            ("000000", Rgb { r: 0, g: 0, b: 0 }),
+            ("1e2021", Rgb { r: 0x1e, g: 0x20, b: 0x21 }),
+            ("123456", Rgb { r: 0x12, g: 0x34, b: 0x56 }),
+        ] {
+            let s = scheme_for(&format!("numeric-{raw}"), &LEGACY.replace("1d2021", raw));
+            assert_eq!(s.palette["base00"], want, "base00 from unquoted {raw}");
+        }
+    }
+
+    #[test]
+    fn short_hex_is_still_rejected() {
+        // The zero-padding shortcut would have accepted this as `012345`.
+        let p = temp_dir().join("short.yaml");
+        fs::write(&p, LEGACY.replace("1d2021", "12345")).unwrap();
+        let Err(err) = Scheme::load(&p) else { panic!("expected failure") };
+        assert!(err.to_string().contains("not a 6-digit hex colour"), "{err}");
+    }
+
+    #[test]
     fn variant_follows_luma_not_metadata() {
         // Declared dark, but the surface is plainly light.
         let s = scheme_for(
@@ -724,6 +882,19 @@ palette:
         let err = err.to_string();
         assert!(err.contains("tinted8"), "{err}");
         assert!(err.contains("no base16 slots"), "{err}");
+    }
+
+    #[test]
+    fn loadout_name_must_be_one_component() {
+        // `--loadout ..` used to put the output root at the parent of --out,
+        // which remove_dir_all then deleted. Verified destructive before the
+        // fix: it wiped a sibling directory.
+        for bad in ["", "..", ".", "a/b", "a\\b", "/abs", "../escape", "sub/"] {
+            assert!(!is_single_component(bad), "should be rejected: {bad:?}");
+        }
+        for good in ["cozy", "my-loadout", "cozy.2"] {
+            assert!(is_single_component(good), "should be accepted: {good:?}");
+        }
     }
 
     #[test]
