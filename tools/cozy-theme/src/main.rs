@@ -32,7 +32,11 @@ impl Rgb {
             return Err(format!("not a 6-digit hex colour: {s:?}"));
         }
         let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap();
-        Ok(Rgb { r: byte(0), g: byte(2), b: byte(4) })
+        Ok(Rgb {
+            r: byte(0),
+            g: byte(2),
+            b: byte(4),
+        })
     }
 
     fn hex(&self) -> String {
@@ -57,8 +61,16 @@ impl Rgb {
 /// two slots is the true midpoint rather than biased downward.
 fn mix(fg: Rgb, bg: Rgb, pct: f64) -> Rgb {
     let f = pct / 100.0;
-    let c = |a: u8, b: u8| (b as f64 + f * (a as f64 - b as f64)).round().clamp(0.0, 255.0) as u8;
-    Rgb { r: c(fg.r, bg.r), g: c(fg.g, bg.g), b: c(fg.b, bg.b) }
+    let c = |a: u8, b: u8| {
+        (b as f64 + f * (a as f64 - b as f64))
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Rgb {
+        r: c(fg.r, bg.r),
+        g: c(fg.g, bg.g),
+        b: c(fg.b, bg.b),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -101,9 +113,9 @@ fn split_kv(line: &str) -> Option<(String, String)> {
     let value = if let Some(q) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') {
         // Quoted: take up to the closing quote, comment or not.
         let body = &rest[1..];
-        match body.find(q) {
-            Some(end) => body[..end].to_string(),
-            None => return None,
+        {
+            let end = body.find(q)?;
+            body[..end].to_string()
         }
     } else {
         // Bare: a `#` only starts a comment when preceded by whitespace, so a
@@ -128,7 +140,9 @@ impl Scheme {
         let mut palette: BTreeMap<String, Rgb> = BTreeMap::new();
 
         for line in text.lines() {
-            let Some((key, value)) = split_kv(line) else { continue };
+            let Some((key, value)) = split_kv(line) else {
+                continue;
+            };
             let lower = key.to_ascii_lowercase();
             if lower.len() == 6 && lower.starts_with("base") {
                 // Normalise base0a -> base0A so templates have one spelling.
@@ -145,8 +159,11 @@ impl Scheme {
             }
         }
 
-        let missing: Vec<&str> =
-            SLOTS.iter().copied().filter(|s| !palette.contains_key(*s)).collect();
+        let missing: Vec<&str> = SLOTS
+            .iter()
+            .copied()
+            .filter(|s| !palette.contains_key(*s))
+            .collect();
         if missing.len() == SLOTS.len() {
             // Most likely a tinted8 scheme (named 8-colour keys) or not a
             // scheme at all — saying "missing all 16" for those reads as a
@@ -168,10 +185,15 @@ impl Scheme {
         }
 
         let slug = slugify(
-            path.file_stem().and_then(|s| s.to_str()).ok_or("scheme path has no file stem")?,
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or("scheme path has no file stem")?,
         );
         if slug.is_empty() {
-            return Err(format!("{}: filename does not slugify to anything", path.display()));
+            return Err(format!(
+                "{}: filename does not slugify to anything",
+                path.display()
+            ));
         }
 
         // `variant:` is advisory; the luma of the scheme's own surface decides.
@@ -191,7 +213,10 @@ impl Scheme {
         Ok(Scheme {
             slug,
             name,
-            author: meta.get("author").cloned().unwrap_or_else(|| "unknown".into()),
+            author: meta
+                .get("author")
+                .cloned()
+                .unwrap_or_else(|| "unknown".into()),
             is_dark,
             palette,
         })
@@ -233,9 +258,18 @@ impl Scheme {
             // Convenience triple: broot wants `rgb(126, 200, 151)` and writing
             // that as three placeholders is unreadable.
             v.insert(format!("{slot}-rgb"), format!("{}, {}, {}", c.r, c.g, c.b));
-            v.insert(format!("{slot}-dec-r"), format!("{:.4}", c.r as f64 / 255.0));
-            v.insert(format!("{slot}-dec-g"), format!("{:.4}", c.g as f64 / 255.0));
-            v.insert(format!("{slot}-dec-b"), format!("{:.4}", c.b as f64 / 255.0));
+            v.insert(
+                format!("{slot}-dec-r"),
+                format!("{:.4}", c.r as f64 / 255.0),
+            );
+            v.insert(
+                format!("{slot}-dec-g"),
+                format!("{:.4}", c.g as f64 / 255.0),
+            );
+            v.insert(
+                format!("{slot}-dec-b"),
+                format!("{:.4}", c.b as f64 / 255.0),
+            );
         }
         v.insert("scheme-slug".into(), self.slug.clone());
         v.insert("scheme-name".into(), self.name.clone());
@@ -289,7 +323,10 @@ fn expand_sections(mut text: String, is_dark: bool) -> Result<String, String> {
 fn eval(expr: &str, vars: &BTreeMap<String, String>, scheme: &Scheme) -> Result<String, String> {
     let parts: Vec<&str> = expr.split_whitespace().collect();
     match parts.as_slice() {
-        [name] => vars.get(*name).cloned().ok_or_else(|| format!("unknown placeholder {name:?}")),
+        [name] => vars
+            .get(*name)
+            .cloned()
+            .ok_or_else(|| format!("unknown placeholder {name:?}")),
 
         // {{mix <fg-slot> <bg-slot> <pct>}} — base16 has no dim surface
         // colours, so delta's diff backgrounds and broot's gauge ramp are
@@ -303,7 +340,9 @@ fn eval(expr: &str, vars: &BTreeMap<String, String>, scheme: &Scheme) -> Result<
                     .copied()
                     .ok_or_else(|| format!("{op}: {s:?} is not a palette slot"))
             };
-            let pct: f64 = pct.parse().map_err(|_| format!("{op}: {pct:?} is not a number"))?;
+            let pct: f64 = pct
+                .parse()
+                .map_err(|_| format!("{op}: {pct:?} is not a number"))?;
             if !(0.0..=100.0).contains(&pct) {
                 return Err(format!("{op}: {pct} is outside 0–100"));
             }
@@ -451,7 +490,10 @@ fn build(args: &Args) -> Result<(), String> {
         fs::remove_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     }
 
-    let sub = |s: &str| s.replace("{slug}", &scheme.slug).replace("{loadout}", &args.loadout);
+    let sub = |s: &str| {
+        s.replace("{slug}", &scheme.slug)
+            .replace("{loadout}", &args.loadout)
+    };
     let mut patches = String::new();
 
     for e in &entries {
@@ -486,9 +528,11 @@ fn build(args: &Args) -> Result<(), String> {
     // wasn't rendered.
     let toml_src = args.templates.join(format!("{}.toml", args.loadout));
     let body = fs::read_to_string(&toml_src).map_err(|e| format!("{}: {e}", toml_src.display()))?;
-    vars.insert("patches".into(), patches.trim_end().trim_end_matches(',').to_string());
-    let body =
-        render(&body, &vars, &scheme).map_err(|e| format!("{}: {e}", toml_src.display()))?;
+    vars.insert(
+        "patches".into(),
+        patches.trim_end().trim_end_matches(',').to_string(),
+    );
+    let body = render(&body, &vars, &scheme).map_err(|e| format!("{}: {e}", toml_src.display()))?;
     write_file(&args.out.join(format!("{}.toml", args.loadout)), &body)?;
 
     println!(
@@ -613,7 +657,10 @@ base0f: d65d0e
     fn quoted_hash_survives_comment_stripping() {
         // The failure this guards: stripping `#`-comments before checking for
         // quotes turns `"#141414"` into an empty value.
-        assert_eq!(split_kv(r##"  base00: "#141414" # gray-8"##).unwrap().1, "#141414");
+        assert_eq!(
+            split_kv(r##"  base00: "#141414" # gray-8"##).unwrap().1,
+            "#141414"
+        );
         assert_eq!(split_kv("base00: 1d2021").unwrap().1, "1d2021");
         assert_eq!(split_kv("base00: 1d2021 # hard").unwrap().1, "1d2021");
     }
@@ -621,7 +668,10 @@ base0f: d65d0e
     #[test]
     fn variant_follows_luma_not_metadata() {
         // Declared dark, but the surface is plainly light.
-        let s = scheme_for("inverted", &CURRENT.replace(r##"base00: "#141414""##, r##"base00: "#f5f5f5""##));
+        let s = scheme_for(
+            "inverted",
+            &CURRENT.replace(r##"base00: "#141414""##, r##"base00: "#f5f5f5""##),
+        );
         assert!(!s.is_dark, "luma should override the declared variant");
     }
 
@@ -649,11 +699,23 @@ base0f: d65d0e
         let s = scheme_for("minimal-dark", CURRENT);
         let v = s.vars();
         assert_eq!(render("#{{base0D-hex}}", &v, &s).unwrap(), "#4a7aff");
-        assert_eq!(render("rgb({{base00-rgb}})", &v, &s).unwrap(), "rgb(20, 20, 20)");
+        assert_eq!(
+            render("rgb({{base00-rgb}})", &v, &s).unwrap(),
+            "rgb(20, 20, 20)"
+        );
         assert_eq!(render("{{base00-rgb-r}}", &v, &s).unwrap(), "20");
-        assert_eq!(render("{{mix base08 base00 15}}", &v, &s).unwrap(), "341919");
-        assert_eq!(render("{{mix-rgb base08 base00 15}}", &v, &s).unwrap(), "52, 25, 25");
-        assert_eq!(render("{{#dark}}Ocean{{/dark}}{{#light}}GitHub{{/light}}", &v, &s).unwrap(), "Ocean");
+        assert_eq!(
+            render("{{mix base08 base00 15}}", &v, &s).unwrap(),
+            "341919"
+        );
+        assert_eq!(
+            render("{{mix-rgb base08 base00 15}}", &v, &s).unwrap(),
+            "52, 25, 25"
+        );
+        assert_eq!(
+            render("{{#dark}}Ocean{{/dark}}{{#light}}GitHub{{/light}}", &v, &s).unwrap(),
+            "Ocean"
+        );
     }
 
     #[test]
@@ -671,7 +733,10 @@ base0f: d65d0e
     fn missing_slots_are_rejected() {
         let p = temp_dir().join("partial.yaml");
         fs::write(&p, "palette:\n  base00: \"#000000\"\n").unwrap();
-        let err = match Scheme::load(&p) { Ok(_) => panic!("expected failure"), Err(e) => e };
+        let err = match Scheme::load(&p) {
+            Ok(_) => panic!("expected failure"),
+            Err(e) => e,
+        };
         assert!(err.contains("missing 15 of 16 slots"), "{err}");
     }
 
@@ -748,7 +813,7 @@ base0f: d65d0e
             "[[file]]\ntemplate = \"a\" oops\nout = \"b\"\n",
             "[[file]]\ntemplate = \"unterminated\nout = \"b\"\n",
             "[[file]]\ntemplate = \"a\"\nout = \"b\"\nwat = \"x\"\n",
-            "template = \"a\"\n",         // key outside [[file]]
+            "template = \"a\"\n",           // key outside [[file]]
             "[[file]]\ntemplate = \"a\"\n", // no `out`
             "# nothing but a comment\n",
         ];
