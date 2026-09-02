@@ -80,7 +80,7 @@ A base16 scheme *is* dark or light, so there's no light/dark switch in the loado
 
 `just install` replaces `~/.config/minimal/loadouts/cozy/`. Applying the loadout is Minimal's job; the patches then land in the session's `~/.config`.
 
-Theme files are named after the scheme, so switching schemes leaves the previous one's theme files behind in the session's `~/.config`. They're inert — just extra entries in `hx --health` and `bat --list-themes` — and nothing prunes them.
+Theme files are named after the scheme rather than a fixed name, so switching schemes doesn't overwrite the previous one's. The loadout directory is wiped and rebuilt on every `just install`, so nothing accumulates there. A **session that was already running** under the old scheme keeps the old theme files in its `~/.config`, though: patches are filesystem mappings established when the sandbox is built, so they only add. They're inert — extra entries in `hx --health` and `bat --list-themes` — and a session created after the switch has only the current scheme's.
 
 The loadout writes outside `~/.config` in exactly two places: it appends `include.path` entries to your git config (checking first, so your own includes are never touched), and it writes fish completions to `$XDG_DATA_HOME/fish/vendor_completions.d`, which is lower precedence than your own.
 
@@ -122,7 +122,7 @@ Also installed and configured through the environment: jq, difftastic, duf, eza,
 
 1. **broot's file preview is off-scheme.** broot renders previews with syntect and only accepts one of six themes built into its binary. The skin picks the nearest by luma, so the preview pane is the one surface not on your scheme.
 
-2. **Old theme files aren't pruned** after switching schemes — see [Installing](#installing).
+2. **A long-lived session keeps old theme files** after you switch schemes. The loadout directory is rebuilt on each install, but Minimal's patches only add files to a session, never remove them — so the previous scheme's themes linger in an already-running session's `~/.config`. A new session is clean. See [Installing](#installing).
 
 3. **Schemes aren't checked for legibility.** The renderer validates structure, not contrast. A scheme whose comments sit at 3:1 against its own background renders exactly as given.
 
