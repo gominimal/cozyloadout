@@ -6,9 +6,15 @@
 # unexpected source fails CI instead of arriving silently.
 
 [advisories]
-# No ignores. Add one only with a comment saying why the advisory does not
-# apply here — an unexplained ignore is worse than no check.
-ignore = []
+# Add an ignore only with a comment saying why the advisory does not apply
+# here — an unexplained ignore is worse than no check.
+ignore = [
+    # `paste` is unmaintained (a deprecation notice, not a vulnerability). It
+    # arrives via ratatui and is a **proc macro**, so it runs at compile time
+    # and no part of it ends up in a shipped binary. There is no upgrade to
+    # take; drop this entry when ratatui stops depending on it.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 # Every licence in the tree today is permissive. Keep it that way: a crate

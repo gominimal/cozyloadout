@@ -58,7 +58,7 @@ Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is check
 | Tool | Used for |
 | --- | --- |
 | [`just`](https://github.com/casey/just) | running the recipes |
-| Rust — `cargo` and `rustc`, 1.85+ | building the renderer |
+| Rust — `cargo` and `rustc`, 1.88+ | building the renderer and the wizard |
 | `bash` | recipe bodies |
 | `zip`, `unzip` | `just bundle` and `just install` |
 | `git` | cloning this repo; also `just fetch-schemes` |
@@ -113,6 +113,7 @@ Also installed and configured through the environment: jq, difftastic, duf, eza,
 | `just schemes` | List what `just theme` will accept |
 | `just vendored` | List the vendored upstream schemes |
 | `just fetch-schemes` | Clone the upstream scheme collection |
+| `just wizard` | Run the interactive setup wizard |
 | `just check` | The full local gate — everything CI runs |
 | `just check-schemes` | Render every vendored scheme |
 | `just clean` | Drop build artifacts |
