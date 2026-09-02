@@ -1,0 +1,44 @@
+# Supply-chain policy for tools/cozy-theme. Run with `just deny`.
+#
+# This repository went from zero dependencies to a few dozen crates, and
+# Dependabot now opens PRs against them. The point of this file is that a new
+# transitive dependency with a copyleft licence, an open advisory, or an
+# unexpected source fails CI instead of arriving silently.
+
+[advisories]
+# No ignores. Add one only with a comment saying why the advisory does not
+# apply here — an unexplained ignore is worse than no check.
+ignore = []
+
+[licenses]
+# Every licence in the tree today is permissive. Keep it that way: a crate
+# whose licence is not on this list fails rather than being waved through.
+unused-allowed-license = "allow"
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+# Duplicate versions of the same crate are a warning rather than an error: the
+# renderer is a build tool, not something shipped to users, so a duplicate
+# costs compile time and nothing else. Revisit if the tree grows.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# crates.io only. A git or alternative-registry dependency should be a
+# deliberate, reviewed decision, not something that slips in transitively.
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -453,6 +453,23 @@ things to remember:
 - **The unit tests.** 15 of them, covering both parsers.
 - **Both checked-in schemes rendered.** A template that only works for a dark
   scheme is the easy mistake.
+- **`cargo fmt --check` and pedantic clippy**, both gated in `just check`.
+  Formatting drifted silently before it was checked — a commit was spent putting
+  it back by hand.
+- **`cargo-deny`** over the renderer's tree: advisories, licences, bans and
+  sources, policy in `deny.toml`. It earned its place immediately by catching
+  that the crate declared no `license` field at all, which is indistinguishable
+  from an incompatible one. It matters most for Dependabot PRs, which is the
+  path by which a copyleft or advisory-carrying crate would otherwise arrive
+  unnoticed.
+- **The MSRV job** compiles against the `rust-version` in `Cargo.toml` rather
+  than trusting it. The floor was derived by reading the dependencies' own
+  manifests, and Dependabot moves it silently — uuid, indexmap and hashbrown
+  already pushed it from 1.71 to 1.85 once.
+- **A weekly `check-schemes` cron.** `just fetch-schemes` clones tinted-theming
+  at HEAD, so the rendered corpus is an input nobody here controls. The schedule
+  surfaces an upstream scheme that breaks rendering as upstream drift rather
+  than as a mystery failure on an unrelated PR.
 - **`dash -n` over the rendered hooks.** They run under POSIX `sh` and carry no
   shebang, so a bashism is a runtime failure in the one script that must never
   fail.
@@ -534,7 +551,7 @@ Worth knowing before relying on any of it:
 | Re-attach carries no OSC palette | read in `minimald::session_host` — the attach flush is a `vt100` screen dump |
 | Detach leaves the palette on the host terminal | read in `Host::unwind_codes` — it resets SGR, alt screen, cursor, focus reporting, and no OSC colours |
 | Any `on_attach` hook breaks fish's OSC 11 background | **doubtful** — observed once, but the once-per-shell palette bug produces the same symptom and was live at the same time. Re-test |
-| Rust floor of 1.85 | **derived, never tested** — read off the dependencies' own `rust-version` fields; only 1.97.1 available here |
+| Rust floor of 1.85 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — only 1.97.1 is available here |
 | `ctrl-w` detaches, per the fish greeting | verified — documented in the CLI reference and in minimal's own orientation banner |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
 | The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |

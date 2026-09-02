@@ -214,8 +214,11 @@ impl Scheme {
         }
         let (meta, palette) = (sink.meta, sink.palette);
 
-        let missing: Vec<&str> =
-            SLOTS.iter().copied().filter(|s| !palette.contains_key(*s)).collect();
+        let missing: Vec<&str> = SLOTS
+            .iter()
+            .copied()
+            .filter(|s| !palette.contains_key(*s))
+            .collect();
         if missing.len() == SLOTS.len() {
             // Most likely a tinted8 scheme (named 8-colour keys) or not a
             // scheme at all — saying "missing all 16" for those reads as a
@@ -262,7 +265,10 @@ impl Scheme {
         Ok(Scheme {
             slug,
             name,
-            author: meta.get("author").cloned().unwrap_or_else(|| "unknown".into()),
+            author: meta
+                .get("author")
+                .cloned()
+                .unwrap_or_else(|| "unknown".into()),
             is_dark,
             palette,
         })
@@ -372,7 +378,8 @@ fn environment(scheme: &Scheme) -> Environment<'static> {
             name,
             move |fg: String, bg: String, pct: f64| -> Result<String, minijinja::Error> {
                 let slot = |s: &str| {
-                    let canon = format!("base{}", s.trim_start_matches("base").to_ascii_uppercase());
+                    let canon =
+                        format!("base{}", s.trim_start_matches("base").to_ascii_uppercase());
                     palette.get(&canon).copied().ok_or_else(|| {
                         minijinja::Error::new(
                             minijinja::ErrorKind::InvalidOperation,
@@ -387,7 +394,11 @@ fn environment(scheme: &Scheme) -> Environment<'static> {
                     ));
                 }
                 let c = mix(slot(&fg)?, slot(&bg)?, pct);
-                Ok(if as_rgb { format!("{}, {}, {}", c.r, c.g, c.b) } else { c.hex() })
+                Ok(if as_rgb {
+                    format!("{}, {}, {}", c.r, c.g, c.b)
+                } else {
+                    c.hex()
+                })
             },
         );
     }
@@ -403,8 +414,10 @@ fn render(
     vars: &BTreeMap<String, String>,
     scheme: &Scheme,
 ) -> Result<String> {
-    let mut ctx: BTreeMap<&str, minijinja::Value> =
-        vars.iter().map(|(k, v)| (k.as_str(), minijinja::Value::from(v.clone()))).collect();
+    let mut ctx: BTreeMap<&str, minijinja::Value> = vars
+        .iter()
+        .map(|(k, v)| (k.as_str(), minijinja::Value::from(v.clone())))
+        .collect();
     ctx.insert("dark", minijinja::Value::from(scheme.is_dark));
     ctx.insert("light", minijinja::Value::from(!scheme.is_dark));
     env.render_named_str(name, text, ctx)
@@ -445,8 +458,7 @@ struct Manifest {
 /// not TOML and used to read as `false`.
 fn parse_manifest(path: &Path) -> Result<Vec<Entry>> {
     let text = fs::read_to_string(path)?;
-    let manifest: Manifest =
-        toml::from_str(&text).wrap_err_with(|| path.display().to_string())?;
+    let manifest: Manifest = toml::from_str(&text).wrap_err_with(|| path.display().to_string())?;
     if manifest.file.is_empty() {
         bail!("{}: no [[file]] entries", path.display());
     }
@@ -471,21 +483,27 @@ fn parse_manifest(path: &Path) -> Result<Vec<Entry>> {
 fn validate(path: &Path, body: &str) -> Result<()> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("toml") => {
-            toml::from_str::<toml::Value>(body)
-                .wrap_err_with(|| format!("{}: generated file is not valid TOML", path.display()))?;
+            toml::from_str::<toml::Value>(body).wrap_err_with(|| {
+                format!("{}: generated file is not valid TOML", path.display())
+            })?;
         }
         Some("tmTheme") => {
             // `allow_dtd` because the plist carries Apple's DOCTYPE. roxmltree
             // is strict about `--` in comments, which is exactly the check that
             // matters here — quick-xml accepts those without complaint.
-            let options = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+            let options = roxmltree::ParsingOptions {
+                allow_dtd: true,
+                ..Default::default()
+            };
             roxmltree::Document::parse_with_options(body, options)
                 .wrap_err_with(|| format!("{}: generated file is not valid XML", path.display()))?;
         }
         Some("yml" | "yaml") => {
             YamlParser::new_from_str(body)
                 .load(&mut IgnoreEvents, true)
-                .wrap_err_with(|| format!("{}: generated file is not valid YAML", path.display()))?;
+                .wrap_err_with(|| {
+                    format!("{}: generated file is not valid YAML", path.display())
+                })?;
         }
         _ => {}
     }
@@ -547,7 +565,8 @@ fn is_single_component(name: &str) -> bool {
         return false;
     }
     let mut components = Path::new(name).components();
-    matches!(components.next(), Some(std::path::Component::Normal(_))) && components.next().is_none()
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
 }
 
 fn build(args: &Args) -> Result<()> {
@@ -757,13 +776,37 @@ palette:
   base0F: "#8b6f47"
 "##,
         );
-        assert_eq!(s.palette["base00"], Rgb { r: 0x14, g: 0x14, b: 0x14 });
+        assert_eq!(
+            s.palette["base00"],
+            Rgb {
+                r: 0x14,
+                g: 0x14,
+                b: 0x14
+            }
+        );
 
         // A legacy scheme's bare, unquoted value, with and without a comment.
         let bare = scheme_for("bare", &CURRENT.replace(r##""#141414""##, "1d2021"));
-        assert_eq!(bare.palette["base00"], Rgb { r: 0x1d, g: 0x20, b: 0x21 });
-        let bare_c = scheme_for("bare-c", &CURRENT.replace(r##""#141414""##, "1d2021 # hard"));
-        assert_eq!(bare_c.palette["base00"], Rgb { r: 0x1d, g: 0x20, b: 0x21 });
+        assert_eq!(
+            bare.palette["base00"],
+            Rgb {
+                r: 0x1d,
+                g: 0x20,
+                b: 0x21
+            }
+        );
+        let bare_c = scheme_for(
+            "bare-c",
+            &CURRENT.replace(r##""#141414""##, "1d2021 # hard"),
+        );
+        assert_eq!(
+            bare_c.palette["base00"],
+            Rgb {
+                r: 0x1d,
+                g: 0x20,
+                b: 0x21
+            }
+        );
     }
 
     #[test]
@@ -774,10 +817,31 @@ palette:
         // as a float. Solarized and any pure-black scheme hit this. The parser
         // reads raw scalar events precisely so it cannot.
         for (raw, want) in [
-            ("073642", Rgb { r: 0x07, g: 0x36, b: 0x42 }),
+            (
+                "073642",
+                Rgb {
+                    r: 0x07,
+                    g: 0x36,
+                    b: 0x42,
+                },
+            ),
             ("000000", Rgb { r: 0, g: 0, b: 0 }),
-            ("1e2021", Rgb { r: 0x1e, g: 0x20, b: 0x21 }),
-            ("123456", Rgb { r: 0x12, g: 0x34, b: 0x56 }),
+            (
+                "1e2021",
+                Rgb {
+                    r: 0x1e,
+                    g: 0x20,
+                    b: 0x21,
+                },
+            ),
+            (
+                "123456",
+                Rgb {
+                    r: 0x12,
+                    g: 0x34,
+                    b: 0x56,
+                },
+            ),
         ] {
             let s = scheme_for(&format!("numeric-{raw}"), &LEGACY.replace("1d2021", raw));
             assert_eq!(s.palette["base00"], want, "base00 from unquoted {raw}");
@@ -789,8 +853,13 @@ palette:
         // The zero-padding shortcut would have accepted this as `012345`.
         let p = temp_dir().join("short.yaml");
         fs::write(&p, LEGACY.replace("1d2021", "12345")).unwrap();
-        let Err(err) = Scheme::load(&p) else { panic!("expected failure") };
-        assert!(err.to_string().contains("not a 6-digit hex colour"), "{err}");
+        let Err(err) = Scheme::load(&p) else {
+            panic!("expected failure")
+        };
+        assert!(
+            err.to_string().contains("not a 6-digit hex colour"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -863,7 +932,9 @@ palette:
     fn missing_slots_are_rejected() {
         let p = temp_dir().join("partial.yaml");
         fs::write(&p, "palette:\n  base00: \"#000000\"\n").unwrap();
-        let Err(err) = Scheme::load(&p) else { panic!("expected failure") };
+        let Err(err) = Scheme::load(&p) else {
+            panic!("expected failure")
+        };
         assert!(err.to_string().contains("missing 15 of 16 slots"), "{err}");
     }
 
@@ -878,7 +949,9 @@ palette:
             "scheme:\n  system: \"tinted8\"\n  name: \"Nord\"\npalette:\n  black: \"#2e3440\"\n",
         )
         .unwrap();
-        let Err(err) = Scheme::load(&p) else { panic!("expected failure") };
+        let Err(err) = Scheme::load(&p) else {
+            panic!("expected failure")
+        };
         let err = err.to_string();
         assert!(err.contains("tinted8"), "{err}");
         assert!(err.contains("no base16 slots"), "{err}");
