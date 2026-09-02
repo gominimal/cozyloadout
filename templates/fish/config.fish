@@ -43,11 +43,12 @@ end
 # guesses dark and gets a light scheme wrong. The scheme knows the answer at
 # render time, so a dark/light section pair decides it here.
 #
-# (Those markers cannot be named literally in a comment — expand_sections runs
-# over the whole file before any variable is resolved and counts openers against
-# closers, so an unbalanced one in prose is a render error. A doubled-brace
-# placeholder in prose fails the same way, as an unknown name. Nothing escapes
-# either of them.)
+# (Those markers cannot be named literally in a comment — not even in this one,
+# which is why they are described rather than shown. Jinja parses the whole
+# template, comments included, so an unbalanced block tag in prose is a syntax
+# error and a doubled-brace placeholder in prose is an undefined-name error
+# under the strict setting. Jinja does have a verbatim block that would exempt a
+# region, but nothing here needs one, so none is used.)
 if command -q duf
     alias duf 'duf --theme {% if dark %}dark{% endif %}{% if light %}light{% endif %}'
 end
