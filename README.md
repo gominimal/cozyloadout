@@ -58,9 +58,9 @@ that are shipped as code, and a `python3` with `tomllib` (3.11+) to parse the
 generated loadout TOML. Each is skipped with a message if it isn't there, so the
 recipe still runs — it just checks less.
 
-The renderer depends on three crates — `toml`, `serde` and `uuid` — so the
-first build fetches them from crates.io. Nothing is vendored, and builds after
-that work offline as usual.
+The renderer has crate dependencies (`yaml-rust2`, `minijinja`, `toml`, `uuid`,
+`clap`, `color-eyre`, `fs-err`), so the first build fetches them from crates.io.
+Nothing is vendored, and builds after that work offline as usual.
 
 One thing the list deliberately does **not** include:
 
