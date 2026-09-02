@@ -2,6 +2,11 @@
 name = "cozy-theme"
 version = "0.1.0"
 edition = "2021"
+# The repository's licence, declared so the supply-chain audit can see it — an
+# undeclared licence is indistinguishable from an incompatible one. Not
+# published: this is a build tool for this repo, not a crates.io artifact.
+license = "Apache-2.0"
+publish = false
 
 # Declared so an older toolchain fails with "requires rustc 1.85" rather than a
 # confusing parse error. The floor is set by the dependencies, not by this

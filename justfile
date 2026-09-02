@@ -175,6 +175,27 @@ install: bundle
 test:
     cargo test --quiet --release --manifest-path tools/cozy-theme/Cargo.toml
 
+# rustfmt, in check mode. Formatting drifted silently before this was gated —
+# `cargo fmt` had to be run by hand and a commit was spent putting it back.
+fmt-check:
+    cargo fmt --check --manifest-path tools/cozy-theme/Cargo.toml
+
+# Apply rustfmt.
+fmt:
+    cargo fmt --manifest-path tools/cozy-theme/Cargo.toml
+
+# Supply-chain audit: advisories, licences, banned crates, and sources. The
+# policy is in deny.toml. Skipped with a message when cargo-deny is not
+# installed, the same way the fish and dash checks are — CI installs it.
+deny:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! cargo deny --version >/dev/null 2>&1; then
+        echo "  (skipped: cargo-deny not installed — \`cargo install cargo-deny\`)" >&2
+        exit 0
+    fi
+    cargo deny --manifest-path tools/cozy-theme/Cargo.toml check
+
 # Pedantic clippy, warnings denied. The lint level lives in Cargo.toml's
 # `[lints.clippy]` so a bare `cargo clippy` sees it too; this recipe only adds
 # the gate. `--all-targets` so the test module is linted as well — it drifts
@@ -183,11 +204,11 @@ lint:
     cargo clippy --quiet --release --all-targets --manifest-path tools/cozy-theme/Cargo.toml -- -D warnings
 
 # Everything CI runs, and everything worth running before a commit: the unit
-# tests, pedantic clippy, both checked-in schemes rendered, the shell and fish
-# files syntax checked, and the generated loadout TOML parsed by something that
-# is not our own parser. Each of these has caught a real bug — see AGENTS.md.
-[doc('Run the full local check suite (tests, lints, renders, syntax, TOML validity)')]
-check: test lint
+# tests, rustfmt, pedantic clippy, the supply-chain audit, both checked-in
+# schemes rendered, and the shell and fish files syntax checked. Each of these
+# has caught a real bug — see AGENTS.md.
+[doc('Run the full local check suite (tests, fmt, lints, deny, renders, syntax)')]
+check: test fmt-check lint deny
     #!/usr/bin/env bash
     set -euo pipefail
     for scheme in minimal-dark minimal-light; do

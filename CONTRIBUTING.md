@@ -30,9 +30,11 @@ See [README.md](./README.md) for what you need installed. Before opening a PR:
 just check
 ```
 
-which runs the whole local gate: the renderer's unit tests, pedantic clippy with
-warnings denied, both checked-in schemes rendered, `dash -n` over the generated
-hook, and `fish --no-execute` over the generated shell config. The renderer also
+which runs the whole local gate: the renderer's unit tests, `cargo fmt --check`,
+pedantic clippy with warnings denied, the `cargo-deny` supply-chain audit, both
+checked-in schemes rendered, `dash -n` over the generated hook, and
+`fish --no-execute` over the generated shell config. `cargo-deny` is skipped with
+a message if it isn't installed (`cargo install cargo-deny`); CI always runs it. The renderer also
 parses its own generated TOML, XML and YAML before writing it, so a successful
 render is already a validated one.
 
@@ -51,8 +53,12 @@ light scheme, a scheme with an apostrophe in its name, or a legacy-format one.
 
 This repository uses [Conventional Commits
 v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/) — `type(scope): summary`,
-imperative, lower-case, no trailing period. It is a convention here rather than a
-CI-enforced gate, so please keep to it by hand. "Why" is more useful than "what".
+imperative, lower-case, no trailing period — enforced on PR commits by
+**commitlint** (`.github/workflows/commitlint.yml`, config in
+`commitlint.config.cjs`). "Why" is more useful than "what".
+
+Note that `config-conventional` also rejects a capitalised subject, so
+`chore: Preparing for X` fails where `chore: prepare for X` passes.
 
 ## What we look for in contributions
 

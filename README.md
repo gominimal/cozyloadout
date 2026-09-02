@@ -151,7 +151,10 @@ Installed and configured through the environment rather than a theme file: jq, d
 | `just vendored` | List the vendored upstream schemes by name |
 | `just fetch-schemes` | Clone the upstream scheme collection |
 | `just test` | Run the renderer's tests |
+| `just fmt` | Apply rustfmt |
+| `just fmt-check` | rustfmt in check mode |
 | `just lint` | Pedantic clippy, warnings denied |
+| `just deny` | Supply-chain audit: advisories, licences, bans, sources |
 | `just check` | The full local gate — everything CI runs |
 | `just check-schemes` | Render every vendored scheme and check each result parses |
 | `just clean` | Drop build artifacts (leaves `schemes/vendor/` alone) |
@@ -162,7 +165,7 @@ Before opening a PR:
 just check
 ```
 
-which runs the renderer's unit tests, pedantic clippy with warnings denied, both checked-in schemes rendered, `dash -n` over the generated hook, and `fish --no-execute` over the generated shell config.
+which runs the renderer's unit tests, `cargo fmt --check`, pedantic clippy with warnings denied, the `cargo-deny` supply-chain audit, both checked-in schemes rendered, `dash -n` over the generated hook, and `fish --no-execute` over the generated shell config.
 
 If you touched a template or the renderer, also run `just check-schemes`. It renders the whole upstream collection (a few minutes) and expects zero failures — this is the check that catches a template which works for the two schemes here and breaks on a light scheme, or a legacy-format one.
 

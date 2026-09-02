@@ -6,36 +6,68 @@ on:
   push:
     branches: [main]
   pull_request:
+  # `just fetch-schemes` clones tinted-theming at HEAD, so the corpus this repo
+  # renders is a moving target nobody here controls. A weekly run catches an
+  # upstream scheme that breaks rendering as upstream drift, rather than as a
+  # mystery failure on someone's unrelated PR.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Supersede in-flight runs for the same ref. A PR that gets three pushes in a
+# minute should not queue three full scheme renders.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      # Cache the cargo registry and the renderer's target dir, keyed on the
+      # lockfile. `cargo install just` and a cold dependency build are the two
+      # slowest things here and neither changes between runs.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            tools/cozy-theme/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('tools/cozy-theme/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       # fish for `fish --no-execute`, dash for the POSIX-sh hook check, zip for
       # `just bundle`. The runner already has cargo and unzip. No interpreter is
       # needed: the renderer validates its own TOML/XML/YAML output.
       #
-      # `cargo install just` rather than a third-party setup action: it costs a
-      # minute or so, and it keeps this workflow's supply chain to actions/
-      # checkout plus crates.io, which the repo already depends on.
+      # `cargo install` rather than third-party setup actions: it keeps this
+      # workflow's supply chain to first-party actions/ plus crates.io, which the
+      # repo already depends on. `--locked` on both, and both are no-ops when the
+      # cache hits.
       - name: Install the tools the recipes need
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends fish dash zip
           cargo install just --locked
+          cargo install cargo-deny --locked
 
-      # `--locked` rather than the old offline build: the renderer has
-      # dependencies now, so the property worth enforcing is that Cargo.lock is
-      # committed and in step with Cargo.toml. A lockfile that would need
-      # updating fails here rather than resolving to something untested.
+      # `--locked` rather than an offline build: the renderer has dependencies
+      # now, so the property worth enforcing is that Cargo.lock is committed and
+      # in step with Cargo.toml. A lockfile that would need updating fails here
+      # rather than resolving to something untested.
       - name: Build
         run: cargo build --release --locked --manifest-path tools/cozy-theme/Cargo.toml
 
+      # Tests, rustfmt, pedantic clippy, cargo-deny, both schemes rendered, and
+      # the dash/fish syntax checks.
       - name: Check
         run: just check
 
@@ -49,12 +81,41 @@ jobs:
           just theme
           just bundle
 
-  # Separate job: it clones ~530 upstream schemes and renders every one, which
-  # is minutes rather than seconds.
-  all-schemes:
+  # `rust-version` in Cargo.toml is a claim, and an unverified one is worse than
+  # none: it was read off the dependencies' own manifests, never compiled
+  # against. This matters because Dependabot raises it silently — uuid,
+  # indexmap and hashbrown already pushed the floor from 1.71 to 1.85 once.
+  msrv:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Read the declared floor and check against it
+        run: |
+          msrv=$(grep -m1 '^rust-version' tools/cozy-theme/Cargo.toml \
+                 | sed 's/.*"\(.*\)".*/\1/')
+          echo "declared rust-version: $msrv"
+          rustup toolchain install "$msrv" --profile minimal --no-self-update
+          cargo "+$msrv" check --locked --all-targets \
+            --manifest-path tools/cozy-theme/Cargo.toml
+
+  # Separate job: it clones the whole upstream collection and renders every one,
+  # which is minutes rather than seconds.
+  all-schemes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            tools/cozy-theme/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('tools/cozy-theme/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
       - name: Install the tools the recipes need
         run: cargo install just --locked
       - run: just fetch-schemes
