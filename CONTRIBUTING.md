@@ -122,4 +122,4 @@ This project follows the [Contributor Covenant](./CODE_OF_CONDUCT.md). By partic
 
 ## Questions?
 
-Open a [discussion](https://github.com/gominimal/cozyloadout/discussions), file an issue, or email **security@minimal.dev**.
+[File an issue](https://github.com/gominimal/cozyloadout/issues/new/choose) or email **security@minimal.dev**.

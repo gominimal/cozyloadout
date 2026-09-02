@@ -7,8 +7,7 @@
   <a href="#choosing-a-scheme">Schemes</a> ·
   <a href="#whats-in-it">What's In It</a> ·
   <a href="AGENTS.md">Working on it</a> ·
-  <a href="https://minimal.dev/docs">Minimal Docs</a> ·
-  <a href="https://github.com/gominimal/cozyloadout/discussions">Discussions</a>
+  <a href="https://minimal.dev/docs">Minimal Docs</a>
 </p>
 
 <p align="center">
@@ -138,7 +137,7 @@ Also installed and configured through the environment: jq, difftastic, duf, eza,
 
 ## Contributing
 
-Bug reports, better colours, docs fixes, and new tools are all welcome. [Open an issue](https://github.com/gominimal/cozyloadout/issues/new/choose) or start a [discussion](https://github.com/gominimal/cozyloadout/discussions), and see [CONTRIBUTING.md](./CONTRIBUTING.md) for the workflow.
+Bug reports, better colours, docs fixes, and new tools are all welcome. [Open an issue](https://github.com/gominimal/cozyloadout/issues/new/choose) to outline what you're after, and see [CONTRIBUTING.md](./CONTRIBUTING.md) for the workflow.
 
 Before we can merge your first pull request you'll need to accept our **Individual Contributor License Agreement**. [CLA Assistant](https://cla-assistant.io/) posts a link on your PR; it takes about 30 seconds and covers all your future contributions. If you're contributing on your employer's time, they'll also need a **Corporate CLA** on file. Full text: [ICLA](./legal/ICLA.md) · [CCLA](./legal/CCLA.md).
 
