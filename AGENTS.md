@@ -466,7 +466,7 @@ things to remember:
   0). Because it runs in the renderer rather than in CI, `just theme <anything>`
   is covered too — which is where a bad scheme actually reaches a user.
 - **Render the whole upstream collection** (`just check-schemes`).
-  `schemes/vendor/base16` and `base24`, ~530 files, expect zero failures, and
+  `schemes/vendor/base16` and `base24` in full, expect zero failures, and
   the result parsed each time. `tinted8` is an 8-colour system and is correctly
   rejected.
 - **Walk the quick start from a clean tree** — CI does this with `just clean &&
@@ -513,7 +513,7 @@ Worth knowing before relying on any of it:
 
 | Claim | Status |
 | --- | --- |
-| Renders 535/535 upstream base16+base24 schemes | verified — `just check-schemes` |
+| Renders the whole upstream base16+base24 collection | verified — `just check-schemes`, zero failures. The collection grows upstream, so re-run rather than trusting a past count |
 | The crate migration changed no output | **verified** — full rendered tree hashed per scheme before and after; all 535 byte-for-byte identical |
 | Legacy unquoted hex that looks numeric (`073642`, `000000`, `1e2021`) parses | verified — regression test; the scheme parser reads raw scalar events precisely because a loaded YAML tree applies implicit typing and destroys these |
 | Every generated `.tmTheme` is well-formed XML | verified — all 533 vendored schemes parsed with a real XML parser; `just check` now gates it |

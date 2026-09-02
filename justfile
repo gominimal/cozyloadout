@@ -109,7 +109,7 @@ schemes:
         echo "Plus $usable vendored upstream schemes; list them with:"
         echo "  just vendored"
     else
-        echo "\`just fetch-schemes\` adds ~480 upstream tinted-theming schemes."
+        echo "\`just fetch-schemes\` adds the upstream tinted-theming schemes."
     fi
 
 # `sort -u` because a handful of names exist in both base16/ and base24/;
@@ -216,7 +216,7 @@ _validate:
     fi
 
 # Renders every vendored scheme and parses the result. Slow (a few minutes for
-# ~530 schemes) and needs `just fetch-schemes` first, so it is not part of
+# the whole collection) and needs `just fetch-schemes` first, so it is not part of
 # `just check`; CI runs it on its own.
 [doc('Render every vendored upstream scheme and check each result parses')]
 check-schemes:

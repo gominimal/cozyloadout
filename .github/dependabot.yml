@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  # The renderer is the only Cargo project, and it is not at the repo root.
+  - package-ecosystem: "cargo"
+    directory: "/tools/cozy-theme"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo:
+        patterns:
+          - "*"

@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in the cozy loadout is broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where is the problem
+      options:
+        - A tool is themed wrong (colours, contrast, a theme not loading)
+        - The renderer (`just theme`) fails or produces bad output
+        - Session setup (the on_activate hook, fish, zellij)
+        - Install or bundling (`just install`, `just bundle`)
+        - Documentation
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the bug, including the full error output if there was any.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps to reproduce — ideally the exact commands, and the scheme if it is scheme-specific.
+      placeholder: |
+        1. just theme <scheme>
+        2. just install
+        3. min session activate --loadout cozy --attach .
+    validations:
+      required: true
+  - type: input
+    id: scheme
+    attributes:
+      label: Scheme
+      description: Which scheme you built with, if the problem is colour-related.
+      placeholder: minimal-dark
+    validations:
+      required: false
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `min --version` and `rustc --version`, plus the commit of this repo.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: os-arch
+    attributes:
+      label: Host OS/arch
+      options:
+        - macOS arm64 (Apple Silicon)
+        - Linux arm64
+        - Linux amd64
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Any relevant output. Long logs are fine — this field is rendered as code automatically.
+      render: shell
+    validations:
+      required: false
