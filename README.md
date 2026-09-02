@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> ·
+  <a href="#the-wizard">The Wizard</a> ·
   <a href="#choosing-a-scheme">Schemes</a> ·
   <a href="#whats-in-it">What's In It</a> ·
   <a href="AGENTS.md">Working on it</a> ·
@@ -42,16 +43,17 @@ Twelve tools get a themed config file, and a dozen more are configured through t
 git clone git@github.com:gominimal/cozyloadout.git
 cd cozyloadout
 
-just fetch-schemes             # optional: pull in the upstream schemes
-just theme gruvbox-dark-hard   # render + bundle into cozy.zip
-just install                   # install into ~/.config/minimal/loadouts/
+just wizard
+```
 
+That walks you through picking a scheme, choosing packages, and installing —
+see [The wizard](#the-wizard). Then apply the loadout and attach:
+
+```shell
 min session activate --loadout cozy --attach .
 ```
 
 `min attach` drops you into fish, which starts zellij. Everything else — git pointed at delta's config, bat's theme cache, fish completions — is done by the loadout's `on_activate` hook. There is no manual setup step.
-
-Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is checked in.
 
 ## Requirements
 
@@ -67,6 +69,41 @@ Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is check
 Plus the usual POSIX userland. `fish` and `dash` are optional, used only by `just check` to syntax-check generated files.
 
 You do **not** need the tools being themed — helix, zellij, bat and the rest. Minimal installs those when the loadout is applied.
+
+## The wizard
+
+`just wizard` is the recommended way to set the loadout up. Five screens:
+
+| | |
+| --- | --- |
+| **Greeting** | two versions of the Minimal mark, shown in your own font — the newer one needs glyphs some fonts lack, so you pick whichever renders |
+| **Schemes** | offers to download or update the upstream scheme collection |
+| **Themes** | every scheme on disk, with the whole interface re-painting in each one as you scroll, next to a preview of a prompt, highlighted code and a diff |
+| **Packages** | which optional packages to install, with a description and licence for each, plus a field for any others you want |
+| **Patches** | file and directory pickers for your own dotfiles |
+
+It ends with a summary and four choices: generate and install, generate only,
+save your answers without building, or abort. `esc` goes back a screen from
+anywhere, and your answers are remembered in a gitignored `.cozy-wizard.toml`
+so the next run starts where you left off.
+
+Nothing it does is exclusive to it.
+
+### Without the wizard
+
+Every step it takes is a recipe you can run yourself:
+
+```shell
+just fetch-schemes             # optional: pull in the upstream schemes
+just theme gruvbox-dark-hard   # render into build/, bundle into cozy.zip
+just install                   # copy build/ into ~/.config/minimal/loadouts/
+```
+
+Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is checked in. The renderer takes the same choices the wizard collects — `--greeting`, `--with`, `--patch-file`, `--patch-dir` — so nothing is only reachable through the interface:
+
+```shell
+cargo run --release --manifest-path tools/cozy-theme/Cargo.toml -- --help
+```
 
 ## Choosing a scheme
 
@@ -109,6 +146,7 @@ duf, hexyl, tokei, hyperfine, bandwhich, glow and kittyview. The split lives in
 
 | Recipe | Does |
 | --- | --- |
+| `just wizard` | **Interactive setup — the recommended way in** |
 | `just` | List recipes and available schemes |
 | `just theme [scheme]` | Render + bundle. Defaults to `minimal-dark` |
 | `just render [scheme]` | Render only, no zip |
@@ -116,7 +154,6 @@ duf, hexyl, tokei, hyperfine, bandwhich, glow and kittyview. The split lives in
 | `just schemes` | List what `just theme` will accept |
 | `just vendored` | List the vendored upstream schemes |
 | `just fetch-schemes` | Clone the upstream scheme collection |
-| `just wizard` | Run the interactive setup wizard |
 | `just check` | The full local gate — everything CI runs |
 | `just check-schemes` | Render every vendored scheme |
 | `just clean` | Drop build artifacts |
