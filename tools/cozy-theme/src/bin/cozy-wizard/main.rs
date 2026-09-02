@@ -2,15 +2,24 @@
 //!
 //! Run it with `just wizard`. See AGENTS.md for the build pipeline.
 
+mod picker;
+mod state;
+
+use picker::{Pick, Picker};
+use state::State;
+
 use clap::Parser;
 use color_eyre::eyre::Result;
-use cozy_theme::{discover, mix, Rgb, Scheme, SchemeEntry, SLOTS};
+use cozy_theme::{discover, mix, OptionalPackage, Packages, Rgb, Scheme, SchemeEntry, SLOTS};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::style::ResetColor;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Padding, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
@@ -50,6 +59,14 @@ const INTRO_ROWS: u16 = 5;
 /// the space, so it gets more — `schemes_intro_fits_in_its_rows` holds it.
 const SCHEMES_INTRO_ROWS: u16 = 8;
 
+/// Rows for the free-text package field: a rule, a blank, the field, and a
+/// line echoing what was parsed.
+const INPUT_ROWS: u16 = 4;
+
+/// Rows for the package detail panel: a rule, a blank, the name-and-licence
+/// line, and the description.
+const DETAIL_ROWS: u16 = 4;
+
 /// Rows for the theme screen's heading and guidance.
 ///
 /// Deliberately tighter than the other screens: every row here is a row the
@@ -76,6 +93,10 @@ struct Args {
     /// Where the upstream scheme collection lives
     #[arg(long, default_value = "schemes/vendor")]
     schemes: PathBuf,
+
+    /// Where to remember the answers between runs
+    #[arg(long, default_value = state::FILE)]
+    state: PathBuf,
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +117,21 @@ enum Greeting {
 
 impl Greeting {
     const ALL: [Greeting; 2] = [Greeting::Legacy, Greeting::Blocks];
+
+    /// Stable spelling for the state file. Not `Debug`, which is for
+    /// programmers and free to change.
+    fn key(self) -> &'static str {
+        match self {
+            Greeting::Legacy => "legacy",
+            Greeting::Blocks => "blocks",
+        }
+    }
+
+    /// The reverse. Anything unrecognised is `None` and the caller falls back
+    /// to the default, which is what a hand-edited file should get.
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|g| g.key() == key)
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -237,15 +273,40 @@ fn spawn_fetch(kind: FetchKind, dir: &Path) -> Fetch {
     Fetch::Running(0, rx)
 }
 
+/// Whether a typed token looks like a package name.
+///
+/// Deliberately conservative: lowercase letters, digits, and the punctuation
+/// that appears in real registry names (`ca-certificates`, `procps-ng`,
+/// `libstdc++`). Anything else is a typo, a shell fragment, or a paste
+/// accident, and the page shows what it accepted so a rejection is visible.
+fn is_package_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_.+".contains(c))
+        && s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
+
+/// What the package page's keys are aimed at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Focus {
+    List,
+    /// The free-text field. While it has focus, printable keys are text —
+    /// including `q`, which everywhere else quits.
+    Input,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Screen {
     Greeting,
     Schemes,
     Themes,
+    Packages,
+    Patches,
 }
 
 struct App {
@@ -278,16 +339,55 @@ struct App {
     /// it without taking `&mut App`.
     list_rows: std::cell::Cell<usize>,
 
+    /// The optional packages, and whether each is wanted. Loaded from
+    /// `templates/packages.toml`; empty if that file could not be read, which
+    /// makes the page show its own explanation rather than an empty list.
+    packages: Vec<OptionalPackage>,
+    wanted: Vec<bool>,
+    package_row: usize,
+    package_top: usize,
+    focus: Focus,
+    /// Package names installed regardless of any choice on this page — used
+    /// only to tell the user a typed name is already covered.
+    always: Vec<String>,
+    /// The two pickers on the patches page, and which one has the keys.
+    /// Files and directories are separate because a loadout patches them
+    /// differently: a file maps to one dest, a directory to a glob.
+    pickers: Vec<Picker>,
+    picker_focus: usize,
+
+    /// What the last completed run chose. Consulted as each page opens rather
+    /// than all at once, because the scheme list and the package list are only
+    /// known once their page is entered.
+    saved: State,
+    /// Set only by finishing the last page. Quitting leaves it false, so an
+    /// abandoned run does not overwrite the answers from a finished one.
+    completed: bool,
+
+    /// Extra package names typed by hand, as raw text. Parsed on read rather
+    /// than on every keystroke so the user can type freely — including the
+    /// half-finished states that are not valid names yet.
+    extra: String,
+
     done: bool,
 }
 
 impl App {
-    fn new(schemes_dir: PathBuf) -> Self {
+    fn with_state(schemes_dir: PathBuf, saved: State) -> Self {
         let fetch_kind = FetchKind::detect(&schemes_dir);
+        // The greeting page is first, so its remembered answer is applied here
+        // rather than on entry. An unrecognised value falls back to the
+        // default, which is what a hand-edited file should get.
+        let greeting_row = saved
+            .greeting
+            .as_deref()
+            .and_then(Greeting::from_key)
+            .and_then(|g| Greeting::ALL.iter().position(|x| *x == g))
+            .unwrap_or(0);
         Self {
             screen: Screen::Greeting,
             schemes_dir,
-            greeting_row: 0,
+            greeting_row,
             greeting: None,
             fetch_kind,
             fetch_yes: fetch_kind != FetchKind::Blocked,
@@ -297,7 +397,47 @@ impl App {
             theme_top: 0,
             loaded: None,
             list_rows: std::cell::Cell::new(10),
+            packages: Vec::new(),
+            wanted: Vec::new(),
+            package_row: 0,
+            package_top: 0,
+            focus: Focus::List,
+            always: Vec::new(),
+            pickers: Vec::new(),
+            picker_focus: 0,
+            saved,
+            completed: false,
+            extra: String::new(),
             done: false,
+        }
+    }
+
+    /// Everything worth remembering from this run.
+    ///
+    /// The scheme-collection question is deliberately absent: whether to clone
+    /// or pull is about the state of the disk right now, not a preference, and
+    /// answering it once should not answer it forever.
+    fn to_state(&self) -> State {
+        State {
+            greeting: self.greeting.map(|g| g.key().to_string()),
+            theme: self.schemes.get(self.theme_row).map(|e| e.name.clone()),
+            packages: self
+                .packages
+                .iter()
+                .zip(&self.wanted)
+                .map(|(o, keep)| (o.name.clone(), *keep))
+                .collect(),
+            extra: self.extra.clone(),
+            files: self
+                .pickers
+                .first()
+                .map(|p| p.chosen.iter().cloned().collect())
+                .unwrap_or_default(),
+            dirs: self
+                .pickers
+                .get(1)
+                .map(|p| p.chosen.iter().cloned().collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -355,6 +495,16 @@ impl App {
         self.list_rows.get().max(1)
     }
 
+    /// `templates/`, found relative to the schemes directory — the same way
+    /// `enter_themes` locates the repo the wizard is running inside.
+    fn templates_dir(&self) -> PathBuf {
+        self.schemes_dir
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("."))
+            .join("templates")
+    }
+
     fn current_greeting(&self) -> Greeting {
         Greeting::ALL[self.greeting_row]
     }
@@ -373,7 +523,11 @@ impl App {
         }
         let ctrl_c =
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
-        if ctrl_c || key.code == KeyCode::Char('q') {
+        // `q` quits everywhere except inside the text field, where it is just a
+        // letter — a wizard that exits when you type `qt5` would be absurd.
+        // Ctrl-C still gets you out from anywhere.
+        let typing = self.screen == Screen::Packages && self.focus == Focus::Input;
+        if ctrl_c || (key.code == KeyCode::Char('q') && !typing) {
             self.done = true;
             return;
         }
@@ -384,6 +538,8 @@ impl App {
             Screen::Greeting => self.on_key_greeting(key),
             Screen::Schemes => self.on_key_schemes(key),
             Screen::Themes => self.on_key_themes(key),
+            Screen::Packages => self.on_key_packages(key),
+            Screen::Patches => self.on_key_patches(key),
         }
     }
 
@@ -416,11 +572,227 @@ impl App {
             .parent()
             .unwrap_or(&self.schemes_dir)
             .to_path_buf();
+        // What to land on: this run's choice if there is one, otherwise the
+        // remembered one. Re-applying the file on a second visit would undo a
+        // change made this run, which is the whole reason for the distinction.
+        // Either way it is looked up *by name*, so a re-cloned collection or a
+        // freshly fetched one does not move the cursor somewhere arbitrary.
+        let want = self
+            .schemes
+            .get(self.theme_row)
+            .map(|e| e.name.clone())
+            .or_else(|| self.saved.theme.clone());
+
+        // Re-discovered every time rather than once: the user can go back,
+        // fetch the collection, and return, and the new schemes should be here.
         self.schemes = discover(&root);
-        self.theme_row = 0;
-        self.theme_top = 0;
+        self.theme_row = want
+            .and_then(|name| self.schemes.iter().position(|s| s.name == name))
+            .unwrap_or(0);
+        self.theme_top = self.theme_row;
         self.load_selected();
         self.screen = Screen::Themes;
+    }
+
+    /// Move to the package chooser, loading the list on the way in.
+    ///
+    /// `templates` is found relative to the schemes directory, which is how the
+    /// rest of the wizard already locates the repo it is running inside.
+    fn enter_packages(&mut self, templates: &Path) {
+        // Only on the first visit. Coming back to this page must show what the
+        // user did this run, not what the sticky file remembers.
+        if !self.packages.is_empty() {
+            self.screen = Screen::Packages;
+            return;
+        }
+        if let Ok(p) = Packages::load(&templates.join("packages.toml")) {
+            self.always = p
+                .base
+                .packages
+                .iter()
+                .chain(&p.cozy.packages)
+                .cloned()
+                .collect();
+            // Each package's remembered answer, falling back to its own
+            // default when this file has never seen it.
+            self.wanted = p
+                .optional
+                .iter()
+                .map(|o| self.saved.wants_package(&o.name, o.default))
+                .collect();
+            self.packages = p.optional;
+        }
+        self.extra.clone_from(&self.saved.extra);
+        self.package_row = 0;
+        self.package_top = 0;
+        self.screen = Screen::Packages;
+    }
+
+    fn current_package(&self) -> Option<&OptionalPackage> {
+        self.packages.get(self.package_row)
+    }
+
+    /// Names the user has chosen to install, in list order.
+    fn chosen_packages(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .packages
+            .iter()
+            .zip(&self.wanted)
+            .filter(|(_, keep)| **keep)
+            .map(|(o, _)| o.name.as_str())
+            .collect();
+        names.extend(self.extra_packages());
+        names.dedup();
+        names
+    }
+
+    fn move_package(&mut self, delta: isize, rows: usize) {
+        if self.packages.is_empty() {
+            return;
+        }
+        let last = self.packages.len() - 1;
+        let row = isize::try_from(self.package_row)
+            .unwrap_or(0)
+            .saturating_add(delta);
+        let clamped = row.clamp(0, isize::try_from(last).unwrap_or(isize::MAX));
+        self.package_row = usize::try_from(clamped).unwrap_or(0);
+        if self.package_row < self.package_top {
+            self.package_top = self.package_row;
+        } else if rows > 0 && self.package_row >= self.package_top + rows {
+            self.package_top = self.package_row + 1 - rows;
+        }
+    }
+
+    /// Names typed into the free-text field, split on whitespace and commas.
+    ///
+    /// Anything that is not a plausible package name is dropped rather than
+    /// carried forward — the field shows what it parsed, so a rejected token is
+    /// visible rather than silently installed as something odd.
+    fn extra_packages(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .extra
+            .split([' ', ',', '\t'])
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && is_package_name(n))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    /// Typed names that the loadout already installs, so the page can say so
+    /// rather than letting the user think they added something.
+    fn redundant_extras(&self) -> Vec<&str> {
+        self.extra_packages()
+            .into_iter()
+            .filter(|n| {
+                self.packages.iter().any(|o| o.name == *n) || self.always.iter().any(|a| a == n)
+            })
+            .collect()
+    }
+
+    fn on_key_input(&mut self, key: KeyEvent) {
+        match key.code {
+            // All three leave the field; none of them is a "cancel", because
+            // the text is already the value — there is nothing to revert to.
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Tab => self.focus = Focus::List,
+            KeyCode::Backspace => {
+                self.extra.pop();
+            }
+            KeyCode::Char(c) => self.extra.push(c),
+            _ => {}
+        }
+    }
+
+    /// Move to the patches page, starting both pickers at $HOME — where the
+    /// dotfiles a loadout patches in actually live.
+    fn enter_patches(&mut self) {
+        if self.pickers.is_empty() {
+            let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+            let mut files = Picker::new(Pick::Files, &home);
+            let mut dirs = Picker::new(Pick::Dirs, &home);
+            // Anything the user has since deleted is simply not restored: it
+            // is gone, which is not an error, so the page opens without it.
+            files.chosen = State::existing(&self.saved.files).into_iter().collect();
+            dirs.chosen = State::existing(&self.saved.dirs).into_iter().collect();
+            self.pickers = vec![files, dirs];
+        }
+        self.picker_focus = 0;
+        self.screen = Screen::Patches;
+    }
+
+    fn picker(&self) -> &Picker {
+        &self.pickers[self.picker_focus]
+    }
+
+    /// Everything chosen across both pickers, files first.
+    fn chosen_paths(&self) -> Vec<&PathBuf> {
+        self.pickers.iter().flat_map(|p| p.chosen.iter()).collect()
+    }
+
+    fn on_key_patches(&mut self, key: KeyEvent) {
+        let page = self.list_rows();
+        let focus = self.picker_focus;
+        match key.code {
+            KeyCode::Esc => self.screen = Screen::Packages,
+            // Tab rather than left/right: those walk the tree, which is the
+            // more frequent action and wants the arrow keys.
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.picker_focus = (focus + 1) % self.pickers.len();
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.pickers[focus].move_cursor(-1, page),
+            KeyCode::Down | KeyCode::Char('j') => self.pickers[focus].move_cursor(1, page),
+            KeyCode::PageUp => {
+                self.pickers[focus].move_cursor(-(isize::try_from(page).unwrap_or(10)), page);
+            }
+            KeyCode::PageDown => {
+                self.pickers[focus].move_cursor(isize::try_from(page).unwrap_or(10), page);
+            }
+            KeyCode::Right | KeyCode::Char('l') => self.pickers[focus].descend(),
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
+                self.pickers[focus].ascend();
+            }
+            KeyCode::Char(' ') => {
+                self.pickers[focus].toggle();
+            }
+            // Enter finishes rather than descending: descending is on the
+            // arrow that points into the tree, which leaves enter free to mean
+            // the same thing it means on every other page.
+            KeyCode::Enter => {
+                self.completed = true;
+                self.done = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn on_key_packages(&mut self, key: KeyEvent) {
+        if self.focus == Focus::Input {
+            self.on_key_input(key);
+            return;
+        }
+        let page = self.list_rows();
+        match key.code {
+            KeyCode::Esc => self.screen = Screen::Themes,
+            KeyCode::Up | KeyCode::Char('k') => self.move_package(-1, page),
+            KeyCode::Down | KeyCode::Char('j') => self.move_package(1, page),
+            KeyCode::PageUp => self.move_package(-(isize::try_from(page).unwrap_or(10)), page),
+            KeyCode::PageDown => self.move_package(isize::try_from(page).unwrap_or(10), page),
+            KeyCode::Home => self.move_package(isize::MIN / 2, page),
+            KeyCode::End => self.move_package(isize::MAX / 2, page),
+            KeyCode::Char(' ') => {
+                if let Some(w) = self.wanted.get_mut(self.package_row) {
+                    *w = !*w;
+                }
+            }
+            // Bulk toggles, because turning fifteen things off one at a time to
+            // get a minimal session is a chore the keyboard can absorb.
+            KeyCode::Char('a') => self.wanted.iter_mut().for_each(|w| *w = true),
+            KeyCode::Char('n') => self.wanted.iter_mut().for_each(|w| *w = false),
+            KeyCode::Tab | KeyCode::Char('i') => self.focus = Focus::Input,
+            KeyCode::Enter => self.enter_patches(),
+            _ => {}
+        }
     }
 
     fn on_key_themes(&mut self, key: KeyEvent) {
@@ -433,7 +805,10 @@ impl App {
             KeyCode::PageDown => self.move_theme(isize::try_from(page).unwrap_or(10), page),
             KeyCode::Home => self.move_theme(isize::MIN / 2, page),
             KeyCode::End => self.move_theme(isize::MAX / 2, page),
-            KeyCode::Enter => self.done = true,
+            KeyCode::Enter => {
+                let templates = self.templates_dir();
+                self.enter_packages(&templates);
+            }
             _ => {}
         }
     }
@@ -497,11 +872,21 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
 
+    let saved = State::load(&args.state);
+
     let terminal = ratatui::init();
-    let result = run(terminal, args.schemes);
+    let result = run(terminal, args.schemes, saved);
     // Unconditional, and before `?`: a run that ends in an error still has to
     // hand the terminal back before the report is printed, or the report lands
     // on the alternate screen and vanishes with it.
+    //
+    // `ResetColor` first, and explicitly. Leaving the alternate screen restores
+    // what was on the primary one, but the SGR state the last frame left set is
+    // the terminal's, not the screen's — quitting from the theme pages, which
+    // paint a background over everything, otherwise hands back a shell still
+    // wearing someone else's colours. The scheme is for the wizard; it does not
+    // outlive it.
+    drop(execute!(io::stdout(), ResetColor));
     ratatui::restore();
 
     let app = result?;
@@ -509,16 +894,43 @@ fn main() -> Result<()> {
         Some(choice) => println!("greeting: {choice:?}"),
         None => println!("cancelled"),
     }
-    match app.fetch {
+    match &app.fetch {
         Fetch::Done(_) => println!("schemes: fetched"),
         Fetch::Failed(why) => println!("schemes: failed — {why}"),
         _ => println!("schemes: skipped"),
     }
+    if let Some(entry) = app.schemes.get(app.theme_row) {
+        println!("theme: {}", entry.name);
+    }
+    if !app.packages.is_empty() {
+        println!("packages: {}", app.chosen_packages().join(" "));
+    }
+    // Only a finished run is an answer. Quitting part-way leaves whatever the
+    // last completed run chose, rather than half-overwriting it.
+    if app.completed {
+        match app.to_state().save(&args.state) {
+            Ok(()) => println!("saved: {}", args.state.display()),
+            // Not fatal: the run happened, the answers just will not persist.
+            Err(why) => eprintln!("could not save {}: {why}", args.state.display()),
+        }
+    }
+
+    let paths = app.chosen_paths();
+    if !paths.is_empty() {
+        println!(
+            "patches: {}",
+            paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
     Ok(())
 }
 
-fn run(mut terminal: DefaultTerminal, schemes_dir: PathBuf) -> Result<App> {
-    let mut app = App::new(schemes_dir);
+fn run(mut terminal: DefaultTerminal, schemes_dir: PathBuf, saved: State) -> Result<App> {
+    let mut app = App::with_state(schemes_dir, saved);
     while !app.done {
         terminal.draw(|frame| draw(frame, &app))?;
         // Poll only while something is moving. With no fetch running there is
@@ -558,6 +970,8 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::Greeting => draw_greeting(frame, inner, app),
         Screen::Schemes => draw_schemes(frame, inner, app),
         Screen::Themes => draw_themes(frame, inner, app),
+        Screen::Packages => draw_packages(frame, inner, app),
+        Screen::Patches => draw_patches(frame, inner, app),
     }
     frame.render_widget(
         Paragraph::new(Line::from(footer_hints(app))).alignment(Alignment::Center),
@@ -600,6 +1014,29 @@ fn footer_hints(app: &App) -> Vec<Span<'static>> {
             hint("enter", "choose"),
             hint("esc", "back"),
             hint("q", "quit"),
+        ]
+        .concat(),
+        Screen::Packages if app.focus == Focus::Input => [
+            hint("type", "package names"),
+            hint("enter/esc", "back to the list"),
+        ]
+        .concat(),
+        Screen::Patches => [
+            hint("↑/↓", "move"),
+            hint("←/→", "in/out"),
+            hint("space", "choose"),
+            hint("tab", "files/dirs"),
+            hint("esc", "back"),
+            hint("enter", "done"),
+        ]
+        .concat(),
+        Screen::Packages => [
+            hint("↑/↓", "move"),
+            hint("space", "toggle"),
+            hint("a/n", "all/none"),
+            hint("i", "add by name"),
+            hint("esc", "back"),
+            hint("enter", "done"),
         ]
         .concat(),
     }
@@ -1067,6 +1504,385 @@ fn truncate(s: &str, width: usize) -> String {
     }
 }
 
+/// Optional packages: a checklist, with what each one is and what it is
+/// licensed under for the row under the cursor.
+fn draw_packages(frame: &mut Frame, inner: Rect, app: &App) {
+    // Still wearing the scheme picked on the previous page — the choice is
+    // meant to persist through the rest of the wizard, not just be previewed.
+    let t = app.theme();
+    frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
+
+    let intro = Paragraph::new(Text::from(vec![
+        Line::styled(
+            "Choose the optional packages.",
+            Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "Space toggles the one under the cursor. Everything here is on by \
+             default; the shell, editor and search tools are installed either way.",
+            Style::default().fg(t.fg),
+        ),
+    ]))
+    .wrap(Wrap { trim: true });
+
+    // Detail sits at the bottom rather than in a side column: the descriptions
+    // are a sentence, and the list wants the width for names and checkboxes.
+    let [intro_area, list_area, input_area, detail_area] = Layout::vertical([
+        Constraint::Length(THEME_INTRO_ROWS),
+        Constraint::Min(3),
+        Constraint::Length(INPUT_ROWS),
+        Constraint::Length(DETAIL_ROWS),
+    ])
+    .areas(inner);
+    frame.render_widget(intro, intro_area);
+
+    if app.packages.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "No package list found — templates/packages.toml could not be read.",
+                Style::default().fg(t.orange),
+            ))
+            .wrap(Wrap { trim: true }),
+            list_area,
+        );
+        return;
+    }
+
+    draw_package_list(frame, list_area, app, &t);
+    draw_extra_input(frame, input_area, app, &t);
+    draw_package_detail(frame, detail_area, app, &t);
+}
+
+/// The free-text field for packages that are not on the list.
+///
+/// The registry has far more than the fifteen offered above, and a loadout is
+/// personal — there is no reason to make someone edit a TOML file to add `emacs`.
+fn draw_extra_input(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    let focused = app.focus == Focus::Input;
+    let accent = if focused { t.blue } else { t.selection };
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(
+            " anything else to install ",
+            Style::default().fg(if focused { t.blue } else { t.comment }),
+        ))
+        .padding(Padding::new(0, 0, 1, 0));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [field, note] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
+
+    // A block cursor only while focused: a caret sitting in an unfocused field
+    // is an invitation to type into something that is not listening.
+    let mut spans = vec![
+        Span::styled("› ", Style::default().fg(accent)),
+        Span::styled(app.extra.clone(), Style::default().fg(t.fg)),
+    ];
+    if focused {
+        spans.push(Span::styled(" ", Style::default().bg(t.fg)));
+    } else if app.extra.is_empty() {
+        spans.push(Span::styled(
+            "press i or tab to add packages by name",
+            Style::default().fg(t.comment),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), field);
+
+    // Echo what was actually parsed. Splitting on spaces and dropping tokens
+    // that are not names is invisible otherwise, and silently ignoring half of
+    // what someone typed is the worst version of this widget.
+    let parsed = app.extra_packages();
+    let redundant = app.redundant_extras();
+    let line = if app.extra.trim().is_empty() {
+        Line::styled(
+            "Space-separated names from the Minimal registry, e.g. emacs vim tmux.",
+            Style::default().fg(t.comment),
+        )
+    } else if parsed.is_empty() {
+        Line::styled(
+            "Nothing usable yet — names are lowercase, digits, - _ . +",
+            Style::default().fg(t.orange),
+        )
+    } else if redundant.is_empty() {
+        Line::styled(
+            format!("adding {}", parsed.join(" ")),
+            Style::default().fg(t.green),
+        )
+    } else {
+        Line::from(vec![
+            Span::styled(
+                format!("adding {}", parsed.join(" ")),
+                Style::default().fg(t.green),
+            ),
+            Span::styled(
+                format!("  ·  already installed: {}", redundant.join(" ")),
+                Style::default().fg(t.orange),
+            ),
+        ])
+    };
+    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), note);
+}
+
+fn draw_package_list(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    let rows = area.height as usize;
+    app.list_rows.set(rows);
+
+    let items: Vec<ListItem> = app
+        .packages
+        .iter()
+        .zip(&app.wanted)
+        .enumerate()
+        .skip(app.package_top)
+        .take(rows)
+        .map(|(i, (pkg, wanted))| {
+            let selected = i == app.package_row;
+            let mark = if *wanted { "[x] " } else { "[ ] " };
+            // The checkbox is coloured by state, the name by the cursor, so
+            // "which one am I on" and "is it on" stay separate questions.
+            let mark_style = if *wanted {
+                Style::default().fg(t.green)
+            } else {
+                Style::default().fg(t.comment)
+            };
+            let name_style = if selected {
+                Style::default()
+                    .fg(t.bg)
+                    .bg(t.blue)
+                    .add_modifier(Modifier::BOLD)
+            } else if *wanted {
+                Style::default().fg(t.fg)
+            } else {
+                Style::default().fg(t.comment)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(mark, mark_style),
+                Span::styled(format!("{:<18}", truncate(&pkg.name, 18)), name_style),
+            ]))
+        })
+        .collect();
+    frame.render_widget(List::new(items), area);
+}
+
+fn draw_package_detail(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    let Some(pkg) = app.current_package() else {
+        return;
+    };
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(t.selection))
+        .padding(Padding::new(0, 0, 1, 0));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // A proprietary licence is the one a reader must not skim past, so it is
+    // called out rather than sitting in the same grey as everything else.
+    let permissive = pkg.license.starts_with("MIT")
+        || pkg.license.starts_with("Apache")
+        || pkg.license.starts_with("BSD")
+        || pkg.license.starts_with("ISC");
+    let licence_style = if permissive {
+        Style::default().fg(t.comment)
+    } else {
+        Style::default().fg(t.orange).add_modifier(Modifier::BOLD)
+    };
+
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(
+                    pkg.name.clone(),
+                    Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(pkg.license.clone(), licence_style),
+                // A checklist without a tally makes you count the boxes.
+                Span::styled(
+                    format!(
+                        "   ·  {} of {} chosen",
+                        app.wanted.iter().filter(|w| **w).count(),
+                        app.packages.len()
+                    ),
+                    Style::default().fg(t.comment),
+                ),
+            ]),
+            Line::styled(pkg.about.clone(), Style::default().fg(t.fg)),
+        ]))
+        .wrap(Wrap { trim: true }),
+        inner,
+    );
+}
+
+/// Two pickers side by side: files on the left, directories on the right.
+///
+/// Separate rather than one browser with a mode, because a loadout patches the
+/// two differently — a file maps to a single `dest`, a directory to a glob —
+/// and because seeing both sets of choices at once is the point.
+fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
+    let t = app.theme();
+    frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
+
+    let intro = Paragraph::new(Text::from(vec![
+        Line::styled(
+            "Patch in your own files.",
+            Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "Anything chosen here is copied into the session alongside the loadout's \
+             own config. Arrows walk the tree, space chooses, tab swaps between files \
+             and directories.",
+            Style::default().fg(t.fg),
+        ),
+    ]))
+    .wrap(Wrap { trim: true });
+
+    let [intro_area, body, summary] = Layout::vertical([
+        Constraint::Length(THEME_INTRO_ROWS),
+        Constraint::Min(3),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+    frame.render_widget(intro, intro_area);
+
+    // Side by side while there is room; stacked would halve an already short
+    // listing, so a narrow terminal shows only the focused picker instead.
+    if body.width >= 72 {
+        let [left, right] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(body);
+        for (i, area) in [left, right].into_iter().enumerate() {
+            draw_picker(frame, area, &app.pickers[i], i == app.picker_focus, &t);
+        }
+    } else {
+        draw_picker(frame, body, app.picker(), true, &t);
+    }
+
+    let chosen = app.chosen_paths();
+    let line = if chosen.is_empty() {
+        Line::styled(
+            "Nothing chosen — this page is optional.",
+            Style::default().fg(t.comment),
+        )
+    } else {
+        Line::from(vec![
+            Span::styled(
+                format!("{} chosen: ", chosen.len()),
+                Style::default().fg(t.green),
+            ),
+            Span::styled(
+                chosen
+                    .iter()
+                    .map(|p| shorten_home(p))
+                    .collect::<Vec<_>>()
+                    .join("  "),
+                Style::default().fg(t.comment),
+            ),
+        ])
+    };
+    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), summary);
+}
+
+/// `~` for the home directory, because absolute paths are mostly prefix and
+/// the summary line has no room to spare.
+fn shorten_home(path: &Path) -> String {
+    let full = path.display().to_string();
+    std::env::var_os("HOME")
+        .map(|h| h.to_string_lossy().to_string())
+        .filter(|h| !h.is_empty() && full.starts_with(h.as_str()))
+        .map_or_else(|| full.clone(), |h| format!("~{}", &full[h.len()..]))
+}
+
+fn draw_picker(frame: &mut Frame, area: Rect, p: &Picker, focused: bool, t: &Theme) {
+    let accent = if focused { t.blue } else { t.selection };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(
+            p.kind.title(),
+            if focused {
+                Style::default().fg(accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(accent)
+            },
+        ))
+        // The path is on the bottom border: it is context you glance at, and
+        // it costs no rows there.
+        .title_bottom(Span::styled(
+            format!(" {} ", shorten_home(&p.cwd)),
+            Style::default().fg(t.comment),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if let Some(err) = &p.error {
+        frame.render_widget(
+            Paragraph::new(Line::styled(err.clone(), Style::default().fg(t.orange)))
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    }
+    if p.entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled("empty", Style::default().fg(t.comment))),
+            inner,
+        );
+        return;
+    }
+
+    let rows = inner.height as usize;
+    let items: Vec<ListItem> = p
+        .entries
+        .iter()
+        .enumerate()
+        .skip(p.top)
+        .take(rows)
+        .map(|(i, e)| {
+            let selectable = p.kind.accepts(e.is_dir);
+            let chosen = p.is_chosen(e);
+            let mark = if chosen {
+                "[x] "
+            } else if selectable {
+                "[ ] "
+            } else {
+                // A directory in the file picker is scenery you walk through,
+                // not something space can take; no empty box to imply otherwise.
+                "    "
+            };
+            let name = if e.is_dir {
+                format!("{}/", e.name)
+            } else {
+                e.name.clone()
+            };
+            let style = if i == p.row && focused {
+                Style::default()
+                    .fg(t.bg)
+                    .bg(t.blue)
+                    .add_modifier(Modifier::BOLD)
+            } else if chosen {
+                Style::default().fg(t.green)
+            } else if selectable {
+                Style::default().fg(t.fg)
+            } else {
+                Style::default().fg(t.comment)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    mark,
+                    Style::default().fg(if chosen { t.green } else { t.comment }),
+                ),
+                Span::styled(name, style),
+            ]))
+        })
+        .collect();
+    frame.render_widget(List::new(items), inner);
+}
+
 fn draw_preview(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let block = Block::default().padding(Padding::new(2, 2, 1, 0));
     let inner = block.inner(area);
@@ -1162,7 +1978,10 @@ mod tests {
     /// A path that cannot exist, so detection is deterministic in tests rather
     /// than depending on whether the repo has been fetched.
     fn app() -> App {
-        App::new(PathBuf::from("target/does-not-exist-for-tests"))
+        App::with_state(
+            PathBuf::from("target/does-not-exist-for-tests"),
+            State::default(),
+        )
     }
 
     fn press(code: KeyCode) -> KeyEvent {
@@ -1349,7 +2168,7 @@ mod tests {
     fn blocked_offers_no_yes_and_runs_nothing() {
         let dir = temp_dir("blocked");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut a = App::new(dir.clone());
+        let mut a = App::with_state(dir.clone(), State::default());
         a.on_key(press(KeyCode::Enter));
         assert_eq!(a.fetch_kind, FetchKind::Blocked);
         assert!(
@@ -1393,7 +2212,7 @@ mod tests {
         // Two places now know how to fetch the schemes, and they must not
         // drift: a wizard that clones a different repo, or into a different
         // directory, than `just fetch-schemes` would be worse than no wizard.
-        let justfile = include_str!("../../../../justfile");
+        let justfile = include_str!("../../../../../justfile");
         assert!(
             justfile.contains(SCHEMES_REPO),
             "justfile no longer clones {SCHEMES_REPO}"
@@ -1524,7 +2343,7 @@ mod tests {
     fn blocked_screen_explains_itself() {
         let dir = temp_dir("blocked-ui");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut a = App::new(dir.clone());
+        let mut a = App::with_state(dir.clone(), State::default());
         a.on_key(press(KeyCode::Enter));
         let text = flatten(&render_app(&a, 100, 24));
         assert!(text.contains("not a git checkout"), "{text}");
@@ -1537,7 +2356,7 @@ mod tests {
 
     /// The theme browser against the real collection in this repo.
     fn on_themes() -> App {
-        let mut a = App::new(PathBuf::from("../../schemes/vendor"));
+        let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), State::default());
         a.on_key(press(KeyCode::Enter));
         a.on_key(press(KeyCode::Char('n')));
         a.on_key(press(KeyCode::Enter));
@@ -1587,7 +2406,7 @@ mod tests {
             .unwrap();
 
         let dest = temp_dir(&format!("{tag}-dest"));
-        let mut a = App::new(dest);
+        let mut a = App::with_state(dest, State::default());
         a.on_key(press(KeyCode::Enter));
         // Clone from the local origin rather than over the network.
         a.fetch = {
@@ -1760,6 +2579,672 @@ mod tests {
         assert_eq!((a.theme_row, a.theme_top), (0, 0));
     }
 
+    /// The package chooser, with the real templates/packages.toml.
+    fn on_packages() -> App {
+        let mut a = on_themes();
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Packages);
+        assert!(!a.packages.is_empty(), "package list should have loaded");
+        a
+    }
+
+    #[test]
+    fn packages_start_from_their_declared_defaults() {
+        let a = on_packages();
+        let p = cozy_theme::Packages::load(Path::new("../../templates/packages.toml")).unwrap();
+        let want: Vec<bool> = p.optional.iter().map(|o| o.default).collect();
+        assert_eq!(
+            a.wanted, want,
+            "the page must open on packages.toml's defaults"
+        );
+        assert_eq!(
+            a.chosen_packages().len(),
+            want.iter().filter(|w| **w).count()
+        );
+    }
+
+    #[test]
+    fn space_toggles_only_the_row_under_the_cursor() {
+        let mut a = on_packages();
+        let before = a.chosen_packages().len();
+        let name = a.current_package().unwrap().name.clone();
+        a.on_key(press(KeyCode::Char(' ')));
+        assert_eq!(
+            a.chosen_packages().len(),
+            before - 1,
+            "should have dropped one"
+        );
+        assert!(
+            !a.chosen_packages().contains(&name.as_str()),
+            "{name} should be off"
+        );
+        a.on_key(press(KeyCode::Char(' ')));
+        assert_eq!(
+            a.chosen_packages().len(),
+            before,
+            "toggling back restores it"
+        );
+    }
+
+    #[test]
+    fn bulk_toggles_cover_the_whole_list() {
+        let mut a = on_packages();
+        a.on_key(press(KeyCode::Char('n')));
+        assert!(a.chosen_packages().is_empty(), "n should clear everything");
+        a.on_key(press(KeyCode::Char('a')));
+        assert_eq!(
+            a.chosen_packages().len(),
+            a.packages.len(),
+            "a should select everything"
+        );
+    }
+
+    #[test]
+    fn the_detail_panel_shows_description_and_licence() {
+        let mut a = on_packages();
+        // Walk the list; every row must describe itself and name a licence.
+        for _ in 0..a.packages.len() {
+            let pkg = a.current_package().unwrap();
+            let (name, about, licence) = (pkg.name.clone(), pkg.about.clone(), pkg.license.clone());
+            let text = flatten(&render_app(&a, 100, 30));
+            assert!(text.contains(&name), "{name} not shown");
+            assert!(
+                text.contains(&licence),
+                "{name}: licence {licence} not shown"
+            );
+            let head: String = about.split(['.', '(']).next().unwrap().into();
+            assert!(text.contains(head.trim()), "{name}: description not shown");
+            a.on_key(press(KeyCode::Down));
+        }
+    }
+
+    #[test]
+    fn the_proprietary_licence_is_called_out() {
+        // Every other package is permissive; this is the one a reader must not
+        // skim past, so it must not render in the same grey as the rest.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut a = on_packages();
+        while a.current_package().unwrap().name != "claude-code" {
+            a.on_key(press(KeyCode::Down));
+        }
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| draw(f, &a)).unwrap();
+        let buf = term.backend().buffer();
+        let row = (0..30)
+            .find(|y| {
+                (0..100)
+                    .map(|x| buf[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains("LicenseRef")
+            })
+            .expect("licence line should be drawn");
+        let x = (0..100)
+            .find(|x| buf[(*x, row)].symbol() == "L")
+            .expect("licence text should start somewhere");
+        let cell = &buf[(x, row)];
+        let dim = a.theme().comment;
+        assert_ne!(
+            cell.fg, dim,
+            "a proprietary licence must not render as ordinary grey"
+        );
+        assert!(
+            cell.modifier.contains(Modifier::BOLD),
+            "and should be emphasised"
+        );
+    }
+
+    #[test]
+    fn the_chosen_theme_persists_onto_the_package_page() {
+        // The scheme picked on the previous page is the wizard's colours from
+        // then on, not a preview that ends when the page does.
+        let mut a = on_themes();
+        for _ in 0..7 {
+            a.on_key(press(KeyCode::Down));
+        }
+        let want = a.loaded.as_ref().unwrap().palette["base00"];
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Packages);
+        assert_eq!(
+            frame_bg(&a, 100, 30),
+            Color::Rgb(want.r, want.g, want.b),
+            "the package page should still be wearing {}",
+            a.schemes[a.theme_row].name
+        );
+    }
+
+    fn typing(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn typing_q_does_not_quit_the_wizard() {
+        // The hazard this whole focus mode exists for: `q` quits everywhere
+        // else, and a package field where typing `qt5` exits would be absurd.
+        let mut a = on_packages();
+        a.on_key(press(KeyCode::Char('i')));
+        assert_eq!(a.focus, Focus::Input);
+        typing(&mut a, "qt5");
+        assert!(!a.done, "q must be a letter while typing");
+        assert_eq!(a.extra, "qt5");
+        // Ctrl-C still works, because there has to be a way out from anywhere.
+        a.on_key(KeyEvent::new_with_kind(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        ));
+        assert!(a.done, "ctrl-c must still quit from the text field");
+    }
+
+    #[test]
+    fn focus_moves_into_the_field_and_back() {
+        let mut a = on_packages();
+        assert_eq!(a.focus, Focus::List);
+        a.on_key(press(KeyCode::Tab));
+        assert_eq!(a.focus, Focus::Input);
+        a.on_key(press(KeyCode::Esc));
+        assert_eq!(a.focus, Focus::List, "esc leaves the field");
+        assert_eq!(a.screen, Screen::Packages, "and does not leave the page");
+        a.on_key(press(KeyCode::Char('i')));
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(a.focus, Focus::List, "enter leaves the field");
+        assert!(!a.done, "enter in the field must not finish the wizard");
+    }
+
+    #[test]
+    fn list_keys_do_not_leak_into_the_field() {
+        // `space` toggles in the list and is a space in the field; `j` moves in
+        // the list and is a letter in the field.
+        let mut a = on_packages();
+        let chosen = a.chosen_packages().len();
+        let row = a.package_row;
+        a.on_key(press(KeyCode::Char('i')));
+        typing(&mut a, "a b");
+        a.on_key(press(KeyCode::Char('j')));
+        assert_eq!(a.extra, "a bj");
+        assert_eq!(a.package_row, row, "the list must not have moved");
+        assert_eq!(
+            a.chosen_packages().len() - a.extra_packages().len(),
+            chosen,
+            "the checklist must not have been toggled"
+        );
+    }
+
+    #[test]
+    fn typed_names_are_installed_and_junk_is_dropped() {
+        let mut a = on_packages();
+        a.on_key(press(KeyCode::Char('i')));
+        typing(&mut a, "emacs, tmux  RUBBISH!! neovim");
+        assert_eq!(
+            a.extra_packages(),
+            vec!["emacs", "neovim", "tmux"],
+            "should keep the plausible names and drop the rest"
+        );
+        let chosen = a.chosen_packages();
+        for name in ["emacs", "neovim", "tmux"] {
+            assert!(chosen.contains(&name), "{name} should be installed");
+        }
+        assert!(
+            !chosen.contains(&"RUBBISH!!"),
+            "junk must not reach the package list"
+        );
+    }
+
+    #[test]
+    fn backspace_edits_the_field() {
+        let mut a = on_packages();
+        a.on_key(press(KeyCode::Char('i')));
+        typing(&mut a, "emacsx");
+        a.on_key(press(KeyCode::Backspace));
+        assert_eq!(a.extra, "emacs");
+        assert_eq!(a.extra_packages(), vec!["emacs"]);
+    }
+
+    #[test]
+    fn a_name_the_loadout_already_has_is_flagged() {
+        // Typing `fish` should not silently look like it did something.
+        let mut a = on_packages();
+        a.on_key(press(KeyCode::Char('i')));
+        typing(&mut a, "fish emacs");
+        assert_eq!(a.redundant_extras(), vec!["fish"]);
+        let text = flatten(&render_app(&a, 100, 30));
+        assert!(text.contains("already installed: fish"), "{text}");
+        assert!(
+            text.contains("adding emacs fish"),
+            "and should still echo what it parsed"
+        );
+    }
+
+    #[test]
+    fn the_field_says_when_it_parsed_nothing() {
+        let mut a = on_packages();
+        a.on_key(press(KeyCode::Char('i')));
+        typing(&mut a, "!!!");
+        let text = flatten(&render_app(&a, 100, 30));
+        assert!(
+            text.contains("Nothing usable yet"),
+            "silently ignoring what someone typed is the worst version of this:\n{text}"
+        );
+    }
+
+    #[test]
+    fn esc_steps_back_to_the_themes() {
+        let mut a = on_packages();
+        a.on_key(press(KeyCode::Esc));
+        assert_eq!(a.screen, Screen::Themes);
+        assert!(!a.done);
+    }
+
+    /// The patches page, with both pickers rooted at a private tree rather
+    /// than the real $HOME, so the tests do not depend on this machine.
+    fn on_patches(tag: &str) -> (App, PathBuf) {
+        let root = temp_dir(&format!("patches-{tag}"));
+        std::fs::create_dir_all(root.join("dotfiles")).unwrap();
+        std::fs::write(root.join("dotfiles/config.toml"), "x").unwrap();
+        std::fs::write(root.join("notes.md"), "n").unwrap();
+        let mut a = on_packages();
+        a.enter_patches();
+        a.pickers = vec![
+            Picker::new(Pick::Files, &root),
+            Picker::new(Pick::Dirs, &root),
+        ];
+        assert_eq!(a.screen, Screen::Patches);
+        (a, root)
+    }
+
+    #[test]
+    fn tab_swaps_between_the_two_pickers() {
+        let (mut a, root) = on_patches("tab");
+        assert_eq!(a.picker().kind, Pick::Files);
+        a.on_key(press(KeyCode::Tab));
+        assert_eq!(
+            a.picker().kind,
+            Pick::Dirs,
+            "tab should reach the directory picker"
+        );
+        a.on_key(press(KeyCode::Tab));
+        assert_eq!(a.picker().kind, Pick::Files, "and wrap back round");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn each_picker_only_takes_its_own_kind() {
+        let (mut a, root) = on_patches("kinds");
+        // Row 0 is the `dotfiles` directory in both.
+        a.on_key(press(KeyCode::Char(' ')));
+        assert!(
+            a.chosen_paths().is_empty(),
+            "the file picker must not take a directory"
+        );
+        a.on_key(press(KeyCode::Tab));
+        a.on_key(press(KeyCode::Char(' ')));
+        assert_eq!(
+            a.chosen_paths()
+                .iter()
+                .map(|p| p.as_path())
+                .collect::<Vec<_>>(),
+            vec![root.join("dotfiles").as_path()],
+            "the directory picker must take it"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn arrows_walk_the_tree_and_enter_finishes() {
+        // Enter is `done` on every other page, so descending is on the arrow
+        // that points into the tree rather than stealing enter.
+        let (mut a, root) = on_patches("walk");
+        a.on_key(press(KeyCode::Right));
+        assert_eq!(
+            a.picker().cwd,
+            root.join("dotfiles"),
+            "right should descend"
+        );
+        a.on_key(press(KeyCode::Char(' ')));
+        assert_eq!(
+            a.chosen_paths().len(),
+            1,
+            "and the file inside is selectable"
+        );
+        a.on_key(press(KeyCode::Left));
+        assert_eq!(a.picker().cwd, root, "left should climb back out");
+        assert_eq!(a.chosen_paths().len(), 1, "without losing the selection");
+
+        assert!(!a.done);
+        a.on_key(press(KeyCode::Enter));
+        assert!(a.done, "enter should finish rather than descend");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn both_pickers_selections_are_reported_together() {
+        let (mut a, root) = on_patches("both");
+        a.on_key(press(KeyCode::Right));
+        a.on_key(press(KeyCode::Char(' ')));
+        a.on_key(press(KeyCode::Left));
+        a.on_key(press(KeyCode::Tab));
+        a.on_key(press(KeyCode::Char(' ')));
+        let chosen: Vec<String> = a
+            .chosen_paths()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        assert_eq!(chosen.len(), 2, "{chosen:?}");
+        assert!(
+            chosen.iter().any(|p| p.ends_with("config.toml")),
+            "{chosen:?}"
+        );
+        assert!(chosen.iter().any(|p| p.ends_with("dotfiles")), "{chosen:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn esc_steps_back_to_the_packages() {
+        let (mut a, root) = on_patches("esc");
+        a.on_key(press(KeyCode::Esc));
+        assert_eq!(a.screen, Screen::Packages);
+        assert!(!a.done);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_patches_page_keeps_the_chosen_theme() {
+        let (a, root) = on_patches("theme");
+        let want = a
+            .loaded
+            .as_ref()
+            .expect("a scheme should be loaded")
+            .palette["base00"];
+        assert_eq!(frame_bg(&a, 100, 30), Color::Rgb(want.r, want.g, want.b));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_summary_names_what_was_chosen() {
+        let (mut a, root) = on_patches("summary");
+        a.on_key(press(KeyCode::Tab));
+        a.on_key(press(KeyCode::Char(' ')));
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(text.contains("1 chosen"), "{text}");
+        assert!(
+            text.contains("dotfiles"),
+            "the summary should name the path:\n{text}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // -- remembering between runs ------------------------------------------
+
+    /// Walk a run to the end and return what it would write.
+    fn completed_run(pick_blocks: bool, theme_steps: usize) -> App {
+        let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), State::default());
+        if pick_blocks {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Enter)); // greeting -> schemes
+        a.on_key(press(KeyCode::Char('n')));
+        a.on_key(press(KeyCode::Enter)); // schemes -> themes
+        for _ in 0..theme_steps {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Enter)); // themes -> packages
+        a
+    }
+
+    #[test]
+    fn a_finished_run_records_every_page() {
+        let mut a = completed_run(true, 4);
+        a.on_key(press(KeyCode::Char(' '))); // drop the first optional package
+        let dropped = a.packages[0].name.clone();
+        a.on_key(press(KeyCode::Char('i')));
+        typing(&mut a, "emacs");
+        a.on_key(press(KeyCode::Esc));
+        let theme = a.schemes[a.theme_row].name.clone();
+        a.on_key(press(KeyCode::Enter)); // packages -> patches
+        a.on_key(press(KeyCode::Enter)); // finish
+
+        assert!(a.completed, "finishing the last page completes the run");
+        let st = a.to_state();
+        assert_eq!(st.greeting.as_deref(), Some("blocks"));
+        assert_eq!(st.theme.as_deref(), Some(theme.as_str()));
+        assert_eq!(st.extra, "emacs");
+        assert_eq!(
+            st.packages.get(&dropped),
+            Some(&false),
+            "the dropped package is recorded off"
+        );
+        assert!(st.packages.len() > 1, "and the rest are recorded too");
+    }
+
+    #[test]
+    fn quitting_early_does_not_count_as_an_answer() {
+        // The rule that keeps a half-answered wizard from overwriting a
+        // finished one. `main` only writes when `completed` is set.
+        let mut a = completed_run(false, 2);
+        a.on_key(press(KeyCode::Char('q')));
+        assert!(a.done, "q should end the run");
+        assert!(!a.completed, "but quitting is not completing");
+
+        let mut b = completed_run(false, 2);
+        b.on_key(press(KeyCode::Enter)); // -> patches
+        b.on_key(press(KeyCode::Esc)); // back to packages
+        b.on_key(press(KeyCode::Char('q')));
+        assert!(
+            !b.completed,
+            "backing out and quitting is still not completing"
+        );
+    }
+
+    #[test]
+    fn a_saved_run_comes_back_selected() {
+        let first = {
+            let mut a = completed_run(true, 6);
+            a.on_key(press(KeyCode::Char(' ')));
+            a.on_key(press(KeyCode::Char('i')));
+            typing(&mut a, "emacs tmux");
+            a.on_key(press(KeyCode::Esc));
+            a.to_state()
+        };
+        let theme = first.theme.clone().unwrap();
+        let off: Vec<String> = first
+            .packages
+            .iter()
+            .filter(|(_, v)| !**v)
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        // A second run, opened with what the first one saved.
+        let mut b = App::with_state(PathBuf::from("../../schemes/vendor"), first);
+        assert_eq!(
+            b.current_greeting(),
+            Greeting::Blocks,
+            "greeting should be restored"
+        );
+        b.on_key(press(KeyCode::Enter));
+        b.on_key(press(KeyCode::Char('n')));
+        b.on_key(press(KeyCode::Enter));
+        assert_eq!(
+            b.schemes[b.theme_row].name, theme,
+            "theme should be restored"
+        );
+        b.on_key(press(KeyCode::Enter));
+        assert_eq!(
+            b.extra, "emacs tmux",
+            "the typed packages should come back editable"
+        );
+        for name in &off {
+            assert!(
+                !b.chosen_packages().contains(&name.as_str()),
+                "{name} should still be off"
+            );
+        }
+    }
+
+    #[test]
+    fn a_theme_that_no_longer_exists_falls_back_to_the_default() {
+        let saved = State {
+            theme: Some("a-scheme-nobody-has".into()),
+            ..State::default()
+        };
+        let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), saved);
+        a.on_key(press(KeyCode::Enter));
+        a.on_key(press(KeyCode::Char('n')));
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(
+            a.theme_row, 0,
+            "a deleted scheme should leave the cursor at the default"
+        );
+        assert!(
+            a.loaded.is_some(),
+            "and something must still be loaded to paint with"
+        );
+    }
+
+    #[test]
+    fn a_deleted_path_does_not_come_back() {
+        let dir = temp_dir("restore-paths");
+        std::fs::create_dir_all(dir.join("kept")).unwrap();
+        std::fs::write(dir.join("kept.txt"), "x").unwrap();
+        let saved = State {
+            files: vec![dir.join("kept.txt"), dir.join("gone.txt")],
+            dirs: vec![dir.join("kept"), dir.join("gone")],
+            ..State::default()
+        };
+        let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), saved);
+        a.enter_patches();
+        let chosen: Vec<&PathBuf> = a.chosen_paths();
+        assert_eq!(chosen.len(), 2, "only the two that still exist: {chosen:?}");
+        assert!(chosen.iter().all(|p| p.exists()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_scheme_fetch_answer_is_never_recorded() {
+        // Whether to clone or pull is about the disk right now, not a
+        // preference — answering it once must not answer it forever.
+        let a = completed_run(false, 1);
+        let toml = toml::to_string_pretty(&a.to_state()).unwrap();
+        for word in ["fetch", "clone", "update", "schemes_dir"] {
+            assert!(
+                !toml.contains(word),
+                "state file should not mention {word}:\n{toml}"
+            );
+        }
+    }
+
+    // -- going back and forward again --------------------------------------
+
+    #[test]
+    fn revisiting_a_page_keeps_what_you_changed_this_run() {
+        // Every page restores from the sticky file when it opens. Re-applying
+        // that on a *second* visit would silently undo everything the user did
+        // this run — go back to check something, come forward, and your work
+        // is gone.
+        let saved = State {
+            theme: Some("3024".into()),
+            extra: "from-the-file".into(),
+            ..State::default()
+        };
+        let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), saved);
+        a.on_key(press(KeyCode::Enter));
+        a.on_key(press(KeyCode::Char('n')));
+        a.on_key(press(KeyCode::Enter)); // -> themes, restored to "3024"
+        assert_eq!(a.schemes[a.theme_row].name, "3024");
+
+        // Change it, then go back and forward again.
+        for _ in 0..5 {
+            a.on_key(press(KeyCode::Down));
+        }
+        let chosen = a.schemes[a.theme_row].name.clone();
+        assert_ne!(chosen, "3024", "the test needs to have actually moved");
+        a.on_key(press(KeyCode::Esc)); // -> schemes
+        a.on_key(press(KeyCode::Enter)); // -> themes again
+        assert_eq!(
+            a.schemes[a.theme_row].name, chosen,
+            "coming back should show this run's choice, not the file's"
+        );
+
+        // Same for the package page's toggles and its text field.
+        a.on_key(press(KeyCode::Enter)); // -> packages
+        assert_eq!(a.extra, "from-the-file");
+        a.on_key(press(KeyCode::Char(' ')));
+        let dropped = a.packages[0].name.clone();
+        a.on_key(press(KeyCode::Char('i')));
+        typing(&mut a, "-typed-now");
+        a.on_key(press(KeyCode::Esc)); // leave the field
+        a.on_key(press(KeyCode::Esc)); // -> themes
+        a.on_key(press(KeyCode::Enter)); // -> packages again
+        assert_eq!(
+            a.extra, "from-the-file-typed-now",
+            "the field should keep what was typed"
+        );
+        assert!(
+            !a.chosen_packages().contains(&dropped.as_str()),
+            "{dropped} was switched off this run and should have stayed off"
+        );
+    }
+
+    #[test]
+    fn revisiting_the_patches_page_keeps_this_run_s_choices() {
+        // The pickers guard on `is_empty()` rather than a visit count, so this
+        // checks the guard actually holds — including that walking somewhere
+        // else and coming back does not reset the browser to $HOME either.
+        let (mut a, root) = on_patches("revisit");
+        a.on_key(press(KeyCode::Tab));
+        a.on_key(press(KeyCode::Char(' ')));
+        let chosen: Vec<PathBuf> = a.chosen_paths().into_iter().cloned().collect();
+        assert_eq!(chosen.len(), 1);
+
+        a.on_key(press(KeyCode::Esc)); // -> packages
+        a.on_key(press(KeyCode::Enter)); // -> patches again
+        assert_eq!(
+            a.chosen_paths().into_iter().cloned().collect::<Vec<_>>(),
+            chosen,
+            "coming back should keep what was picked this run"
+        );
+        assert_eq!(
+            a.picker().cwd,
+            root,
+            "and should not have jumped back to $HOME"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn every_page_after_the_first_offers_a_way_back() {
+        // Esc steps back everywhere it can, but a key nobody mentions is a key
+        // nobody presses.
+        let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), State::default());
+        a.on_key(press(KeyCode::Enter));
+        for expect_back in [
+            Screen::Schemes,
+            Screen::Themes,
+            Screen::Packages,
+            Screen::Patches,
+        ] {
+            assert_eq!(a.screen, expect_back);
+            let footer: String = footer_hints(&a)
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect();
+            assert!(
+                footer.contains("esc"),
+                "{expect_back:?} does not advertise a way back: {footer:?}"
+            );
+            if expect_back == Screen::Schemes {
+                // Decline the fetch: enter would otherwise start one, and a
+                // test must not reach the network.
+                a.on_key(press(KeyCode::Char('n')));
+            }
+            if expect_back != Screen::Patches {
+                a.on_key(press(KeyCode::Enter));
+            }
+        }
+    }
+
     #[test]
     #[ignore = "prints frames for eyeballing; run with --ignored --nocapture"]
     fn dump_frames() {
@@ -1796,5 +3281,32 @@ mod tests {
             "\n=== themes after 5 down: {} ===",
             a.schemes[a.theme_row].name
         );
+
+        let mut p = on_packages();
+        for _ in 0..7 {
+            p.on_key(press(KeyCode::Down));
+        }
+        p.on_key(press(KeyCode::Char(' ')));
+        p.on_key(press(KeyCode::Char('i')));
+        for c in "emacs tmux fzf".chars() {
+            p.on_key(press(KeyCode::Char(c)));
+        }
+        for (w, h) in [(80u16, 24u16), (60, 20)] {
+            println!("\n=== packages {w}x{h} ===");
+            for row in render_app(&p, w, h) {
+                println!("|{}|", row.trim_end());
+            }
+        }
+
+        let mut q = on_packages();
+        q.enter_patches();
+        q.pickers[0].move_cursor(2, 10);
+        q.pickers[0].toggle();
+        for (w, h) in [(100u16, 30u16), (70, 22)] {
+            println!("\n=== patches {w}x{h} ===");
+            for row in render_app(&q, w, h) {
+                println!("|{}|", row.trim_end());
+            }
+        }
     }
 }

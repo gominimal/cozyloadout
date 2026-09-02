@@ -12,3 +12,6 @@
 
 # macOS
 .DS_Store
+
+# What the wizard remembers between runs: one person's answers, not the repo's.
+/.cozy-wizard.toml

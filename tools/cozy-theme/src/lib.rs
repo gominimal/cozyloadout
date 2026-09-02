@@ -402,6 +402,11 @@ pub struct PackageGroup {
 pub struct OptionalPackage {
     pub name: String,
     pub about: String,
+    /// SPDX identifier, copied from the package's `license_spdx` in the Minimal
+    /// Public Registry. Shown before the user agrees to install anything, which
+    /// is the point of carrying it: `claude-code` is proprietary and the rest
+    /// are not, and that is worth knowing at the moment of choosing.
+    pub license: String,
     /// Whether the wizard preselects it.
     pub default: bool,
 }
@@ -415,6 +420,9 @@ pub struct OptionalPackage {
 pub struct Packages {
     pub base: PackageGroup,
     pub cozy: PackageGroup,
+    /// Defaulted: a file with everything required is a legitimate
+    /// configuration, and it should parse rather than fail on a missing key.
+    #[serde(default)]
     pub optional: Vec<OptionalPackage>,
 }
 
@@ -599,6 +607,50 @@ base0f: d65d0e
     }
 
     #[test]
+    fn a_file_with_no_optional_packages_parses() {
+        // Everything-required is a legitimate configuration, and it used to
+        // fail on a missing key — a confusing way to learn the field is
+        // mandatory.
+        let src = include_str!("../../../templates/packages.toml");
+        let head = src
+            .split("[[optional]]")
+            .next()
+            .expect("packages.toml head");
+        let p: Packages = toml::from_str(head).expect("should parse with no optional entries");
+        assert!(p.optional.is_empty());
+        assert!(p.selected(&|_| true).contains(&"fish"));
+    }
+
+    #[test]
+    fn every_optional_package_is_on_by_default() {
+        // The full set is what the loadout has always installed, so an
+        // untouched wizard has to reproduce it. A package added with
+        // `default = false` would silently shrink the default loadout.
+        for o in packages().optional {
+            assert!(o.default, "{} is not preselected", o.name);
+        }
+    }
+
+    #[test]
+    fn every_optional_package_declares_a_licence() {
+        // Shown to the user at the moment they choose to install. A blank or
+        // invented value here is worse than none: it is a claim about someone
+        // else's software. These are copied from the registry's `license_spdx`.
+        for o in packages().optional {
+            assert!(!o.license.trim().is_empty(), "{} has no licence", o.name);
+            assert!(
+                o.license.chars().all(|c| c.is_ascii_alphanumeric()
+                    || "-.+ ".contains(c)
+                    || c == 'O'
+                    || c == 'R'),
+                "{}: {:?} does not look like an SPDX identifier",
+                o.name,
+                o.license
+            );
+        }
+    }
+
+    #[test]
     fn optional_packages_are_described() {
         // The wizard shows these one per row; a blank line is a bug the user
         // sees rather than a lint.
@@ -623,6 +675,13 @@ base0f: d65d0e
                 "{must} must survive declining every extra"
             );
         }
+        // difftastic is required because `git dft` in the gitconfig cannot
+        // guard on its binary existing. If it ever moves back to `optional`,
+        // the bare session grows a broken git alias.
+        assert!(
+            bare.contains(&"difftastic"),
+            "difftastic must not be optional while the gitconfig aliases it"
+        );
         assert!(
             !bare.contains(&"kittyview"),
             "an optional package leaked into the required set"
