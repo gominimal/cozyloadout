@@ -14,6 +14,14 @@ ignore = [
     # and no part of it ends up in a shipped binary. There is no upgrade to
     # take; drop this entry when ratatui stops depending on it.
     "RUSTSEC-2024-0436",
+    # `bincode` 1.3.3 is unmaintained — not a vulnerability, and not a
+    # deprecation on technical grounds: the maintainers stopped after a
+    # harassment incident and state that 1.3.3 is complete rather than in need
+    # of updates. It arrives through syntect, which uses it only to deserialise
+    # the syntax dump the grammars ship as; that data is compiled in, not read
+    # from anywhere a user controls. There is no 1.x successor to move to —
+    # syntect would have to adopt bincode 2, which is upstream's call.
+    "RUSTSEC-2025-0141",
 ]
 
 [licenses]

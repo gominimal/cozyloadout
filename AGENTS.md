@@ -709,6 +709,73 @@ Key choices worth keeping:
 Both pickers start at `$HOME`. Selections survive walking away and coming back,
 and the summary line under them names every path with `~` for the home prefix.
 
+#### The preview pane
+
+A third column showing what the entry under the cursor holds: a file's first
+lines, or — for a directory — what patching it in would actually copy. That last
+distinction matters, because the patch source becomes `<dir>/**/*`, so the
+number worth showing is the *recursive* one. A top-level listing would
+understate it, and the listing is already on screen anyway.
+
+`preview.rs` is the model, with no drawing in it, for the same reason
+`picker.rs` has none.
+
+Three things it has to get right, because this page points at arbitrary paths in
+a home directory:
+
+- **Everything is bounded.** 64 KiB of any file, 2000 entries of any directory.
+  A preview that read a disk image or walked `node_modules` would stall the
+  interface on a cursor move. A walk that stops says "at least", never a number
+  it did not finish counting. Measured on a real home: 1642 files across 358
+  directories, capped, in 37 ms.
+- **Non-text is reported, not rendered.** A NUL byte or invalid UTF-8 means
+  "binary, 4 KiB" — dumping control characters into the pane would corrupt the
+  frame around it, not merely look wrong. Symlinks are not followed, so a loop
+  cannot turn the walk into a hang.
+- **It is read once per path, not once per frame.** Drawing happens on every
+  keystroke and on a ten-a-second tick. The cache is a `RefCell` keyed by path,
+  filled during drawing like `list_rows` — the alternative is re-reading in the
+  five key handlers that can move a cursor, and the one you forget is a pane
+  showing the wrong file.
+
+The pane is the first thing dropped as the terminal narrows: preview, then both
+pickers, then only the focused one. The listing is what you cannot do without.
+
+#### Syntax highlighting
+
+The preview is lit by **the `.tmTheme` this repository generates for the chosen
+scheme** — `Scheme::render_template` renders the same file the loadout installs
+for `bat`, and syntect parses it back. So a previewed file is coloured exactly
+as `bat` will colour it in the session, rather than by a palette invented for
+the pane. `the_colours_come_from_the_chosen_scheme` holds that by adjusting the
+scheme and checking the code relights.
+
+Two dependency decisions worth keeping:
+
+- **The grammars are `two-face`'s, not syntect's.** syntect's bundled set is 75
+  grammars and **has no TOML in it** — and TOML is most of what this page shows
+  (in a real `~/.config`, seven of fourteen files). two-face carries `bat`'s
+  set: 199 grammars, TOML included.
+- **`syntect-fancy`, never the default.** two-face defaults to oniguruma, a C
+  library; nothing else here needs a C toolchain to build, and requiring one in
+  CI and for every contributor is a large price for a regex engine.
+
+`bincode` arrives through syntect and carries an unmaintained advisory
+(RUSTSEC-2025-0141) — the maintainers stopped after a harassment incident and
+consider 1.3.3 complete, so it is not a deprecation on technical grounds and
+there is no successor to move to. It is ignored in `deny.toml` with that
+reasoning written down.
+
+Costs, measured rather than guessed: 199 grammars deserialise in 2.6 ms, the
+theme parses in 1.1 ms, and highlighting fifteen lines takes 96 µs. The first
+two are behind a `OnceLock` and a slug-keyed cache; only the last is per frame,
+and it is cheap enough to be. The wizard binary went from 6.1 MB to 9.6 MB, and
+the crate graph from 102 to 129.
+
+Text is clipped **by span**, not by joining and truncating: a `truncate` over
+the finished line would have to be re-split to keep the colours, and cutting
+mid-span is exactly where that goes wrong.
+
 #### Where a picked path lands
 
 A loadout's `dest` is interpreted relative to the *session's* home, so mapping a
@@ -1202,7 +1269,7 @@ Worth knowing before relying on any of it:
 | Re-attach carries no OSC palette | read in `minimald::session_host` — the attach flush is a `vt100` screen dump |
 | Detach leaves the palette on the host terminal | read in `Host::unwind_codes` — it resets SGR, alt screen, cursor, focus reporting, and no OSC colours |
 | Any `on_attach` hook breaks fish's OSC 11 background | **doubtful** — observed once, but the once-per-shell palette bug produces the same symptom and was live at the same time. Re-test |
-| Rust floor of 1.88 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — only 1.97.1 is available here |
+| Rust floor of 1.88 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — no rustup on the machine this was written on. **`plist` declares exactly 1.88**, so the floor is now pinned by a dependency rather than sitting comfortably above one; syntect and bincode declare no `rust-version` at all, so the CI job is the only thing that knows |
 | The greeting's detach chord | verified against minimal's source: `minimald` seeds `MINIMAL_DETACH_HINT` per attach channel as `"{leader} then {detach_key}"` (`crates/minimald/src/session.rs`), defaulting to `ctrl-]` and `d` (`crates/sessions/src/keys.rs`). The template reads the var and falls back to the same `ctrl-] then d` minimal's own banner does. **Mint-scoped**, per `docs/reference/loadouts.md`: a second client attaching with a remapped chord gets a working one, but the greeting still shows the minting channel's |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
 | The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |

@@ -3,7 +3,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::prelude::*;
-use super::shorten_home;
+use super::{shorten_home, truncate};
 
 pub fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
     let t = app.theme();
@@ -37,9 +37,28 @@ pub fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
     .areas(inner);
     frame.render_widget(intro, intro_area);
 
-    // Side by side while there is room; stacked would halve an already short
-    // listing, so a narrow terminal shows only the focused picker instead.
-    if body.width >= 72 {
+    // A ladder, widest first: both pickers plus a preview, then both pickers,
+    // then only the focused one. Stacking would halve an already short listing,
+    // so a narrow terminal drops panes rather than shrinking them.
+    if body.width >= PREVIEW_MIN_WIDTH {
+        let [left, right, pane] = Layout::horizontal([
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+            Constraint::Percentage(40),
+        ])
+        .areas(body);
+        for (i, area) in [left, right].into_iter().enumerate() {
+            draw_picker(
+                frame,
+                area,
+                &app.pickers[i],
+                i == app.picker_focus,
+                &app.home,
+                &t,
+            );
+        }
+        draw_preview_pane(frame, pane, app, &t);
+    } else if body.width >= 72 {
         let [left, right] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(body);
@@ -258,4 +277,131 @@ pub fn hints(_app: &App) -> Vec<(&'static str, &'static str)> {
         ("esc", "back"),
         ("enter", "done"),
     ]
+}
+
+/// Below this the preview pane costs more than it gives: three columns in
+/// ninety cells leaves each too narrow to read a path in.
+const PREVIEW_MIN_WIDTH: u16 = 104;
+
+/// What the entry under the cursor holds — file contents, or what patching a
+/// directory in would actually copy.
+fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    let picker = app.picker();
+    // The same box the pickers get: three panes in a row, one of them a bare
+    // divider, reads as an unfinished layout rather than a deliberate one.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.selection))
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(" Preview ", Style::default().fg(t.comment)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(entry) = picker.current() else {
+        return;
+    };
+    let path = picker.cwd.join(&entry.name);
+    // The name and the blank line under it are not content, so only the rest
+    // is worth reading.
+    let rows = usize::from(inner.height).saturating_sub(2);
+    let value = app.preview_of(&path, entry.is_dir, rows.max(1));
+
+    let mut lines = vec![
+        Line::styled(
+            truncate(&entry.name, inner.width as usize),
+            Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+    ];
+    let dim = Style::default().fg(t.comment);
+    let body = Style::default().fg(t.fg);
+    match value {
+        preview::Preview::Text { lines: text, more } => {
+            // Highlighted as the chosen scheme lights it — the colours come
+            // from the same `.tmTheme` the loadout installs for `bat`.
+            let width = inner.width as usize;
+            lines.extend(highlighted_lines(
+                &app.highlight(&text, &entry.name),
+                width,
+                body,
+            ));
+            if more {
+                lines.push(Line::styled("…", dim));
+            }
+        }
+        preview::Preview::Binary { bytes } => {
+            lines.push(Line::styled(
+                format!("binary, {}", preview::format_bytes(bytes)),
+                dim,
+            ));
+        }
+        preview::Preview::Empty => lines.push(Line::styled("empty", dim)),
+        preview::Preview::Error(why) => {
+            lines.push(Line::styled(why, Style::default().fg(t.orange)));
+        }
+        preview::Preview::Dir {
+            files,
+            dirs,
+            bytes,
+            sample,
+            capped,
+        } => {
+            // What the patch copies, not what the folder shows: the source
+            // becomes `<dir>/**/*`, so the whole tree comes with it.
+            lines.push(Line::styled(
+                format!(
+                    "{}{files} file{}, {dirs} folder{}, {}",
+                    if capped { "at least " } else { "" },
+                    if files == 1 { "" } else { "s" },
+                    if dirs == 1 { "" } else { "s" },
+                    preview::format_bytes(bytes)
+                ),
+                Style::default().fg(t.green),
+            ));
+            lines.push(Line::raw(""));
+            lines.extend(
+                sample
+                    .into_iter()
+                    .take(rows.saturating_sub(2))
+                    .map(|p| Line::styled(truncate(&p, inner.width as usize), dim)),
+            );
+        }
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+/// Highlighted spans as drawable lines, clipped to the pane.
+///
+/// Clipping is by span rather than by finished line: a `truncate` over the
+/// joined text would have to be re-split to keep the colours, and cutting mid
+/// span is exactly where that goes wrong.
+fn highlighted_lines(
+    rows: &[Vec<(Color, String)>],
+    width: usize,
+    fallback: Style,
+) -> Vec<Line<'static>> {
+    rows.iter()
+        .map(|spans| {
+            let mut used = 0usize;
+            let mut out: Vec<Span> = Vec::new();
+            for (colour, text) in spans {
+                if used >= width {
+                    break;
+                }
+                let room = width - used;
+                let clipped: String = text.chars().take(room).collect();
+                used += clipped.chars().count();
+                // `Color::Reset` means "no grammar matched"; the pane's own
+                // foreground is a better answer than the terminal's default.
+                let style = if *colour == Color::Reset {
+                    fallback
+                } else {
+                    Style::default().fg(*colour)
+                };
+                out.push(Span::styled(clipped, style));
+            }
+            Line::from(out)
+        })
+        .collect()
 }
