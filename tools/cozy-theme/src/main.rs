@@ -7,8 +7,8 @@
 
 use clap::Parser;
 use color_eyre::eyre::{bail, eyre, Result};
-use cozy_theme::{Adjust, Options};
-use std::path::PathBuf;
+use cozy_theme::{Adjust, Options, Packages, Settings};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "cozy-theme", version, about, long_about = None)]
@@ -86,6 +86,27 @@ struct Args {
     /// A warm or cool cast over every slot (-100..=100)
     #[arg(long, allow_negative_numbers = true, default_value_t = 0, value_parser = pct)]
     warmth: i8,
+
+    /// Save the adjusted scheme under this name, as a scheme of its own, and
+    /// render that. Lands beside the checked-in schemes, so `just theme <name>`
+    /// picks it up afterwards.
+    #[arg(long)]
+    save_as: Option<String>,
+
+    /// Where `--save-as` writes. Defaults to the directory the scheme came from.
+    #[arg(long)]
+    schemes_dir: Option<PathBuf>,
+
+    /// Render from a wizard settings file — the scheme, greeting, packages,
+    /// patches and adjustments it recorded. Flags given alongside it win, so
+    /// `--settings mine.toml --greeting none` is one answer changed rather
+    /// than a file to edit.
+    #[arg(long)]
+    settings: Option<PathBuf>,
+
+    /// Where to resolve `--settings`' scheme name from.
+    #[arg(long, default_value = "schemes")]
+    schemes: PathBuf,
 }
 
 /// Percentages are bounded so an out-of-range value is refused at the command
@@ -126,10 +147,90 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
 
-    if args.scheme.is_some() {
-        cozy_theme::build(&Options::from(&args))?;
+    // Saving happens before the render, and the render then uses the saved
+    // file: otherwise `--save-as` would write one scheme and build another, and
+    // the build/ tree would not be reachable from the scheme now on disk.
+    let mut options = Options::from(&args);
+
+    // A settings file fills in what the flags did not. Applied first so an
+    // explicit flag still wins: the file is a starting point, not an override.
+    if let Some(path) = &args.settings {
+        let settings = Settings::load(path);
+        if settings == Settings::default() {
+            bail!(
+                "{} is missing, empty, or not a settings file",
+                path.display()
+            );
+        }
+        let offered = Packages::load(&args.templates.join("packages.toml"))?;
+        let mut from_file = options.clone();
+        settings.apply_to(&mut from_file, &offered);
+        // Re-apply whichever flags the user actually typed.
+        let typed = Options::from(&args);
+        let defaults = Options::from(&Args::parse_from(["cozy-theme"]));
+        if typed.greeting != defaults.greeting {
+            from_file.greeting = typed.greeting;
+        }
+        if typed.adjust != defaults.adjust {
+            from_file.adjust = typed.adjust;
+        }
+        if !typed.with.is_empty() {
+            from_file.with = typed.with;
+        }
+        if !typed.patch_files.is_empty() {
+            from_file.patch_files = typed.patch_files;
+        }
+        if !typed.patch_dirs.is_empty() {
+            from_file.patch_dirs = typed.patch_dirs;
+        }
+        options = from_file;
+
+        // The file names its scheme; a path on the command line still wins.
+        if args.scheme.is_none() {
+            let name = settings
+                .theme
+                .clone()
+                .ok_or_else(|| eyre!("{} names no theme", path.display()))?;
+            options.scheme = cozy_theme::discover(&args.schemes)
+                .into_iter()
+                .find(|e| e.name == name)
+                .map(|e| e.path)
+                .ok_or_else(|| {
+                    eyre!(
+                        "{} wants the scheme {name:?}, which is not under {}",
+                        path.display(),
+                        args.schemes.display()
+                    )
+                })?;
+        }
+    }
+    if let (Some(name), Some(scheme)) = (&args.save_as, &args.scheme) {
+        let loaded = cozy_theme::Scheme::load(scheme)?;
+        let from = format!(
+            "Adapted from {:?} by {}.",
+            loaded.name.clone(),
+            loaded.author.clone()
+        );
+        let dir = args.schemes_dir.clone().unwrap_or_else(|| {
+            scheme
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+        });
+        let saved = loaded
+            .adjusted(options.adjust)
+            .save_as(&dir, name, Some(&from))?;
+        println!("saved {}", saved.display());
+        // The saved palette already carries the adjustments, so re-applying
+        // them would double every one of them.
+        options.scheme = saved;
+        options.adjust = cozy_theme::Adjust::default();
+    }
+
+    if args.scheme.is_some() || args.settings.is_some() {
+        println!("{}", cozy_theme::build(&options)?);
     } else if !args.install {
-        bail!("give a scheme to render, or --install to install what is already built");
+        bail!("give a scheme to render, --settings to render from a saved one, or --install to install what is already built");
     }
 
     if args.install {

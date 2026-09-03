@@ -16,6 +16,23 @@ use uuid::Uuid;
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser as YamlParser};
 use yaml_rust2::scanner::Marker;
 
+/// Whether a typed token looks like a package name.
+///
+/// Deliberately conservative: lowercase letters, digits, and the punctuation
+/// that appears in real registry names (`ca-certificates`, `procps-ng`,
+/// `libstdc++`). Anything else is a typo, a shell fragment, or a paste
+/// accident, and the page shows what it accepted so a rejection is visible.
+pub fn is_package_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_.+".contains(c))
+        && s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+pub mod settings;
+pub use settings::Settings;
+
 // ---------------------------------------------------------------------------
 // Colour
 // ---------------------------------------------------------------------------
@@ -340,6 +357,78 @@ impl Scheme {
         }
     }
 
+    /// This scheme as a base16 YAML file, in the current `palette:` format.
+    ///
+    /// Round-trips: `Scheme::load` of this output has the same palette. That is
+    /// what makes "save as" produce a *scheme* rather than an export — it lands
+    /// in `schemes/`, `discover` finds it, and `just theme <name>` takes it like
+    /// any other.
+    ///
+    /// `derived_from` names the scheme this was adapted from, when it was. The
+    /// original author stays in `author:` — the palette is derived from their
+    /// work — and the provenance goes in a comment above it, where it cannot be
+    /// mistaken for a claim about who made this.
+    #[must_use]
+    pub fn to_yaml(&self, derived_from: Option<&str>) -> String {
+        let mut out = String::new();
+        out.push_str("# Saved by the cozy wizard.\n");
+        if let Some(from) = derived_from {
+            let _ = writeln!(out, "# {from}");
+        }
+        out.push_str("#\n# Edit it by hand or re-open it in `just wizard`.\n\n");
+        let _ = writeln!(out, "system: \"base16\"");
+        let _ = writeln!(out, "name: {}", yaml_string(&self.name));
+        let _ = writeln!(out, "author: {}", yaml_string(&self.author));
+        // Advisory only — `load` decides the variant from the palette's own
+        // luma — but the format carries it and a reader expects to see it.
+        let _ = writeln!(out, "variant: \"{}\"", self.variant());
+        out.push_str("palette:\n");
+        for slot in SLOTS {
+            if let Some(c) = self.palette.get(slot) {
+                let _ = writeln!(out, "  {slot}: \"#{}\"", c.hex());
+            }
+        }
+        out
+    }
+
+    /// Write this scheme into `dir` as `<slug>.yaml`, under a name of the
+    /// user's choosing.
+    ///
+    /// Refuses to overwrite. A scheme file is the only copy of a palette
+    /// somebody tuned by hand, and "save as" is not a place to discover that
+    /// the name was taken — the caller reports the clash and asks again.
+    ///
+    /// # Errors
+    ///
+    /// If the name does not slugify to anything, if a file of that name already
+    /// exists, or if the write fails.
+    pub fn save_as(
+        &self,
+        dir: &Path,
+        display_name: &str,
+        derived_from: Option<&str>,
+    ) -> Result<PathBuf> {
+        let slug = slugify(display_name);
+        if slug.is_empty() {
+            bail!("{display_name:?} has no letters or digits to make a filename from");
+        }
+        let path = dir.join(format!("{slug}.yaml"));
+        if path.exists() {
+            bail!("{slug}.yaml already exists — pick another name");
+        }
+        let named = Scheme {
+            slug: slug.clone(),
+            name: display_name.trim().to_string(),
+            author: self.author.clone(),
+            is_dark: self.is_dark,
+            palette: self.palette.clone(),
+        };
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        fs::write(&path, named.to_yaml(derived_from))
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(path)
+    }
+
     /// The scheme's own body-text contrast: base05 on base00.
     pub fn body_contrast(&self) -> f64 {
         let get = |k: &str| {
@@ -591,7 +680,14 @@ impl Scheme {
     }
 }
 
-fn slugify(s: &str) -> String {
+/// A double-quoted YAML scalar. Scheme names come from a text field, so the
+/// quote and backslash cases are reachable rather than theoretical.
+fn yaml_string(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+pub fn slugify(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {
         if c.is_ascii_alphanumeric() {
@@ -742,6 +838,7 @@ impl Packages {
 /// Plain data rather than the CLI's `Args`, because the wizard builds one of
 /// these directly. Both front ends call the same `build`, so there is one
 /// definition of what rendering means and no command line in the middle of it.
+#[derive(Clone)]
 pub struct Options {
     pub scheme: PathBuf,
     pub templates: PathBuf,
@@ -1129,7 +1226,10 @@ pub fn loadout_patches(templates: &Path, loadout: &str, slug: &str) -> Result<Ve
         .collect())
 }
 
-pub fn build(args: &Options) -> Result<()> {
+/// Returns the one-line summary rather than printing it: the wizard calls this
+/// from inside the alternate screen, where a `println!` lands on the frame and
+/// then vanishes with it. The caller decides where the line goes.
+pub fn build(args: &Options) -> Result<String> {
     if !is_single_component(&args.loadout) {
         bail!(
             "--loadout {:?}: must be a single path component — no slashes, no `.` or `..`",
@@ -1238,15 +1338,14 @@ pub fn build(args: &Options) -> Result<()> {
     let body = render(&env, &toml_src.display().to_string(), &body, &vars, &scheme)?;
     write_file(&args.out.join(format!("{}.toml", args.loadout)), &body)?;
 
-    println!(
+    Ok(format!(
         "{} ({}, {}) -> {}/  [{} files]",
         scheme.name,
         scheme.slug,
         scheme.variant(),
         args.out.display(),
         written + 1
-    );
-    Ok(())
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1856,6 +1955,140 @@ palette:
 
     fn slot(s: &Scheme, k: &str) -> Rgb {
         s.palette[k]
+    }
+
+    #[test]
+    fn a_saved_scheme_loads_back_with_the_same_palette() {
+        // The property that makes "save as" produce a scheme rather than an
+        // export: `discover` finds it and `just theme <name>` takes it.
+        let s = dark().adjusted(Adjust {
+            contrast: 25,
+            comments: 40,
+            warmth: -15,
+            ..Adjust::default()
+        });
+        let dir = temp_dir().join("saved");
+        let path = s
+            .save_as(&dir, "My Scheme", Some("from Minimal Dark"))
+            .unwrap();
+        assert_eq!(path.file_name().unwrap(), "my-scheme.yaml");
+
+        let back = Scheme::load(&path).unwrap();
+        assert_eq!(back.palette, s.palette, "every slot must survive the trip");
+        assert_eq!(back.name, "My Scheme");
+        assert_eq!(back.slug, "my-scheme");
+        assert_eq!(
+            back.author, s.author,
+            "the original author keeps the credit"
+        );
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# from Minimal Dark"), "{text}");
+    }
+
+    #[test]
+    fn saving_refuses_to_overwrite() {
+        // A scheme file is the only copy of a palette somebody tuned by hand.
+        let s = dark();
+        let dir = temp_dir().join("no-clobber");
+        s.save_as(&dir, "Taken", None).unwrap();
+        let err = s.save_as(&dir, "Taken", None).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+        // And differently-spelled names that slugify the same still clash.
+        let err = s.save_as(&dir, "  taken  ", None).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+    }
+
+    #[test]
+    fn a_name_with_nothing_to_slugify_is_refused() {
+        let dir = temp_dir().join("empty-name");
+        let err = dark()
+            .save_as(&dir, "!!! ???", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no letters or digits"), "{err}");
+    }
+
+    #[test]
+    fn a_name_with_quotes_still_round_trips() {
+        // The name comes from a text field, so this is reachable rather than
+        // theoretical: an unescaped quote would produce a file that will not
+        // parse, and the failure would land on the next run.
+        let dir = temp_dir().join("quoted");
+        let path = dark()
+            .save_as(&dir, "Evan's \"weird\" theme", None)
+            .unwrap();
+        let back = Scheme::load(&path).unwrap();
+        assert_eq!(back.name, "Evan's \"weird\" theme");
+    }
+
+    #[test]
+    fn a_saved_scheme_takes_its_variant_from_its_own_palette() {
+        // `adjusted` pins is_dark so a mid-session tweak cannot flip
+        // `scheme_variant` under the templates. Saving ends that: the file is a
+        // scheme in its own right, and `load` decides the variant by luma like
+        // it does for every other scheme. Stated here because the two rules
+        // together are surprising if you only know one.
+        let mut s = dark();
+        assert!(s.is_dark);
+        s.palette.insert(
+            "base00".into(),
+            Rgb {
+                r: 250,
+                g: 250,
+                b: 250,
+            },
+        );
+        s.palette.insert(
+            "base05".into(),
+            Rgb {
+                r: 10,
+                g: 10,
+                b: 10,
+            },
+        );
+        let dir = temp_dir().join("variant");
+        let path = s.save_as(&dir, "Now Light", None).unwrap();
+        assert!(!Scheme::load(&path).unwrap().is_dark);
+    }
+
+    #[test]
+    fn the_library_never_writes_to_stdout() {
+        // The wizard calls `build` and `install` from inside the alternate
+        // screen. Anything printed there lands on the frame and then vanishes
+        // with it — which is exactly the stray output that got reported, from a
+        // `println!` right at the end of `build`. The summary is returned now,
+        // and the caller decides where it goes.
+        // The library proper, not the tests below — a test may print freely.
+        let src = include_str!("lib.rs");
+        let code_only = src.split("\n#[cfg(test)]").next().unwrap_or(src);
+        for (i, line) in code_only.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            for macro_name in ["println!", "print!", "eprintln!", "eprint!"] {
+                assert!(
+                    !code.contains(macro_name),
+                    "lib.rs:{}: {macro_name} — the library must not write to a \
+                     terminal it does not own",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_reports_what_it_wrote() {
+        // The other half: it has to *return* the line, or the CLI has nothing
+        // to print and the wizard has nothing to show.
+        let dir = temp_dir().join("build-report");
+        let report = build(&Options {
+            scheme: PathBuf::from("../../schemes/minimal-dark.yaml"),
+            templates: PathBuf::from("../../templates"),
+            out: dir.clone(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(report.contains("Minimal Dark"), "{report}");
+        assert!(report.contains("minimal-dark"), "{report}");
+        assert!(report.contains("files]"), "{report}");
     }
 
     #[test]

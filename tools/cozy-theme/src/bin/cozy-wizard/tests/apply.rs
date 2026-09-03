@@ -118,8 +118,8 @@ fn the_summary_reports_every_choice_but_the_fetch() {
 #[test]
 fn abort_is_the_only_action_that_discards_the_answers() {
     for (steps, action, saves) in [
-        (0, Action::GenerateAndInstall, true),
-        (1, Action::Generate, true),
+        (0, Action::Generate, true),
+        (1, Action::SaveAs, true),
         (2, Action::SaveOnly, true),
         (3, Action::Abort, false),
     ] {
@@ -195,21 +195,45 @@ fn the_settled_screen_says_how_to_leave() {
 }
 
 #[test]
-fn install_is_the_first_thing_offered() {
-    // It is the point of running the wizard; making it the second option
-    // means everyone arrows past the one they wanted.
+fn installing_is_ticked_by_default_and_space_toggles_it() {
+    // It is the point of running the wizard, so an untouched run should
+    // produce a usable session rather than a build/ directory.
+    let mut a = on_apply();
+    assert!(a.install);
+    let text = flatten(&render_app(&a, 100, 30));
+    assert!(text.contains("[x] install into"), "{text}");
+    assert!(
+        text.contains("Generate and install"),
+        "the action should say what it will do:\n{text}"
+    );
+
+    a.on_key(press(KeyCode::Char(' ')));
+    assert!(!a.install);
+    let text = flatten(&render_app(&a, 100, 30));
+    assert!(text.contains("[ ] install into"), "{text}");
+    assert!(
+        text.contains("Generate ") && !text.contains("Generate and install"),
+        "and so should the label:\n{text}"
+    );
+}
+
+#[test]
+fn the_tick_toggles_from_anywhere_on_the_page() {
+    // It is not a row, so which action is highlighted must not matter.
+    let mut a = on_apply();
+    for _ in 0..3 {
+        a.on_key(press(KeyCode::Down));
+    }
+    assert_eq!(a.action(), Action::Abort);
+    a.on_key(press(KeyCode::Char(' ')));
+    assert!(!a.install, "space should still reach the tick");
+    assert_eq!(a.action(), Action::Abort, "and not move the cursor");
+}
+
+#[test]
+fn generate_is_the_first_thing_offered() {
     let a = on_apply();
-    assert_eq!(a.action(), Action::GenerateAndInstall);
-    let rows = render_app(&a, 100, 30);
-    let install = rows
-        .iter()
-        .position(|r| r.contains("Generate and install"))
-        .unwrap();
-    let generate = rows
-        .iter()
-        .position(|r| r.contains("Generate") && !r.contains("install"))
-        .unwrap();
-    assert!(install < generate, "install should be listed first");
+    assert_eq!(a.action(), Action::Generate);
 }
 
 #[test]
@@ -218,8 +242,8 @@ fn the_cursor_clamps_at_both_ends_of_the_action_list() {
     a.on_key(press(KeyCode::Up));
     assert_eq!(
         a.action(),
-        Action::GenerateAndInstall,
-        "the cursor starts on install and up should stay there"
+        Action::Generate,
+        "the cursor starts on generate and up should stay there"
     );
     for _ in 0..10 {
         a.on_key(press(KeyCode::Down));
@@ -342,4 +366,162 @@ fn dump_frames() {
             println!("|{}|", row.trim_end());
         }
     }
+}
+
+// -- saving the settings to a file of their own ----------------------------
+
+#[test]
+fn save_as_opens_a_prompt_rather_than_writing_blind() {
+    let mut a = on_apply();
+    a.on_key(press(KeyCode::Down)); // "Save these settings to a file"
+    assert_eq!(a.action(), Action::SaveAs);
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.saving_settings.is_some());
+    assert!(!a.done, "the prompt should not end the run");
+
+    let text = flatten(&render_app(&a, 110, 34));
+    assert!(text.contains("Save these settings to"), "{text}");
+    assert!(text.contains("cozy-settings.toml"), "a suggestion:\n{text}");
+    assert!(
+        text.contains("cozy-theme --settings"),
+        "and what the file is for:\n{text}"
+    );
+}
+
+#[test]
+fn the_saved_file_rebuilds_the_same_loadout() {
+    // The claim the prompt makes, checked rather than asserted at the reader.
+    let out = temp_dir("settings-roundtrip");
+    std::fs::create_dir_all(&out).unwrap();
+    let path = out.join("mine.toml");
+
+    let mut a = on_apply();
+    a.on_key(press(KeyCode::Down));
+    a.on_key(press(KeyCode::Enter));
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, path.to_str().unwrap());
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.saving_settings.is_none(), "a good path should close it");
+    assert!(path.exists(), "expected {}", path.display());
+
+    let back = cozy_theme::Settings::load(&path);
+    assert_eq!(back, a.to_state(), "the file must hold every answer");
+    assert!(a.completed, "writing it counts as finishing the run");
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn saving_settings_refuses_to_overwrite_and_keeps_the_prompt_open() {
+    let out = temp_dir("settings-clobber");
+    std::fs::create_dir_all(&out).unwrap();
+    let path = out.join("taken.toml");
+    std::fs::write(&path, "theme = \"something\"\n").unwrap();
+
+    let mut a = on_apply();
+    a.on_key(press(KeyCode::Down));
+    a.on_key(press(KeyCode::Enter));
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, path.to_str().unwrap());
+    a.on_key(press(KeyCode::Enter));
+
+    assert!(a.saving_settings.is_some(), "the prompt stays open");
+    let text = flatten(&render_app(&a, 110, 34));
+    assert!(text.contains("already exists"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "theme = \"something\"\n",
+        "and the file is untouched"
+    );
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn esc_cancels_the_settings_prompt() {
+    let mut a = on_apply();
+    a.on_key(press(KeyCode::Down));
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Esc));
+    assert!(a.saving_settings.is_none());
+    assert!(!a.done, "cancelling returns to the actions");
+    assert_eq!(a.action(), Action::SaveAs);
+}
+
+#[test]
+fn q_is_a_letter_while_typing_a_settings_path() {
+    let mut a = on_apply();
+    a.on_key(press(KeyCode::Down));
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Char('q')));
+    assert!(!a.done, "q should be text here, not the quit key");
+    assert!(a.saving_settings.as_deref().unwrap_or("").ends_with('q'));
+}
+
+#[test]
+fn a_named_settings_file_is_what_the_run_starts_from() {
+    // The other half of "save as": handing it back to a later run.
+    let dir = temp_dir("settings-start");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("start.toml");
+    let saved = cozy_theme::Settings {
+        greeting: Some("legacy".into()),
+        extra: "emacs".into(),
+        contrast: Some(35),
+        ..cozy_theme::Settings::default()
+    };
+    saved.save(&path).unwrap();
+
+    let mut back = App::with_state(
+        PathBuf::from("../../schemes/vendor"),
+        cozy_theme::Settings::load(&path),
+    );
+    // Applied at construction, because neither depends on anything discovered
+    // later.
+    assert_eq!(back.adjust.contrast, 35);
+    assert_eq!(back.current_greeting(), Greeting::Legacy);
+    // The package field waits for its own page, which is where the list it
+    // belongs to gets loaded.
+    let templates = back.templates_dir();
+    crate::ui::packages::enter_packages(&mut back, &templates);
+    assert_eq!(back.extra, "emacs");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "prints frames to look at rather than asserting"]
+fn show_the_apply_screen() {
+    let mut a = on_apply();
+    println!("\n=== install ticked");
+    for line in render_app(&a, 96, 30) {
+        println!("|{}|", line.trim_end());
+    }
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Down));
+    a.on_key(press(KeyCode::Enter));
+    println!("\n=== unticked, save-settings prompt");
+    for line in render_app(&a, 96, 30) {
+        println!("|{}|", line.trim_end());
+    }
+}
+
+#[test]
+fn the_render_summary_lands_on_the_frame_not_on_stdout() {
+    // `build` used to `println!` its summary, which the wizard calls from
+    // inside the alternate screen — so the line painted over the frame and
+    // then vanished with it. It is returned now, and this is where it goes.
+    let out = temp_dir("report-frame");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut a = on_apply();
+    a.applied = Applied::Ok(run_generate_to(&a, Path::new("../.."), &out, false).unwrap());
+
+    let text = flatten(&render_app(&a, 110, 34));
+    assert!(
+        text.contains("files]"),
+        "the summary should be visible on the last frame:\n{text}"
+    );
+    assert!(text.contains("0x96f"), "naming what was rendered:\n{text}");
+    let _ = std::fs::remove_dir_all(&out);
 }

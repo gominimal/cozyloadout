@@ -84,10 +84,26 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 | **Detach** | the leader and detach chords, checked against the rules minimal enforces |
 | **Resources** | how many cores and how much memory the microVM gets, within minvmd's own limits |
 
-It ends with a summary and four choices: generate and install, generate only,
-save your answers without building, or abort. `esc` goes back a screen from
-anywhere, and your answers are remembered in a gitignored `.cozy-wizard.toml`
-so the next run starts where you left off.
+It ends with a summary, a tick for whether to install (on by default, `space`
+toggles), and four choices: generate, save these settings to a file, save and
+exit, or abort. `esc` goes back a screen from anywhere, and your answers are
+remembered in a gitignored `.cozy-wizard.toml` so the next run starts where you
+left off.
+
+### Settings files
+
+That file is portable. Save one under a name of your own — from the last screen,
+or with `just wizard --settings mine.toml` — and it describes the whole loadout:
+scheme, adjustments, greeting, packages, patches. Rebuild from it anywhere,
+without the interface:
+
+```shell
+cozy-theme --settings mine.toml              # render exactly what it records
+cozy-theme --settings mine.toml --greeting none   # …with one answer changed
+```
+
+It's worth committing to a dotfiles repo; the automatic one isn't, which is why
+it's gitignored.
 
 The last two screens configure **minimal itself, not the loadout** — they write
 `~/.config/minimal/config.toml` and run `minvmd config set`, and they apply to
@@ -146,6 +162,10 @@ If one of your files collides with a config the loadout ships, **yours wins** an
 The wizard shows the WCAG contrast ratio for body text as you turn them, with a pass mark at 4.5:1. There's no hue control on purpose: `base08` is red because errors are red, and rotating it would make them green.
 
 An adjusted scheme is written under its own name — `gruvbox-dark-medium-224a` — so it never overwrites the theme files of the scheme it came from.
+
+Adjustments belong to the scheme you made them against: moving to a different scheme in the list clears them, and they're remembered between runs along with the scheme itself.
+
+To keep one, press `s` (or pass `--save-as "My Theme"`). It writes `schemes/my-theme.yaml` with the adjustments baked in — a scheme of its own, so `just theme my-theme` picks it up and the knobs go back to zero.
 
 ## Choosing a scheme
 
