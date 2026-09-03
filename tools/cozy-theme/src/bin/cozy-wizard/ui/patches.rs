@@ -245,3 +245,17 @@ pub fn enter_patches(app: &mut App) {
     app.picker_focus = 0;
     app.screen = Screen::Patches;
 }
+
+// --- footer ---------------------------------------------------------------
+
+/// The keys this screen answers to, for the footer.
+pub fn hints(_app: &App) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("↑/↓", "move"),
+        ("←/→", "in/out"),
+        ("space", "choose"),
+        ("tab", "files/dirs"),
+        ("esc", "back"),
+        ("enter", "done"),
+    ]
+}

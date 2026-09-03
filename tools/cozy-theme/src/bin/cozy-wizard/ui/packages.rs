@@ -293,3 +293,20 @@ pub fn enter_packages(app: &mut App, templates: &Path) {
     app.package_top = 0;
     app.screen = Screen::Packages;
 }
+
+// --- footer ---------------------------------------------------------------
+
+/// The keys this screen answers to, for the footer.
+pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.focus == Focus::Input {
+        return vec![("type", "package names"), ("enter/esc", "back to the list")];
+    }
+    vec![
+        ("↑/↓", "move"),
+        ("space", "toggle"),
+        ("a/n", "all/none"),
+        ("i", "add by name"),
+        ("esc", "back"),
+        ("enter", "done"),
+    ]
+}

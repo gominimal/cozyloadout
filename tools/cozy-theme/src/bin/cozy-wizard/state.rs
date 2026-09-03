@@ -49,6 +49,16 @@ pub struct State {
     pub forward: Option<String>,
     pub bell_on_leader: Option<bool>,
 
+    /// The six scheme adjustments, each a percentage in -100..=100. Stored
+    /// flat rather than as a nested table so a value the wizard later stops
+    /// accepting reads back as "unset" instead of failing the whole file.
+    pub contrast: Option<i8>,
+    pub saturation: Option<i8>,
+    pub comments: Option<i8>,
+    pub separation: Option<i8>,
+    pub background: Option<i8>,
+    pub warmth: Option<i8>,
+
     /// The VM allocation. Re-checked against the host on load — this file
     /// travels with the checkout, and a pick from a bigger machine must not
     /// propose a VM this one cannot boot.

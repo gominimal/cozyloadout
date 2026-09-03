@@ -7,7 +7,7 @@
 
 use clap::Parser;
 use color_eyre::eyre::{bail, eyre, Result};
-use cozy_theme::Options;
+use cozy_theme::{Adjust, Options};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -59,6 +59,43 @@ struct Args {
     /// Where loadouts live. Defaults to ~/.config/minimal/loadouts.
     #[arg(long)]
     loadouts: Option<PathBuf>,
+
+    // Scheme adjustments. Each is a percentage in -100..=100 and each defaults
+    // to 0, which is the identity — the wizard's adjustment screen sets the
+    // same six values, so nothing is reachable only through the interface.
+    /// Push the surface and foreground ramps apart (-100..=100)
+    #[arg(long, allow_negative_numbers = true, default_value_t = 0, value_parser = pct)]
+    contrast: i8,
+
+    /// Pull the eight accents toward or away from grey (-100..=100)
+    #[arg(long, allow_negative_numbers = true, default_value_t = 0, value_parser = pct)]
+    saturation: i8,
+
+    /// Move base03 — comments — toward the foreground or the background (-100..=100)
+    #[arg(long, allow_negative_numbers = true, default_value_t = 0, value_parser = pct)]
+    comments: i8,
+
+    /// Spread base01 and base02 apart, so a selection reads (-100..=100)
+    #[arg(long, allow_negative_numbers = true, default_value_t = 0, value_parser = pct)]
+    separation: i8,
+
+    /// Deepen the background away from the scheme, or lift it (-100..=100)
+    #[arg(long, allow_negative_numbers = true, default_value_t = 0, value_parser = pct)]
+    background: i8,
+
+    /// A warm or cool cast over every slot (-100..=100)
+    #[arg(long, allow_negative_numbers = true, default_value_t = 0, value_parser = pct)]
+    warmth: i8,
+}
+
+/// Percentages are bounded so an out-of-range value is refused at the command
+/// line rather than silently clamped somewhere in the middle of a render.
+fn pct(s: &str) -> Result<i8, String> {
+    let v: i32 = s.parse().map_err(|_| format!("{s:?} is not a number"))?;
+    i8::try_from(v)
+        .ok()
+        .filter(|v| (-100..=100).contains(v))
+        .ok_or_else(|| format!("{v} is outside -100..=100"))
 }
 
 impl From<&Args> for Options {
@@ -72,6 +109,14 @@ impl From<&Args> for Options {
             with: a.with.clone(),
             patch_files: a.patch_files.clone(),
             patch_dirs: a.patch_dirs.clone(),
+            adjust: Adjust {
+                contrast: a.contrast,
+                saturation: a.saturation,
+                comments: a.comments,
+                separation: a.separation,
+                background: a.background,
+                warmth: a.warmth,
+            },
             ..Options::default()
         }
     }

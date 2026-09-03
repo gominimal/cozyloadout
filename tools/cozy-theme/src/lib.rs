@@ -81,6 +81,277 @@ pub fn mix(fg: Rgb, bg: Rgb, pct: f64) -> Rgb {
     }
 }
 
+/// WCAG contrast ratio between two colours, `1.0`..`21.0`.
+///
+/// The readable form of the same luminance the variant is decided from. 4.5 is
+/// the AA threshold for body text, which is the number the adjustment screen
+/// holds itself to.
+pub fn contrast_ratio(a: Rgb, b: Rgb) -> f64 {
+    let (hi, lo) = {
+        let (x, y) = (a.luminance(), b.luminance());
+        if x >= y {
+            (x, y)
+        } else {
+            (y, x)
+        }
+    };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Per-channel luma of a gamma-encoded colour, used as the grey a saturation
+/// adjustment pivots around.
+///
+/// Deliberately *not* [`Rgb::luminance`]: that linearises first, which is right
+/// for judging contrast and wrong for pulling a colour toward its own grey —
+/// linear-light desaturation darkens midtones visibly. Image editors pivot on
+/// the gamma-encoded luma, and so does this.
+fn luma8(c: Rgb) -> f64 {
+    0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn clamp8(v: f64) -> u8 {
+    v.round().clamp(0.0, 255.0) as u8
+}
+
+/// Scale each channel away from (or toward) a pivot channel.
+fn spread(c: Rgb, pivot: Rgb, k: f64) -> Rgb {
+    let ch = |v: u8, p: u8| clamp8(f64::from(p) + (f64::from(v) - f64::from(p)) * k);
+    Rgb {
+        r: ch(c.r, pivot.r),
+        g: ch(c.g, pivot.g),
+        b: ch(c.b, pivot.b),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Adjustments
+// ---------------------------------------------------------------------------
+
+/// Six adjustments applied to a scheme's sixteen slots.
+///
+/// Every field is a percentage in `-100..=100`, and **all-zero is the identity**
+/// — an unadjusted scheme renders byte-for-byte what it always did. That is the
+/// property `an_untouched_adjustment_changes_nothing` holds, and it is what
+/// lets these be plumbed through the renderer unconditionally.
+///
+/// These are deliberately not generic image filters. A scheme is sixteen slots
+/// with assigned meaning — base00–03 surface, base04–07 foreground, base08–0F
+/// accents — so each control acts on the slots it is *about* and leaves the
+/// rest alone. That is also why there is no hue rotation: base08 is red because
+/// error messages are red, and turning it green would be wrong rather than
+/// merely ugly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Adjust {
+    /// Pushes the surface and foreground ramps apart around their midpoint.
+    pub contrast: i8,
+    /// Pulls the eight accents toward or away from their own grey. Leaves the
+    /// greyscale ramp alone, where saturation has nothing to act on.
+    pub saturation: i8,
+    /// Moves base03 — comments — toward the foreground or back into the
+    /// background. The slot schemes most often make unreadable.
+    pub comments: i8,
+    /// Spreads base01 and base02 apart, or collapses them together. Two slots
+    /// many schemes leave nearly identical, which is what makes a selection
+    /// invisible against a surface.
+    pub separation: i8,
+    /// Deepens the background away from the rest of the scheme, or lifts it
+    /// toward the surface. base01–03 follow at a decaying rate so the ramp
+    /// keeps its shape instead of collapsing onto the new floor.
+    pub background: i8,
+    /// A warm or cool cast over every slot.
+    pub warmth: i8,
+}
+
+/// How far `background` may push base00, as a fraction of the distance to its
+/// target. A full slider that reached the target outright would erase the
+/// background into either pure black or the surface above it.
+const BACKGROUND_REACH: f64 = 0.6;
+
+/// The same, for `separation`: base01 and base02 slide along the ramp rather
+/// than all the way onto their neighbours.
+const SEPARATION_REACH: f64 = 0.5;
+
+/// Channel shift at full `warmth`, out of 255. Enough to read as a cast,
+/// not enough to recolour anything.
+const WARMTH_REACH: f64 = 24.0;
+
+impl Adjust {
+    /// Whether this would change anything.
+    pub fn is_identity(self) -> bool {
+        self == Self::default()
+    }
+
+    /// A short stable token naming this adjustment, for the slug.
+    ///
+    /// Generated theme files are named after the scheme — `bat/themes/<slug>.tmTheme`,
+    /// `zellij/themes/<slug>.kdl` — and the .tmTheme UUID is derived from the
+    /// slug too, which Sublime keys themes by. Two different adjustments of one
+    /// scheme therefore have to be two different slugs, or the second silently
+    /// overwrites the first and inherits its UUID.
+    ///
+    /// FNV-1a over the six values: it only has to be deterministic and short,
+    /// and it is never parsed back.
+    pub fn token(self) -> String {
+        let mut h: u32 = 0x811c_9dc5;
+        for b in [
+            self.contrast,
+            self.saturation,
+            self.comments,
+            self.separation,
+            self.background,
+            self.warmth,
+        ] {
+            h ^= u32::from(b.to_le_bytes()[0]);
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        format!("{:04x}", h & 0xffff)
+    }
+}
+
+impl Scheme {
+    /// This scheme with the adjustments applied.
+    ///
+    /// The order is deliberate: the global control runs first and the targeted
+    /// ones override it, so "lift the comments" is not silently undone by a
+    /// contrast change, and warmth is a cast over the finished result.
+    ///
+    /// **`is_dark` is carried over, never recomputed.** It is derived by
+    /// comparing background and foreground luminance, and it selects
+    /// `scheme_variant`, which decides `duf --theme` and every `{% if dark %}`
+    /// branch in the templates. An adjustment that nudged a scheme across that
+    /// line would silently rewrite unrelated config, so the variant is the
+    /// unadjusted scheme's answer and stays that way.
+    #[must_use]
+    pub fn adjusted(&self, knobs: Adjust) -> Scheme {
+        let mut out = self.palette.clone();
+        let get = |pal: &BTreeMap<String, Rgb>, k: &str| {
+            pal.get(k).copied().unwrap_or(Rgb { r: 0, g: 0, b: 0 })
+        };
+        let pct = |v: i8| f64::from(v) / 100.0;
+
+        // Contrast: everything moves away from the midpoint of the greyscale
+        // ramp's two ends, which keeps the scheme's colour cast rather than
+        // pivoting on a neutral grey it never contained.
+        if knobs.contrast != 0 {
+            let pivot = mix(get(&out, "base00"), get(&out, "base07"), 50.0);
+            let k = 1.0 + pct(knobs.contrast);
+            for slot in SLOTS {
+                let c = get(&out, slot);
+                out.insert(slot.to_string(), spread(c, pivot, k));
+            }
+        }
+
+        // Background: base00 toward the extreme end (deeper) or the surface
+        // above it (lifted), with base01–03 following at a halving rate.
+        if knobs.background != 0 {
+            let extreme = if self.is_dark {
+                Rgb { r: 0, g: 0, b: 0 }
+            } else {
+                Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                }
+            };
+            let target = if knobs.background < 0 {
+                extreme
+            } else {
+                get(&out, "base01")
+            };
+            let reach = pct(knobs.background).abs() * BACKGROUND_REACH * 100.0;
+            for (i, slot) in ["base00", "base01", "base02", "base03"].iter().enumerate() {
+                #[allow(clippy::cast_possible_truncation)]
+                let follow = reach / f64::from(1_u32 << u32::try_from(i).unwrap_or(0));
+                let c = get(&out, slot);
+                out.insert((*slot).to_string(), mix(target, c, follow));
+            }
+        }
+
+        // Separation: base01 slides toward the background and base02 toward the
+        // foreground, or the two converge on each other.
+        if knobs.separation != 0 {
+            let reach = pct(knobs.separation).abs() * SEPARATION_REACH * 100.0;
+            let (t1, t2) = if knobs.separation > 0 {
+                (get(&out, "base00"), get(&out, "base04"))
+            } else {
+                (get(&out, "base02"), get(&out, "base01"))
+            };
+            let (c1, c2) = (get(&out, "base01"), get(&out, "base02"));
+            out.insert("base01".into(), mix(t1, c1, reach));
+            out.insert("base02".into(), mix(t2, c2, reach));
+        }
+
+        // Comments: base03 toward the foreground, or back into the background.
+        if knobs.comments != 0 {
+            let target = if knobs.comments > 0 {
+                get(&out, "base05")
+            } else {
+                get(&out, "base00")
+            };
+            let c = get(&out, "base03");
+            out.insert(
+                "base03".into(),
+                mix(target, c, pct(knobs.comments).abs() * 100.0),
+            );
+        }
+
+        // Saturation: the accents only, pivoting on each colour's own grey.
+        if knobs.saturation != 0 {
+            let k = 1.0 + pct(knobs.saturation);
+            for slot in &SLOTS[8..] {
+                let c = get(&out, slot);
+                let g = clamp8(luma8(c));
+                let grey = Rgb { r: g, g, b: g };
+                out.insert((*slot).to_string(), spread(c, grey, k));
+            }
+        }
+
+        // Warmth: a cast over everything, red and blue in opposition.
+        if knobs.warmth != 0 {
+            let shift = pct(knobs.warmth) * WARMTH_REACH;
+            for slot in SLOTS {
+                let c = get(&out, slot);
+                out.insert(
+                    slot.to_string(),
+                    Rgb {
+                        r: clamp8(f64::from(c.r) + shift),
+                        g: c.g,
+                        b: clamp8(f64::from(c.b) - shift),
+                    },
+                );
+            }
+        }
+
+        let (slug, name) = if knobs.is_identity() {
+            (self.slug.clone(), self.name.clone())
+        } else {
+            (
+                format!("{}-{}", self.slug, knobs.token()),
+                format!("{} (adjusted)", self.name),
+            )
+        };
+        Scheme {
+            slug,
+            name,
+            author: self.author.clone(),
+            is_dark: self.is_dark,
+            palette: out,
+        }
+    }
+
+    /// The scheme's own body-text contrast: base05 on base00.
+    pub fn body_contrast(&self) -> f64 {
+        let get = |k: &str| {
+            self.palette
+                .get(k)
+                .copied()
+                .unwrap_or(Rgb { r: 0, g: 0, b: 0 })
+        };
+        contrast_ratio(get("base05"), get("base00"))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Scheme
 // ---------------------------------------------------------------------------
@@ -488,6 +759,9 @@ pub struct Options {
     /// Defaults to `$HOME`; set explicitly so tests do not depend on the
     /// machine they run on.
     pub home: PathBuf,
+    /// Adjustments applied to the scheme before anything is rendered.
+    /// `Adjust::default()` is the identity, so this is free to be unconditional.
+    pub adjust: Adjust,
 }
 
 impl Default for Options {
@@ -502,6 +776,7 @@ impl Default for Options {
             patch_files: Vec::new(),
             patch_dirs: Vec::new(),
             home: std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
+            adjust: Adjust::default(),
         }
     }
 }
@@ -862,7 +1137,10 @@ pub fn build(args: &Options) -> Result<()> {
         );
     }
 
-    let scheme = Scheme::load(&args.scheme)?;
+    // Adjusted once, here, so everything downstream — the manifest, the slug
+    // the theme files are named after, the .tmTheme UUID — sees one scheme and
+    // cannot disagree about which.
+    let scheme = Scheme::load(&args.scheme)?.adjusted(args.adjust);
     let entries = parse_manifest(&args.templates.join("manifest.toml"))?;
     let packages = Packages::load(&args.templates.join("packages.toml"))?;
     let selected = resolve_packages(&args.with, &packages);
@@ -1568,6 +1846,337 @@ palette:
             &CURRENT.replace(r##"base00: "#141414""##, r##"base00: "#f5f5f5""##),
         );
         assert!(!s.is_dark, "luma should override the declared variant");
+    }
+
+    // -- adjustments -------------------------------------------------------
+
+    fn dark() -> Scheme {
+        scheme_for("minimal-dark", CURRENT)
+    }
+
+    fn slot(s: &Scheme, k: &str) -> Rgb {
+        s.palette[k]
+    }
+
+    #[test]
+    fn an_untouched_adjustment_changes_nothing() {
+        // The property everything else rests on: the six controls are plumbed
+        // through the renderer unconditionally, so all-zero has to be the
+        // identity or every unadjusted scheme drifts.
+        let s = dark();
+        let out = s.adjusted(Adjust::default());
+        assert_eq!(out.palette, s.palette);
+        assert_eq!(out.slug, s.slug, "and the slug must not gain a suffix");
+        assert_eq!(out.name, s.name);
+        assert!(Adjust::default().is_identity());
+    }
+
+    #[test]
+    fn contrast_pushes_the_ramp_apart_and_negative_contrast_pulls_it_together() {
+        let s = dark();
+        let (bg0, fg0) = (slot(&s, "base00"), slot(&s, "base05"));
+        let up = s.adjusted(Adjust {
+            contrast: 50,
+            ..Adjust::default()
+        });
+        assert!(
+            contrast_ratio(slot(&up, "base05"), slot(&up, "base00")) > contrast_ratio(fg0, bg0),
+            "more contrast should mean a higher ratio"
+        );
+        let down = s.adjusted(Adjust {
+            contrast: -50,
+            ..Adjust::default()
+        });
+        assert!(
+            contrast_ratio(slot(&down, "base05"), slot(&down, "base00")) < contrast_ratio(fg0, bg0)
+        );
+    }
+
+    #[test]
+    fn saturation_moves_the_accents_and_leaves_the_greyscale_alone() {
+        // The reason it is "accent saturation" and not "saturation": pulling
+        // base00-07 toward their own grey does nothing useful and quietly
+        // tints the surface when the ramp is not perfectly neutral.
+        let s = dark();
+        let out = s.adjusted(Adjust {
+            saturation: -100,
+            ..Adjust::default()
+        });
+        for grey in &SLOTS[..8] {
+            assert_eq!(slot(&out, grey), slot(&s, grey), "{grey} should not move");
+        }
+        let red = slot(&out, "base08");
+        assert_eq!(red.r, red.g, "fully desaturated accents are grey");
+        assert_eq!(red.g, red.b);
+    }
+
+    #[test]
+    fn full_saturation_leaves_a_grey_accent_grey() {
+        // A scheme whose accent is already neutral has no saturation to scale;
+        // the pivot is the colour itself, so it must come back unchanged.
+        let mut s = dark();
+        s.palette.insert(
+            "base08".into(),
+            Rgb {
+                r: 90,
+                g: 90,
+                b: 90,
+            },
+        );
+        let out = s.adjusted(Adjust {
+            saturation: 100,
+            ..Adjust::default()
+        });
+        assert_eq!(
+            slot(&out, "base08"),
+            Rgb {
+                r: 90,
+                g: 90,
+                b: 90
+            }
+        );
+    }
+
+    #[test]
+    fn comments_move_between_the_background_and_the_foreground() {
+        let s = dark();
+        let base = contrast_ratio(slot(&s, "base03"), slot(&s, "base00"));
+        let up = s.adjusted(Adjust {
+            comments: 60,
+            ..Adjust::default()
+        });
+        assert!(
+            contrast_ratio(slot(&up, "base03"), slot(&up, "base00")) > base,
+            "lifting comments should make them easier to read"
+        );
+        let down = s.adjusted(Adjust {
+            comments: -60,
+            ..Adjust::default()
+        });
+        assert!(contrast_ratio(slot(&down, "base03"), slot(&down, "base00")) < base);
+        // And only that slot moves.
+        for other in SLOTS.iter().filter(|k| **k != "base03") {
+            assert_eq!(slot(&up, other), slot(&s, other), "{other}");
+        }
+    }
+
+    #[test]
+    fn comments_at_full_lift_reach_the_foreground() {
+        let s = dark();
+        let out = s.adjusted(Adjust {
+            comments: 100,
+            ..Adjust::default()
+        });
+        assert_eq!(slot(&out, "base03"), slot(&s, "base05"));
+    }
+
+    #[test]
+    fn separation_spreads_the_two_surface_slots_and_negative_collapses_them() {
+        let s = dark();
+        let gap = |x: &Scheme| contrast_ratio(slot(x, "base01"), slot(x, "base02"));
+        let before = gap(&s);
+        let wide = s.adjusted(Adjust {
+            separation: 80,
+            ..Adjust::default()
+        });
+        assert!(gap(&wide) > before, "selection should become visible");
+        let tight = s.adjusted(Adjust {
+            separation: -80,
+            ..Adjust::default()
+        });
+        assert!(gap(&tight) < before);
+    }
+
+    #[test]
+    fn separation_helps_even_when_the_two_slots_start_identical() {
+        // The case the control exists for. A pivot-and-spread would be a no-op
+        // here, which is why each slot moves toward a *neighbour* instead.
+        let mut s = dark();
+        let same = slot(&s, "base01");
+        s.palette.insert("base02".into(), same);
+        let out = s.adjusted(Adjust {
+            separation: 100,
+            ..Adjust::default()
+        });
+        assert_ne!(
+            slot(&out, "base01"),
+            slot(&out, "base02"),
+            "identical surfaces must still come apart"
+        );
+    }
+
+    #[test]
+    fn background_deepens_or_lifts_and_the_ramp_follows_without_collapsing() {
+        let s = dark();
+        let deep = s.adjusted(Adjust {
+            background: -100,
+            ..Adjust::default()
+        });
+        assert!(
+            slot(&deep, "base00").luminance() < slot(&s, "base00").luminance(),
+            "a dark scheme should get darker"
+        );
+        let lift = s.adjusted(Adjust {
+            background: 100,
+            ..Adjust::default()
+        });
+        assert!(slot(&lift, "base00").luminance() > slot(&s, "base00").luminance());
+
+        // base01 follows, but not as far — otherwise the ramp lands flat.
+        // Measured as the *fraction* of the distance travelled, on the
+        // gamma-encoded luma: relative luminance is nonlinear, so the same
+        // proportional move reads as a larger delta higher up the ramp.
+        let moved = |k: &str| {
+            let before = luma8(slot(&s, k));
+            (before - luma8(slot(&deep, k))) / before
+        };
+        assert!(
+            moved("base01") < moved("base00"),
+            "base01 should follow at a lower rate: {} vs {}",
+            moved("base01"),
+            moved("base00")
+        );
+        assert_ne!(
+            slot(&deep, "base00"),
+            slot(&deep, "base01"),
+            "the ramp must not collapse onto the new floor"
+        );
+    }
+
+    #[test]
+    fn background_deepening_goes_the_other_way_for_a_light_scheme() {
+        // "Deeper" means further from the text, which is lighter here.
+        let mut s = dark();
+        // A light scheme is the ramp the other way up. Not pure white, so
+        // "deeper" has somewhere left to go.
+        for (k, v) in [
+            ("base00", 242_u8),
+            ("base01", 226),
+            ("base05", 20),
+            ("base07", 0),
+        ] {
+            s.palette.insert(k.into(), Rgb { r: v, g: v, b: v });
+        }
+        s.is_dark = false;
+        let deep = s.adjusted(Adjust {
+            background: -100,
+            ..Adjust::default()
+        });
+        assert!(slot(&deep, "base00").luminance() > slot(&s, "base00").luminance());
+    }
+
+    #[test]
+    fn warmth_casts_red_one_way_and_blue_the_other() {
+        let s = dark();
+        let warm = s.adjusted(Adjust {
+            warmth: 100,
+            ..Adjust::default()
+        });
+        let cool = s.adjusted(Adjust {
+            warmth: -100,
+            ..Adjust::default()
+        });
+        let mid = slot(&s, "base05");
+        assert!(slot(&warm, "base05").r >= mid.r && slot(&warm, "base05").b <= mid.b);
+        assert!(slot(&cool, "base05").r <= mid.r && slot(&cool, "base05").b >= mid.b);
+        assert_eq!(
+            slot(&warm, "base05").g,
+            mid.g,
+            "green is the axis, not a target"
+        );
+    }
+
+    #[test]
+    fn the_variant_is_never_recomputed_from_an_adjusted_palette() {
+        // An adjustment that crossed the luma line would flip scheme_variant,
+        // which decides `duf --theme` and every `{% if dark %}` branch. Silently
+        // rewriting unrelated config is the one outcome worth ruling out.
+        let s = dark();
+        assert!(s.is_dark);
+        let flipped = s.adjusted(Adjust {
+            contrast: -100,
+            background: 100,
+            ..Adjust::default()
+        });
+        assert!(flipped.is_dark, "the variant must survive any adjustment");
+        assert_eq!(flipped.variant(), "dark");
+    }
+
+    #[test]
+    fn every_channel_stays_in_gamut_at_the_extremes() {
+        // Everything downstream reads 6-digit hex; a channel that wrapped or
+        // saturated wrongly would still *parse*, so this is worth stating.
+        let s = dark();
+        for v in [-100_i8, -50, 50, 100] {
+            let a = Adjust {
+                contrast: v,
+                saturation: v,
+                comments: v,
+                separation: v,
+                background: v,
+                warmth: v,
+            };
+            let out = s.adjusted(a);
+            for k in SLOTS {
+                assert_eq!(out.palette[k].hex().len(), 6, "{k} at {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_adjusted_scheme_gets_its_own_slug_and_uuid() {
+        // Theme files are named after the slug and the .tmTheme UUID is derived
+        // from it, so an adjusted scheme sharing a slug would overwrite the
+        // stock one's files and inherit its UUID.
+        let s = dark();
+        let a = Adjust {
+            contrast: 20,
+            ..Adjust::default()
+        };
+        let out = s.adjusted(a);
+        assert_ne!(out.slug, s.slug);
+        assert!(out.slug.starts_with(&s.slug), "{}", out.slug);
+        assert_ne!(out.uuid(), s.uuid());
+        assert!(out.name.ends_with("(adjusted)"), "{}", out.name);
+    }
+
+    #[test]
+    fn different_adjustments_get_different_slugs_and_the_same_one_is_stable() {
+        let s = dark();
+        let a = Adjust {
+            contrast: 20,
+            ..Adjust::default()
+        };
+        let b = Adjust {
+            contrast: 21,
+            ..Adjust::default()
+        };
+        assert_ne!(s.adjusted(a).slug, s.adjusted(b).slug);
+        assert_eq!(s.adjusted(a).slug, s.adjusted(a).slug, "must be stable");
+    }
+
+    #[test]
+    fn body_contrast_reads_the_slots_the_screen_reports() {
+        let s = dark();
+        assert!(
+            (s.body_contrast() - contrast_ratio(slot(&s, "base05"), slot(&s, "base00"))).abs()
+                < 1e-9
+        );
+        // And the ratio itself is the WCAG one: black on white is 21:1.
+        let (b, w) = (
+            Rgb { r: 0, g: 0, b: 0 },
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+        );
+        assert!((contrast_ratio(b, w) - 21.0).abs() < 0.01);
+        assert!(
+            (contrast_ratio(w, b) - 21.0).abs() < 0.01,
+            "order must not matter"
+        );
+        assert!((contrast_ratio(b, b) - 1.0).abs() < 1e-9);
     }
 
     #[test]
