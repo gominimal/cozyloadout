@@ -132,3 +132,20 @@ pub fn on_key_schemes(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 }
+
+// --- footer ---------------------------------------------------------------
+
+/// The keys this screen answers to, for the footer.
+pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    // A finished fetch has nothing left to answer; the only thing to do
+    // is read the result and move on.
+    if matches!(app.fetch, Fetch::Done(_) | Fetch::Failed(_)) {
+        return vec![("enter", "continue"), ("q", "quit")];
+    }
+    vec![
+        ("←/→", "yes/no"),
+        ("enter", "confirm"),
+        ("esc", "back"),
+        ("q", "quit"),
+    ]
+}

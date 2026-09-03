@@ -162,3 +162,16 @@ pub fn on_key_resources(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 }
+
+// --- footer ---------------------------------------------------------------
+
+/// The keys this screen answers to, for the footer.
+pub fn hints(_app: &App) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("↑/↓", "cores/memory"),
+        ("←/→", "adjust"),
+        ("r", "reset"),
+        ("esc", "back"),
+        ("enter", "done"),
+    ]
+}

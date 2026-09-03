@@ -44,14 +44,19 @@ pub fn draw_greeting(frame: &mut Frame, inner: Rect, app: &App) {
         .collect();
     frame.render_widget(List::new(items), list_area);
 
-    draw_greeting_preview(frame, preview_area, app.current_greeting());
+    draw_greeting_preview(
+        frame,
+        preview_area,
+        app.current_greeting(),
+        &app.bindings.hint(),
+    );
 }
 
 /// The selected greeting as fish will print it.
 ///
 /// Unstyled on purpose: this is the user judging their own font, so it renders
 /// in the terminal's own foreground rather than in colours chosen here.
-pub fn draw_greeting_preview(frame: &mut Frame, area: Rect, greeting: Greeting) {
+pub fn draw_greeting_preview(frame: &mut Frame, area: Rect, greeting: Greeting, detach: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -71,7 +76,7 @@ pub fn draw_greeting_preview(frame: &mut Frame, area: Rect, greeting: Greeting) 
         }
         lines.push(Line::from(vec![
             Span::raw("Welcome to minimal! "),
-            Span::styled(DETACH_FALLBACK, Style::default().fg(Color::Cyan)),
+            Span::styled(detach.to_string(), Style::default().fg(Color::Cyan)),
             Span::raw(" to detach"),
         ]));
     } else {
@@ -101,4 +106,11 @@ pub fn on_key_greeting(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
+}
+
+// --- footer ---------------------------------------------------------------
+
+/// The keys this screen answers to, for the footer.
+pub fn hints(_app: &App) -> Vec<(&'static str, &'static str)> {
+    vec![("↑/↓", "move"), ("enter", "choose"), ("q", "quit")]
 }

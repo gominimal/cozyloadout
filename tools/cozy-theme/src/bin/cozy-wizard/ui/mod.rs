@@ -48,98 +48,36 @@ pub fn draw(frame: &mut Frame, app: &App) {
     );
 }
 
+/// The key hints along the bottom, from whichever screen is up.
+///
+/// Each screen module answers for its own keys — the same reason it owns its
+/// own `on_key`. A hint list that lived here would be a second place to
+/// remember when a binding changes, which is exactly how a footer starts
+/// advertising keys that no longer work.
 pub fn footer_hints(app: &App) -> Vec<Span<'static>> {
-    let hint = |k: &'static str, what: &'static str| {
-        vec![
-            Span::styled(k, Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!(" {what}  ")),
-        ]
-    };
-    if app.busy() {
-        return hint("q", "cancel");
-    }
-    match app.screen {
-        Screen::Greeting => [
-            hint("↑/↓", "move"),
-            hint("enter", "choose"),
-            hint("q", "quit"),
-        ]
-        .concat(),
-        Screen::Schemes => match app.fetch {
-            Fetch::Done(_) | Fetch::Failed(_) => {
-                [hint("enter", "continue"), hint("q", "quit")].concat()
-            }
-            _ => [
-                hint("←/→", "yes/no"),
-                hint("enter", "confirm"),
-                hint("esc", "back"),
-                hint("q", "quit"),
-            ]
-            .concat(),
-        },
-        Screen::Themes => [
-            hint("↑/↓", "browse"),
-            hint("pgup/pgdn", "page"),
-            hint("enter", "choose"),
-            hint("esc", "back"),
-            hint("q", "quit"),
-        ]
-        .concat(),
-        Screen::Packages if app.focus == Focus::Input => [
-            hint("type", "package names"),
-            hint("enter/esc", "back to the list"),
-        ]
-        .concat(),
-        Screen::Apply if matches!(app.applied, Applied::Ok(_) | Applied::Failed(_)) => {
-            [hint("any key", "exit")].concat()
+    let pairs = if app.busy() {
+        vec![("q", "cancel")]
+    } else {
+        match app.screen {
+            Screen::Greeting => greeting::hints(app),
+            Screen::Schemes => schemes::hints(app),
+            Screen::Themes => themes::hints(app),
+            Screen::Packages => packages::hints(app),
+            Screen::Patches => patches::hints(app),
+            Screen::Client => client::hints(app),
+            Screen::Resources => vm::hints(app),
+            Screen::Apply => apply::hints(app),
         }
-        Screen::Apply => [
-            hint("↑/↓", "move"),
-            hint("enter", "do it"),
-            hint("esc", "back"),
-        ]
-        .concat(),
-        Screen::Patches => [
-            hint("↑/↓", "move"),
-            hint("←/→", "in/out"),
-            hint("space", "choose"),
-            hint("tab", "files/dirs"),
-            hint("esc", "back"),
-            hint("enter", "done"),
-        ]
-        .concat(),
-        Screen::Packages => [
-            hint("↑/↓", "move"),
-            hint("space", "toggle"),
-            hint("a/n", "all/none"),
-            hint("i", "add by name"),
-            hint("esc", "back"),
-            hint("enter", "done"),
-        ]
-        .concat(),
-        Screen::Client if app.editing.is_some() => [
-            hint("type", "the chord"),
-            hint("enter", "accept"),
-            hint("esc", "cancel"),
-        ]
-        .concat(),
-        Screen::Client => [
-            hint("↑/↓", "move"),
-            hint("space", "change"),
-            hint("r", "reset"),
-            hint("esc", "back"),
-            hint("enter", "done"),
-        ]
-        .concat(),
-        Screen::Resources => [
-            hint("↑/↓", "cores/memory"),
-            hint("←/→", "adjust"),
-            hint("r", "reset"),
-            hint("esc", "back"),
-            hint("enter", "done"),
-        ]
-        .concat(),
-    }
+    };
+    pairs
+        .into_iter()
+        .flat_map(|(k, what)| {
+            [
+                Span::styled(k, Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(format!(" {what}  ")),
+            ]
+        })
+        .collect()
 }
 
 pub fn intro_paragraph(heading: &str, body: String) -> Paragraph<'static> {

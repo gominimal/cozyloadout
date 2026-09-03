@@ -194,3 +194,23 @@ pub fn on_key_client(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 }
+
+// --- footer ---------------------------------------------------------------
+
+/// The keys this screen answers to, for the footer.
+pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.editing.is_some() {
+        return vec![
+            ("type", "the chord"),
+            ("enter", "accept"),
+            ("esc", "cancel"),
+        ];
+    }
+    vec![
+        ("↑/↓", "move"),
+        ("space", "change"),
+        ("r", "reset"),
+        ("esc", "back"),
+        ("enter", "done"),
+    ]
+}

@@ -24,7 +24,8 @@ use theme::Theme;
 use clap::Parser;
 use color_eyre::eyre::Result;
 use cozy_theme::{
-    loadout_patches, shadowed_by, user_patches, OptionalPackage, Options, Scheme, SchemeEntry,
+    loadout_patches, shadowed_by, user_patches, Adjust, OptionalPackage, Options, Scheme,
+    SchemeEntry,
 };
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
@@ -106,15 +107,6 @@ pub struct Args {
 // ---------------------------------------------------------------------------
 // Greeting
 // ---------------------------------------------------------------------------
-
-/// The detach chord shown in the greeting preview.
-///
-/// The generated config reads `$MINIMAL_DETACH_HINT`, which minimald seeds from
-/// the keys negotiated for that attach channel — but there is no session to
-/// negotiate with while the wizard is running, so the preview shows the
-/// fallback. It is the same string the template falls back to, and the same one
-/// minimal's own orientation banner uses.
-const DETACH_FALLBACK: &str = "ctrl-] then d";
 
 /// The host home, which patch destinations are computed relative to.
 fn home() -> PathBuf {
@@ -237,6 +229,7 @@ fn run_generate_to(app: &App, repo: &Path, out: &Path, install: bool) -> Result<
             .first()
             .map(|p| p.chosen.iter().cloned().collect())
             .unwrap_or_default(),
+        adjust: app.adjust,
         patch_dirs: app
             .pickers
             .get(1)
@@ -286,6 +279,10 @@ enum Screen {
     Apply,
 }
 
+// A state bag, not an API: these are seven independent yes/no facts about one
+// screen each, and folding them into an enum or a flags struct would put
+// distance between a field and the page that owns it for no reader's benefit.
+#[allow(clippy::struct_excessive_bools)]
 struct App {
     screen: Screen,
     schemes_dir: PathBuf,
@@ -327,6 +324,12 @@ struct App {
     /// Package names installed regardless of any choice on this page — used
     /// only to tell the user a typed name is already covered.
     always: Vec<String>,
+    /// The six scheme adjustments, the knob under the cursor, and whether the
+    /// themes page has handed the arrow keys to them.
+    adjust: Adjust,
+    knob_row: usize,
+    adjusting: bool,
+
     /// The session-key bindings from the client page, and its cursor. These
     /// configure minimal itself rather than the loadout — see `apply_client`.
     bindings: Bindings,
@@ -390,6 +393,9 @@ impl App {
             screen: Screen::Greeting,
             schemes_dir,
             home: home(),
+            adjust: Adjust::default(),
+            knob_row: 0,
+            adjusting: false,
             bindings: Bindings::default(),
             client_row: 0,
             editing: None,
@@ -455,6 +461,12 @@ impl App {
                 .get(1)
                 .map(|p| p.chosen.iter().cloned().collect())
                 .unwrap_or_default(),
+            contrast: Some(self.adjust.contrast),
+            saturation: Some(self.adjust.saturation),
+            comments: Some(self.adjust.comments),
+            separation: Some(self.adjust.separation),
+            background: Some(self.adjust.background),
+            warmth: Some(self.adjust.warmth),
             leader: Some(self.bindings.leader.as_config_str()),
             detach: Some(self.bindings.detach.as_config_str()),
             forward: Some(self.bindings.forward.as_config_str()),
@@ -471,6 +483,18 @@ impl App {
     /// defaults whole rather than leaving a half-applied set, and a VM size
     /// this host cannot offer is dropped per field by `Resources::restore`.
     fn restore_host_settings(&mut self) {
+        // Out-of-range values are dropped per field rather than failing: this
+        // file is hand-editable, and a bad number should cost that knob, not
+        // the run.
+        let knob = |v: Option<i8>| v.filter(|v| (-100..=100).contains(v)).unwrap_or(0);
+        self.adjust = Adjust {
+            contrast: knob(self.saved.contrast),
+            saturation: knob(self.saved.saturation),
+            comments: knob(self.saved.comments),
+            separation: knob(self.saved.separation),
+            background: knob(self.saved.background),
+            warmth: knob(self.saved.warmth),
+        };
         let parse = |s: &Option<String>, fallback: Key| {
             s.as_deref()
                 .and_then(|t| Key::parse(t).ok())
@@ -491,10 +515,21 @@ impl App {
         self.resources.restore(self.saved.vcpus, self.saved.ram_mib);
     }
 
+    /// The scheme as it will actually be rendered — adjustments applied.
+    ///
+    /// Everything that reads a scheme goes through here rather than touching
+    /// `loaded`, so the preview, the swatches, the displaced-config list and
+    /// the generated files cannot disagree about which scheme this is. The
+    /// adjustment is recomputed rather than cached: it is sixteen colours, and
+    /// a cache is a second thing to keep in step with the knobs.
+    fn scheme(&self) -> Option<Scheme> {
+        self.loaded.as_ref().map(|s| s.adjusted(self.adjust))
+    }
+
     /// Colours to draw with: the selected scheme's, or the wizard's own before
     /// one is loaded.
     fn theme(&self) -> Theme {
-        self.loaded
+        self.scheme()
             .as_ref()
             .map_or_else(Theme::fallback, Theme::from_scheme)
     }
@@ -689,7 +724,7 @@ impl App {
     /// exists to install is the kind of thing you discover three sessions
     /// later wondering why your theme is half applied.
     fn displaced_configs(&self) -> Vec<String> {
-        let Some(scheme) = &self.loaded else {
+        let Some(scheme) = self.scheme() else {
             return Vec::new();
         };
         let collect = |i: usize| -> Vec<PathBuf> {

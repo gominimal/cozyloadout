@@ -462,6 +462,55 @@ mentions it.
 A corrupt or hand-edited file reads as defaults rather than failing. This is a
 convenience, and the worst it should ever cost is the convenience.
 
+### Adjusting a scheme
+
+`a` on the themes page swaps the scheme list for six knobs. They are not
+generic image filters: a scheme is sixteen slots with assigned meaning, so each
+control acts on the slots it is *about*.
+
+| Knob | Slots | What it does |
+| --- | --- | --- |
+| contrast | all | pushes everything away from the midpoint of base00 and base07 |
+| accents | base08–0F | pulls the accents toward or away from their own grey |
+| comments | base03 | toward base05, or back into base00 |
+| surfaces | base01/02 | spreads them apart, so a selection reads against a surface |
+| background | base00–03 | base00 toward its extreme or the surface above, the rest following at a halving rate |
+| warmth | all | a red/blue cast |
+
+**There is no hue rotation, deliberately.** base08 is red because errors are
+red, across delta, helix diagnostics and bottom's gauges. Rotating hue makes
+errors green — the one control that produces a *wrong* result rather than an
+ugly one. Global brightness is absent for a duller reason: it decomposes into
+contrast plus background, both of which are better questions.
+
+Four things hold this together:
+
+- **All-zero is the identity.** `Adjust::default()` renders byte-for-byte what
+  the scheme always did, which is what lets `adjust` be plumbed through
+  `Options` unconditionally. `an_untouched_adjustment_changes_nothing` states
+  it, and the corpus check is what proves it — all 1068 renders unchanged.
+- **`is_dark` is carried over, never recomputed.** It is derived by comparing
+  background and foreground luminance and it selects `scheme_variant`, which
+  decides `duf --theme` and every `{% if dark %}` branch. An adjustment that
+  nudged a scheme across that line would silently rewrite unrelated config, so
+  the variant is the unadjusted scheme's answer.
+- **An adjusted scheme gets its own slug**, `<slug>-<token>`, where the token is
+  FNV-1a over the six values. Theme files are named after the slug
+  (`bat/themes/<slug>.tmTheme`) and the .tmTheme UUID is derived from it, which
+  Sublime keys themes by — so sharing a slug would overwrite the stock scheme's
+  files and inherit its UUID.
+- **The whole thing is `Scheme::adjusted`, in the library.** The wizard's
+  preview, its swatches, its displaced-config list and the generated files all
+  read `App::scheme()`, so nothing can disagree about which scheme this is; and
+  the CLI gets the same six values as flags, so the knobs are not a feature only
+  the wizard can reach.
+
+The panel takes the list's place rather than sitting beside it: the column is
+thirty cells wide, the preview is the point of the screen, and a scheme list you
+cannot move through while adjusting costs nothing. The WCAG ratio for base05 on
+base00 sits under the knobs with a pass/fail at 4.5:1, which is what makes the
+screen a measurement rather than a matter of taste.
+
 ### The client and VM pages
 
 Two pages that configure **minimal, not the loadout**. Everything else the

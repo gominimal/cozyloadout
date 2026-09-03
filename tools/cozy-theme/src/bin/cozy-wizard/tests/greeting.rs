@@ -111,15 +111,16 @@ fn the_markless_greetings_preview_honestly() {
 }
 
 #[test]
-fn the_previewed_detach_chord_is_the_one_the_template_falls_back_to() {
-    // The preview shows a chord the session has not negotiated yet, so the
-    // only thing keeping it honest is that it equals the template's own
-    // fallback. Both track minimal's `${MINIMAL_DETACH_HINT:-ctrl-] then
-    // d}`; if that default moves again, this is what says so.
+fn the_unconfigured_chord_is_the_one_the_template_falls_back_to() {
+    // The preview shows whatever the client page currently holds, which starts
+    // at `Bindings::default()`. That default and the template's own fallback
+    // both track minimal's `${MINIMAL_DETACH_HINT:-ctrl-] then d}`, and this is
+    // what says so if either moves.
+    let fallback = crate::keys::Bindings::default().hint();
     let template = include_str!("../../../../../../templates/fish/config.fish");
     assert!(
-        template.contains(&format!("set -g __cozy_detach \"{DETACH_FALLBACK}\"")),
-        "the template's fallback no longer matches the preview's {DETACH_FALLBACK:?}"
+        template.contains(&format!("set -g __cozy_detach \"{fallback}\"")),
+        "the template's fallback no longer matches Bindings::default(): {fallback:?}"
     );
     assert!(
         template.contains("set -g __cozy_detach $MINIMAL_DETACH_HINT"),
@@ -167,4 +168,32 @@ fn intro_fits_in_its_rows() {
             rows[..8].join("\n")
         );
     }
+}
+
+#[test]
+fn the_preview_shows_the_chord_the_client_page_currently_holds() {
+    // The greeting screen comes first, but the chord it advertises is a real
+    // setting the user can change five screens later — and change back to on a
+    // second pass. Showing a hardcoded default there would make the preview
+    // wrong for exactly the people who bothered to configure it.
+    let mut a = on_client();
+    a.on_key(press(KeyCode::Char(' ')));
+    for _ in 0..8 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, "ctrl-a");
+    a.on_key(press(KeyCode::Enter));
+    assert_eq!(a.bindings.hint(), "ctrl-a then d");
+
+    // Walk back to the greeting screen and look at the preview.
+    a.screen = Screen::Greeting;
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(
+        text.contains("ctrl-a then d to detach"),
+        "the preview should follow the client page:\n{text}"
+    );
+    assert!(
+        !text.contains("ctrl-] then d"),
+        "and must not still show the default:\n{text}"
+    );
 }

@@ -78,7 +78,7 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 | --- | --- |
 | **Greeting** | five greetings previewed in your own font: three versions of the Minimal mark drawn from different Unicode blocks, the detach line on its own, or nothing at all |
 | **Schemes** | offers to download or update the upstream scheme collection |
-| **Themes** | every scheme on disk, with the whole interface re-painting in each one as you scroll, next to a preview of a prompt, highlighted code and a diff |
+| **Themes** | every scheme on disk, with the whole interface re-painting in each one as you scroll, next to a preview of a prompt, highlighted code and a diff — `a` opens six adjustments |
 | **Packages** | which optional packages to install, with a description and licence for each, plus a field for any others you want |
 | **Patches** | file and directory pickers for your own dotfiles |
 | **Detach** | the leader and detach chords, checked against the rules minimal enforces |
@@ -129,6 +129,23 @@ The wizard's patches page — or `--patch-file` and `--patch-dir` — copies you
 | `~/.config/helix` | `~/.config/helix/`, whole tree |
 
 If one of your files collides with a config the loadout ships, **yours wins** and the loadout's is left out rather than both being written. The wizard says which ones, on the patches page and again on the summary before anything is generated.
+
+## Adjusting a scheme
+
+`a` on the wizard's theme screen — or the matching flags — tunes the scheme you picked. Each is a percentage from -100 to 100, and all-zero renders exactly what the scheme publishes:
+
+| | |
+| --- | --- |
+| `--contrast` | push the surface and foreground apart |
+| `--saturation` | how vivid the eight accents are |
+| `--comments` | lift `base03` toward the foreground, or sink it |
+| `--separation` | spread `base01`/`base02` so a selection reads |
+| `--background` | deepen the background, or lift it off black |
+| `--warmth` | a warm or cool cast |
+
+The wizard shows the WCAG contrast ratio for body text as you turn them, with a pass mark at 4.5:1. There's no hue control on purpose: `base08` is red because errors are red, and rotating it would make them green.
+
+An adjusted scheme is written under its own name — `gruvbox-dark-medium-224a` — so it never overwrites the theme files of the scheme it came from.
 
 ## Choosing a scheme
 

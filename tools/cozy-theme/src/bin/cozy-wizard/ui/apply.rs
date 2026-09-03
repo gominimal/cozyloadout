@@ -39,6 +39,32 @@ pub fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
                 .map_or_else(|| "—".to_string(), |e| e.name.clone()),
         ),
         row(
+            "adjusted",
+            if app.adjust.is_identity() {
+                "no — the scheme as published".to_string()
+            } else {
+                // Name the knobs that are actually set, not all six: the
+                // summary is for spotting what you changed.
+                let set: Vec<String> = [
+                    ("contrast", app.adjust.contrast),
+                    ("accents", app.adjust.saturation),
+                    ("comments", app.adjust.comments),
+                    ("surfaces", app.adjust.separation),
+                    ("background", app.adjust.background),
+                    ("warmth", app.adjust.warmth),
+                ]
+                .into_iter()
+                .filter(|(_, v)| *v != 0)
+                .map(|(k, v)| format!("{k} {v:+}"))
+                .collect();
+                format!(
+                    "{}  → {}",
+                    set.join(", "),
+                    app.scheme().map_or_else(String::new, |s| s.slug)
+                )
+            },
+        ),
+        row(
             "packages",
             if extras.is_empty() {
                 format!("{} optional", app.chosen_packages().len())
@@ -101,7 +127,7 @@ pub fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
 
     let [intro_area, summary_area, list_area, status_area] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(10),
+        Constraint::Length(11),
         Constraint::Length(9),
         Constraint::Min(1),
     ])
@@ -204,4 +230,16 @@ pub fn enter_apply(app: &mut App) {
     app.repo = app.repo_root();
     app.applied = Applied::Idle;
     app.screen = Screen::Apply;
+}
+
+// --- footer ---------------------------------------------------------------
+
+/// The keys this screen answers to, for the footer.
+pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    // Once it has run there is nothing left to choose; the result is on screen
+    // and any key takes you out.
+    if matches!(app.applied, Applied::Ok(_) | Applied::Failed(_)) {
+        return vec![("any key", "exit")];
+    }
+    vec![("↑/↓", "move"), ("enter", "do it"), ("esc", "back")]
 }

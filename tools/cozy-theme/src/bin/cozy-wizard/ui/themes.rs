@@ -27,8 +27,13 @@ pub fn draw_themes(frame: &mut Frame, inner: Rect, app: &App) {
             ),
             Line::raw(""),
             Line::styled(
-                "Everything re-paints as you move, so this is how the loadout will \
-                 look. Enter picks it.",
+                if app.adjusting {
+                    "Tune the scheme. Each change repaints the preview; the \
+                     ratio below is what WCAG measures."
+                } else {
+                    "Everything re-paints as you move, so this is how it will \
+                     look. `a` adjusts, enter picks."
+                },
                 Style::default().fg(t.fg),
             ),
         ]))
@@ -45,11 +50,157 @@ pub fn draw_themes(frame: &mut Frame, inner: Rect, app: &App) {
         [columns, Rect::ZERO]
     };
 
-    draw_theme_list(frame, list_area, app, &t, show_preview);
+    if app.adjusting {
+        draw_knobs(frame, list_area, app, &t, show_preview);
+    } else {
+        draw_theme_list(frame, list_area, app, &t, show_preview);
+    }
     if show_preview {
         draw_preview(frame, preview_area, app, &t);
     }
 }
+
+/// The six knobs, in the column the scheme list was in.
+///
+/// They take the list's place rather than sitting beside it: the column is
+/// thirty cells wide, the preview is the point of this screen, and a scheme
+/// list you cannot move through while adjusting is not costing you anything.
+pub fn draw_knobs(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divider: bool) {
+    let block = Block::default()
+        .borders(if divider {
+            Borders::RIGHT
+        } else {
+            Borders::NONE
+        })
+        .border_style(Style::default().fg(t.selection))
+        .padding(Padding::right(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [rows, ratio] = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(inner);
+
+    let lines: Vec<Line> = KNOBS
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let focused = i == app.knob_row;
+            let v = (k.get)(app.adjust);
+            let accent = if focused {
+                t.blue
+            } else if v == 0 {
+                t.comment
+            } else {
+                t.fg
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!("{} {:<11}", if focused { "▸" } else { " " }, k.label),
+                    if focused {
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(accent)
+                    },
+                ),
+                Span::styled(
+                    // The sign is the information on a bipolar control, so it
+                    // is always shown — except on zero, where "+0" would read
+                    // as a setting rather than as untouched.
+                    format!(
+                        "{} {:>4} {}",
+                        if focused { "◂" } else { " " },
+                        if v == 0 {
+                            "0".to_string()
+                        } else {
+                            format!("{v:+}")
+                        },
+                        if focused { "▸" } else { " " }
+                    ),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), rows);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(contrast_readout(app, t))).wrap(Wrap { trim: true }),
+        ratio,
+    );
+}
+
+/// The WCAG ratio for body text, which is what makes this screen a measurement
+/// rather than a matter of taste.
+fn contrast_readout(app: &App, t: &Theme) -> Vec<Line<'static>> {
+    let Some(scheme) = app.scheme() else {
+        return Vec::new();
+    };
+    let ratio = scheme.body_contrast();
+    let passes = ratio >= 4.5;
+    vec![
+        Line::from(vec![
+            Span::styled("text on bg  ", Style::default().fg(t.comment)),
+            Span::styled(
+                format!("{ratio:.1}:1"),
+                Style::default()
+                    .fg(if passes { t.green } else { t.orange })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::styled(
+            if passes {
+                "meets WCAG AA (4.5:1)".to_string()
+            } else {
+                "below WCAG AA (4.5:1)".to_string()
+            },
+            Style::default().fg(if passes { t.comment } else { t.orange }),
+        ),
+    ]
+}
+
+/// One adjustment, and how to read and write it. A table rather than a `match`
+/// per operation, so adding a seventh control is one row.
+struct Knob {
+    label: &'static str,
+    get: fn(Adjust) -> i8,
+    set: fn(&mut Adjust, i8),
+}
+
+const KNOBS: [Knob; 6] = [
+    Knob {
+        label: "contrast",
+        get: |a| a.contrast,
+        set: |a, v| a.contrast = v,
+    },
+    Knob {
+        label: "accents",
+        get: |a| a.saturation,
+        set: |a, v| a.saturation = v,
+    },
+    Knob {
+        label: "comments",
+        get: |a| a.comments,
+        set: |a, v| a.comments = v,
+    },
+    Knob {
+        label: "surfaces",
+        get: |a| a.separation,
+        set: |a, v| a.separation = v,
+    },
+    Knob {
+        label: "background",
+        get: |a| a.background,
+        set: |a, v| a.background = v,
+    },
+    Knob {
+        label: "warmth",
+        get: |a| a.warmth,
+        set: |a, v| a.warmth = v,
+    },
+];
+
+/// How far one key press moves a knob. Five gives twenty stops each way —
+/// enough to be worth holding the key down, coarse enough to reach the end.
+const KNOB_STEP: i8 = 5;
 
 pub fn draw_theme_list(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divider: bool) {
     // The right border is the divider between the two columns, so it only
@@ -117,7 +268,7 @@ pub fn draw_preview(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(scheme) = &app.loaded else {
+    let Some(scheme) = app.scheme() else {
         frame.render_widget(
             Paragraph::new(Line::styled("…", Style::default().fg(t.comment))),
             inner,
@@ -203,9 +354,16 @@ pub fn draw_preview(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
 // --- keys -----------------------------------------------------------------
 
 pub fn on_key_themes(app: &mut App, key: KeyEvent) {
+    if app.adjusting {
+        on_key_knobs(app, key);
+        return;
+    }
     let page = app.list_rows();
     match key.code {
         KeyCode::Esc => app.screen = Screen::Schemes,
+        // The knobs take the arrow keys, so entering and leaving them is its
+        // own key rather than a focus that silently changes what ↑/↓ mean.
+        KeyCode::Char('a') => app.adjusting = true,
         KeyCode::Up | KeyCode::Char('k') => app.move_theme(-1, page),
         KeyCode::Down | KeyCode::Char('j') => app.move_theme(1, page),
         KeyCode::PageUp => app.move_theme(-(isize::try_from(page).unwrap_or(10)), page),
@@ -251,4 +409,61 @@ pub fn enter_themes(app: &mut App) {
     app.theme_top = app.theme_row;
     app.load_selected();
     app.screen = Screen::Themes;
+}
+
+/// The knobs' keys. Up and down pick one, left and right move it — the same
+/// shape as the VM page, which is the other screen made of bipolar sliders.
+fn on_key_knobs(app: &mut App, key: KeyEvent) {
+    let step = |app: &mut App, delta: i8| {
+        let k = &KNOBS[app.knob_row];
+        let v = (k.get)(app.adjust).saturating_add(delta).clamp(-100, 100);
+        (k.set)(&mut app.adjust, v);
+    };
+    // Home and End *set* the stop rather than stepping toward it: stepping by
+    // 100 from +100 lands on 0, which is not what "end" means.
+    let jump = |app: &mut App, v: i8| (KNOBS[app.knob_row].set)(&mut app.adjust, v);
+    match key.code {
+        // Both ways out of adjust mode land back on the list rather than
+        // leaving the screen: you came here to look at a scheme.
+        KeyCode::Esc | KeyCode::Char('a') => app.adjusting = false,
+        KeyCode::Up | KeyCode::Char('k') => app.knob_row = app.knob_row.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.knob_row = (app.knob_row + 1).min(KNOBS.len() - 1);
+        }
+        KeyCode::Left | KeyCode::Char('h') => step(app, -KNOB_STEP),
+        KeyCode::Right | KeyCode::Char('l') => step(app, KNOB_STEP),
+        // Home/End run a knob to its stop, which is otherwise twenty presses.
+        KeyCode::Home => jump(app, -100),
+        KeyCode::End => jump(app, 100),
+        KeyCode::Char('r') => app.adjust = Adjust::default(),
+        KeyCode::Enter => {
+            let templates = app.templates_dir();
+            super::packages::enter_packages(app, &templates);
+        }
+        _ => {}
+    }
+}
+
+// --- footer ---------------------------------------------------------------
+
+/// The keys this screen answers to, for the footer.
+pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.adjusting {
+        return vec![
+            ("↑/↓", "pick"),
+            ("←/→", "adjust"),
+            ("home/end", "min/max"),
+            ("r", "reset"),
+            ("a/esc", "back to list"),
+            ("enter", "done"),
+        ];
+    }
+    vec![
+        ("↑/↓", "browse"),
+        ("pgup/pgdn", "page"),
+        ("a", "adjust"),
+        ("enter", "choose"),
+        ("esc", "back"),
+        ("q", "quit"),
+    ]
 }
