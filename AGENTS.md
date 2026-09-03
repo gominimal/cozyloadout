@@ -120,14 +120,34 @@ sections for callers who are both in this repo is documentation nobody reads.
 
 `tools/cozy-theme/src/bin/cozy-wizard/`, a second binary in the same package
 (`default-run = "cozy-theme"` keeps a bare `cargo run` pointing at the
-renderer). `just wizard` runs it. Five screens so far: greeting, schemes,
-themes, packages, patches.
+renderer). `just wizard` runs it. Seven screens: greeting, schemes, themes,
+packages, patches, client, resources.
 
-It became a directory rather than a single file when it passed 2,500 lines —
-Cargo takes `src/bin/<name>/main.rs` plus submodules. `picker.rs` is the first
-of those: filesystem navigation and selection with no drawing in it, so what a
-listing contains, what is selectable, and what happens at `/` are all testable
-against real temporary directories instead of through a rendered frame.
+Cargo takes `src/bin/<name>/main.rs` plus submodules, and the wizard uses all
+of it. The layout is **one module per screen and one per model**, because the
+question "where does this behaviour live" should have a boring answer:
+
+| | |
+| --- | --- |
+| `main.rs` | the CLI, `App` and its shared state, the event loop |
+| `ui/<screen>.rs` | one screen: what it draws *and* what its keys do |
+| `ui/mod.rs` | the frame around every screen — outer block, footer, heading |
+| `ui/prelude.rs` | what the screen modules draw with, so their headers stay short |
+| `greeting.rs` `fetch.rs` `keys.rs` `picker.rs` `resources.rs` `state.rs` `theme.rs` | models: no drawing, no `Frame` |
+| `hostcfg.rs` | the two writes that leave this repo |
+| `tests/` | one module per screen, over shared fixtures in `tests/util.rs` |
+
+Two rules hold it together. **A screen owns its keys as well as its pixels** —
+`ui::patches` has both `draw_patches` and `on_key_patches`, so changing how a
+page behaves means opening one file. And **the models never draw**: what a
+directory listing contains, whether a chord is legal, what a host can allocate
+are all decided without a `Frame`, and tested against real temporary
+directories rather than through a rendered one. `picker.rs` was the first
+module split out on that principle and the rest followed it.
+
+`main.rs` keeps `App` because every screen module reads its fields: a child
+module can see its ancestors' private items, so the state stays private to the
+binary without a `pub(crate)` on all forty fields.
 
 Its first page asks which fish greeting to install. Five options:
 
