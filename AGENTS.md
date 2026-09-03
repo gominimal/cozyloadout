@@ -417,10 +417,22 @@ the one definition and `the_repo_root_is_never_an_empty_path` guards it.
 
 ### Remembering answers
 
-`state.rs` is the schema for `.cozy-wizard.toml`, written beside the loadout and
-**gitignored** — the answers are one person's, and belong in a checkout rather
-than in the repository. `--state` points it elsewhere, which is how the tests
-avoid touching a real one.
+`settings.rs` is the schema, and it lives in **the library**, not the wizard.
+It is not only the wizard's: `cozy-theme --settings <file>` renders straight
+from one, so a settings file is a complete, portable description of a loadout —
+the thing you commit to a dotfiles repo or hand to a colleague.
+
+The automatic file, `.cozy-wizard.toml`, is written beside the loadout and
+**gitignored** — those answers are one person's, and belong in a checkout rather
+than in the repository. `--settings` points both binaries at another one, which
+is also how the tests avoid touching a real one. A file saved deliberately under
+its own name is a different thing and yours to keep.
+
+`Settings::apply_to` is the one place a file becomes `Options`, so what the
+wizard builds and what the saved file rebuilds cannot drift apart. On the CLI
+the file is applied *first* and any flag typed alongside it wins — the file is a
+starting point, not an override, so `--settings mine.toml --greeting none` is
+one answer changed rather than a file to edit.
 
 Three rules, each with a reason:
 
@@ -511,6 +523,64 @@ cannot move through while adjusting costs nothing. The WCAG ratio for base05 on
 base00 sits under the knobs with a pass/fail at 4.5:1, which is what makes the
 screen a measurement rather than a matter of taste.
 
+#### Saving an adjusted scheme
+
+`s` — offered once something is set — writes the adjusted palette into
+`schemes/` as a scheme of its own. `Scheme::to_yaml` emits the current
+`palette:` format and `save_as` writes it;
+`a_saved_scheme_loads_back_with_the_same_palette` is the round-trip that makes
+this a *scheme* rather than an export, so `discover` finds it and
+`just theme <name>` takes it like any other.
+
+Four decisions worth keeping:
+
+- **The knobs reset to zero on save, and the panel closes.** The edits are now
+  *in* the scheme; leaving them set would apply every one of them a second time
+  on top of a palette that already has them. Closing the panel is what makes the
+  new scheme visible in the list, selected, with the confirmation under it.
+- **The original author keeps the `author:` field.** The palette is derived from
+  their work. Provenance goes in a comment above it, where it cannot be mistaken
+  for a claim about who made this.
+- **Two levels of name check.** `save_as` refuses to overwrite a file — a scheme
+  file is the only copy of a palette somebody tuned by hand. The wizard checks
+  the *discovered* set as well, because `discover` lets `schemes/` shadow a
+  vendored scheme of the same name, so saving "gruvbox-dark" would quietly hide
+  the real one. A refused name keeps the prompt open with the text still in it.
+- **The saved file's variant is decided by its own luma.** `adjusted` pins
+  `is_dark` so a mid-session tweak cannot flip `scheme_variant` under the
+  templates; saving ends that, because the file is now a scheme in its own right
+  and `load` treats it like every other.
+  `a_saved_scheme_takes_its_variant_from_its_own_palette` states it — the two
+  rules together are surprising if you only know one.
+
+`--save-as` does the same from the command line, and renders the saved file
+rather than the original, so `build/` is always reachable from a scheme that is
+actually on disk.
+
+#### An adjustment belongs to one scheme
+
+**Moving to a different scheme clears the knobs.** +40 comments rescues one
+palette and ruins the next, so a new scheme starts from what its author
+published. Three cases are deliberately *not* a scheme change: a clamped move
+(holding ↑ at the top of the list), closing the panel, and leaving the page and
+coming back — the last being the same rule that keeps every other page's
+this-run choices. `move_theme` guards on the row actually changing.
+
+A remembered scheme that is no longer on disk drops its adjustments too. They
+were tuned against a palette this checkout does not have, and re-applying them
+to whatever sorts first would be worse than starting clean.
+
+**They are still sticky across runs**, because the scheme is: the settings file
+records the theme by name and the six knobs beside it, and on the next run the
+scheme is found, so its adjustments stand. The two rules only look like they
+conflict — an adjustment survives exactly as long as the scheme it was made
+against does.
+
+Because the knobs are off screen while you browse, the bottom of the list says
+whether anything is set (`contrast +100`, truncated to the column) or offers
+`a to adjust`. Without it the reset would be a silent loss: you would reopen the
+panel and find your work gone with nothing having said so.
+
 ### The client and VM pages
 
 Two pages that configure **minimal, not the loadout**. Everything else the
@@ -569,6 +639,32 @@ Neither failure is fatal to an install that has already written the loadout;
 they append a line to the report instead. And neither is applied at all when it
 still equals the default, so an untouched wizard writes no config file it did
 not need to.
+
+### The apply page
+
+A summary, a tick, and four actions.
+
+**Installing is a checkbox, not an action.** It used to be two entries —
+"Generate" and "Generate and install" — which made the same choice twice: once
+in the list and once in whether you scrolled past it. As a tick it is one fact,
+visible whichever action is highlighted, and the Generate row renames itself to
+match. It is **on by default**, because installing is what running the wizard is
+for and an untouched run should produce a usable session rather than a `build/`
+directory.
+
+`space` toggles it from anywhere on the page rather than making it a focusable
+row. The list is a list of *actions*, and a row where `enter` toggled instead of
+acting would be the one place on the screen where `enter` means something else.
+
+The host settings ride with the tick, not with the action: a bare render
+promises that nothing outside this repo changes, and minimal's config and
+minvmd's state are both outside it.
+
+**"Save these settings to a file"** writes every answer to a path you choose,
+which `cozy-theme --settings <file>` then rebuilds from. It refuses to
+overwrite, and a refused path keeps the prompt open with the text still in it —
+the same shape as the other two text prompts in the wizard. Writing it counts as
+finishing the run, so the automatic file records it too.
 
 ### The patches page
 

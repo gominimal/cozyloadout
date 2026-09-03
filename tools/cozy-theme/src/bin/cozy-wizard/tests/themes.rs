@@ -359,3 +359,371 @@ fn every_screen_still_advertises_its_own_keys() {
         }
     }
 }
+
+// -- adjustments belong to the scheme they were made against ---------------
+
+#[test]
+fn moving_to_another_scheme_clears_the_adjustments() {
+    // +40 comments rescues one palette and ruins the next, so an adjustment
+    // does not follow the cursor onto a scheme it was never tuned against.
+    let mut a = on_knobs();
+    a.on_key(press(KeyCode::End)); // contrast to +100
+    assert!(!a.adjust.is_identity());
+
+    a.on_key(press(KeyCode::Esc)); // back to the list
+    assert!(
+        !a.adjust.is_identity(),
+        "closing the panel must not clear them"
+    );
+    a.on_key(press(KeyCode::Down)); // a different scheme
+    assert!(
+        a.adjust.is_identity(),
+        "a new scheme starts from what its author published: {:?}",
+        a.adjust
+    );
+}
+
+#[test]
+fn a_move_that_does_not_change_the_scheme_keeps_them() {
+    // Holding ↑ at the top of the list is not a way to lose your work.
+    let mut a = on_knobs();
+    a.on_key(press(KeyCode::End));
+    a.on_key(press(KeyCode::Esc));
+    assert_eq!(a.theme_row, 0, "this fixture starts at the top");
+    for _ in 0..5 {
+        a.on_key(press(KeyCode::Up));
+    }
+    assert!(!a.adjust.is_identity(), "a clamped move changes nothing");
+
+    // And coming back to the same scheme the long way round keeps them too.
+    a.on_key(press(KeyCode::Down));
+    assert!(a.adjust.is_identity(), "but a real move does clear them");
+}
+
+#[test]
+fn the_list_says_whether_the_scheme_is_adjusted() {
+    // The knobs are off screen while browsing, so without this the reset above
+    // would be a silent loss.
+    let mut a = on_themes();
+    assert!(flatten(&render_app(&a, 110, 30)).contains("a to adjust"));
+
+    a.on_key(press(KeyCode::Char('a')));
+    a.on_key(press(KeyCode::End));
+    a.on_key(press(KeyCode::Esc));
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(
+        text.contains("contrast +100"),
+        "the list should say what is set:\n{text}"
+    );
+    assert!(!text.contains("a to adjust"), "and drop the hint:\n{text}");
+
+    a.on_key(press(KeyCode::Down));
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(
+        text.contains("a to adjust") && !text.contains("contrast +100"),
+        "the line should empty as the reset happens:\n{text}"
+    );
+}
+
+#[test]
+fn revisiting_the_page_keeps_this_runs_adjustments() {
+    // Going forward and coming back is not "moving to another scheme", so the
+    // same rule that preserves the chosen theme preserves its adjustments.
+    let mut a = on_knobs();
+    a.on_key(press(KeyCode::End));
+    let knobs = a.adjust;
+    a.on_key(press(KeyCode::Enter)); // -> packages
+    a.on_key(press(KeyCode::Esc)); // back to themes
+    assert_eq!(a.screen, Screen::Themes);
+    assert_eq!(a.adjust, knobs, "coming back must not reset them");
+}
+
+#[test]
+fn a_remembered_scheme_that_is_gone_takes_its_adjustments_with_it() {
+    // They were tuned against a palette this checkout does not have.
+    let dir = temp_dir("gone-scheme");
+    let saved = State {
+        theme: Some("a scheme that is not here".into()),
+        contrast: Some(60),
+        ..State::default()
+    };
+    let mut a = App::with_state(dir.clone(), saved);
+    assert_eq!(a.adjust.contrast, 60, "restored before the page is entered");
+    crate::ui::themes::enter_themes(&mut a);
+    assert!(
+        a.adjust.is_identity(),
+        "a scheme that is gone should not leave its adjustments behind"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_remembered_scheme_that_is_still_here_keeps_its_adjustments() {
+    // The other half: this is what makes the knobs sticky across runs.
+    let mut a = on_knobs();
+    a.on_key(press(KeyCode::End));
+    let saved = a.to_state();
+    assert_eq!(saved.contrast, Some(100));
+
+    let mut back = App::with_state(a.schemes_dir.clone(), saved);
+    crate::ui::themes::enter_themes(&mut back);
+    assert_eq!(
+        back.adjust.contrast, 100,
+        "the remembered scheme is still on disk, so its adjustments stand"
+    );
+    assert_eq!(
+        back.schemes[back.theme_row].name, a.schemes[a.theme_row].name,
+        "and it is the same scheme"
+    );
+}
+
+#[test]
+#[ignore = "prints frames to look at rather than asserting"]
+fn show_the_list_footer() {
+    let mut a = on_themes();
+    for (label, keys) in [
+        ("untouched", vec![]),
+        (
+            "adjusted",
+            vec![KeyCode::Char('a'), KeyCode::End, KeyCode::Esc],
+        ),
+        ("after moving on", vec![KeyCode::Down]),
+    ] {
+        for k in keys {
+            a.on_key(press(k));
+        }
+        let rows = render_app(&a, 100, 14);
+        println!("\n=== {label}");
+        for line in &rows[rows.len() - 3..] {
+            println!("|{}|", line.trim_end());
+        }
+    }
+}
+
+// -- save as ---------------------------------------------------------------
+
+/// A themes page over a private scheme tree, so a save lands in a temporary
+/// directory rather than in the repository's own `schemes/`.
+fn on_private_themes(tag: &str) -> (App, PathBuf) {
+    let root = temp_dir(&format!("save-{tag}"));
+    let vendor = root.join("vendor/base16");
+    std::fs::create_dir_all(&vendor).unwrap();
+    let src = std::fs::read_to_string("../../schemes/minimal-dark.yaml").unwrap();
+    std::fs::write(vendor.join("minimal-dark.yaml"), &src).unwrap();
+    std::fs::write(vendor.join("zzz-other.yaml"), &src).unwrap();
+
+    let mut a = App::with_state(root.join("vendor"), State::default());
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Char('n')));
+    a.on_key(press(KeyCode::Enter));
+    assert_eq!(a.screen, Screen::Themes);
+    (a, root)
+}
+
+/// Adjust, then open the save prompt.
+fn at_save_prompt(tag: &str) -> (App, PathBuf) {
+    let (mut a, root) = on_private_themes(tag);
+    a.on_key(press(KeyCode::Char('a')));
+    a.on_key(press(KeyCode::End)); // contrast +100
+    a.on_key(press(KeyCode::Char('s')));
+    assert!(a.saving.is_some(), "s should open the prompt");
+    (a, root)
+}
+
+#[test]
+fn saving_is_offered_only_once_something_is_adjusted() {
+    // Saving an untouched scheme under a second name is a copy, not a save.
+    let (mut a, root) = on_private_themes("gated");
+    a.on_key(press(KeyCode::Char('s')));
+    assert!(a.saving.is_none(), "nothing to save yet");
+
+    a.on_key(press(KeyCode::Char('a')));
+    a.on_key(press(KeyCode::End));
+    a.on_key(press(KeyCode::Esc)); // back to the list
+    a.on_key(press(KeyCode::Char('s')));
+    assert!(a.saving.is_some(), "and offered from the list too");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_prompt_suggests_a_name_and_shows_the_file_it_will_write() {
+    let (a, root) = at_save_prompt("prompt");
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("Save this scheme as"), "{text}");
+    assert!(
+        text.contains("Minimal Dark custom"),
+        "a suggestion:\n{text}"
+    );
+    assert!(
+        text.contains("minimal-dark-custom.yaml"),
+        "and the filename, so the slugifying is not a surprise:\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn saving_writes_a_scheme_that_loads_back() {
+    let (mut a, root) = at_save_prompt("writes");
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, "My Theme");
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.saving.is_none(), "a good name should close the prompt");
+
+    let path = root.join("my-theme.yaml");
+    assert!(path.exists(), "expected {}", path.display());
+    let back = cozy_theme::Scheme::load(&path).unwrap();
+    assert_eq!(back.name, "My Theme");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_saved_scheme_has_the_adjustments_baked_in_and_the_knobs_reset() {
+    // The knobs go to zero because the edits are now *in* the scheme. Leaving
+    // them set would apply every one of them a second time.
+    let (mut a, root) = at_save_prompt("baked");
+    let adjusted = a.scheme().unwrap().palette.clone();
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, "Baked");
+    a.on_key(press(KeyCode::Enter));
+
+    assert!(a.adjust.is_identity(), "the knobs should be back to zero");
+    assert_eq!(
+        a.scheme().unwrap().palette,
+        adjusted,
+        "and the scheme now on screen is the adjusted one"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn saving_selects_the_new_scheme_in_the_list() {
+    let (mut a, root) = at_save_prompt("select");
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, "Aaa Mine");
+    a.on_key(press(KeyCode::Enter));
+
+    assert_eq!(
+        a.schemes[a.theme_row].name, "aaa-mine",
+        "the cursor should land on what was just saved"
+    );
+    assert!(
+        a.schemes.iter().any(|s| s.name == "aaa-mine"),
+        "and it should be in the list"
+    );
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(
+        text.contains("saved as aaa-mine"),
+        "with a confirmation:\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_name_that_is_taken_keeps_the_prompt_open_and_says_why() {
+    let (mut a, root) = at_save_prompt("taken");
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, "minimal-dark");
+    a.on_key(press(KeyCode::Enter));
+
+    assert!(a.saving.is_some(), "a refused name keeps the prompt open");
+    assert!(!a.adjust.is_identity(), "and must not clear the work");
+    let text = flatten(&render_app(&a, 70, 30));
+    assert!(text.contains("already exists"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_name_with_nothing_in_it_is_refused_rather_than_writing_yaml() {
+    let (mut a, root) = at_save_prompt("empty");
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, "!!!");
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.saving.is_some());
+    // Narrow, so the preview column is hidden: `flatten` reads across the
+    // whole row, and with two columns the message interleaves with the sample
+    // code beside it.
+    let text = flatten(&render_app(&a, 70, 30));
+    assert!(text.contains("no letters or digits"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn esc_cancels_the_prompt_without_writing_anything() {
+    let (mut a, root) = at_save_prompt("cancel");
+    a.on_key(press(KeyCode::Esc));
+    assert!(a.saving.is_none());
+    assert!(!a.adjust.is_identity(), "cancelling keeps the adjustments");
+    assert!(
+        std::fs::read_dir(&root)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "yaml")
+            })
+            .count()
+            == 0,
+        "nothing should have been written"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn q_is_a_letter_while_naming_a_scheme() {
+    // The same trap the packages and client pages have.
+    let (mut a, root) = at_save_prompt("q-key");
+    a.on_key(press(KeyCode::Char('q')));
+    assert!(!a.done, "q should be text here, not the quit key");
+    assert!(a.saving.as_deref().unwrap_or("").ends_with('q'));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn moving_on_clears_a_stale_save_confirmation() {
+    let (mut a, root) = at_save_prompt("stale");
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, "Zzz Last");
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.saved_note.is_some());
+
+    a.on_key(press(KeyCode::Up));
+    assert!(
+        a.saved_note.is_none(),
+        "the note belongs to the scheme it was saved from"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+#[ignore = "prints frames to look at rather than asserting"]
+fn show_the_save_flow() {
+    let (mut a, root) = at_save_prompt("show");
+    println!("\n=== the prompt");
+    for line in render_app(&a, 96, 16) {
+        println!("|{}|", line.trim_end());
+    }
+    for _ in 0..40 {
+        a.on_key(press(KeyCode::Backspace));
+    }
+    typing(&mut a, "Warm Dark");
+    a.on_key(press(KeyCode::Enter));
+    println!("\n=== after saving");
+    for line in render_app(&a, 96, 16) {
+        println!("|{}|", line.trim_end());
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

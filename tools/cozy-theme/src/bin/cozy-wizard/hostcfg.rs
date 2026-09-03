@@ -284,7 +284,13 @@ mod tests {
     #[test]
     #[ignore = "writes a real file; run it deliberately"]
     fn show_written_client_config() {
-        let path = std::env::var("COZY_SHOW_CONFIG").expect("set COZY_SHOW_CONFIG");
+        // Skips rather than fails when unset: `cargo test -- --ignored` runs
+        // every demo in the tree, and one that needs an env var should not take
+        // that sweep down with it.
+        let Ok(path) = std::env::var("COZY_SHOW_CONFIG") else {
+            println!("set COZY_SHOW_CONFIG=<path> to run this");
+            return;
+        };
         let b = Bindings {
             leader: Key::parse("ctrl-a").unwrap(),
             detach: Key::parse("q").unwrap(),

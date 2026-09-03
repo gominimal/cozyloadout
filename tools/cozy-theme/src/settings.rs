@@ -1,23 +1,27 @@
-//! What the wizard remembers between runs.
+//! Every answer the wizard collects, as a file.
 //!
-//! Written on a completed run, read on the next one. Plain data with no
-//! knowledge of the UI: the screens convert to and from it, so this file stays
-//! the schema and nothing else.
+//! Plain data with no knowledge of the UI. It lives in the library rather than
+//! in the wizard because it is not only the wizard's: `cozy-theme --settings`
+//! renders straight from one of these, so a settings file is a complete,
+//! portable description of a loadout — the thing you commit to a dotfiles repo
+//! or hand to a colleague.
 //!
-//! It is gitignored on purpose. The answers are one person's — which schemes
-//! they like, which of their own directories they patch in — and belong in a
-//! checkout rather than in the repository.
+//! The automatic one (`.cozy-wizard.toml`) is gitignored on purpose. Those
+//! answers are one person's — which schemes they like, which of their own
+//! directories they patch in — and belong in a checkout rather than in the
+//! repository. A file saved deliberately under its own name is a different
+//! thing, and yours to do what you like with.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The default filename, beside the loadout it configures.
+/// The automatic file, beside the loadout it configures.
 pub const FILE: &str = ".cozy-wizard.toml";
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct State {
+pub struct Settings {
     /// `"legacy"` or `"blocks"`; anything else falls back to the default.
     pub greeting: Option<String>,
 
@@ -66,7 +70,7 @@ pub struct State {
     pub ram_mib: Option<u32>,
 }
 
-impl State {
+impl Settings {
     /// Read the file, or a default state if it is missing or unreadable.
     ///
     /// A corrupt or hand-edited file must not stop the wizard running: this is
@@ -101,6 +105,78 @@ impl State {
     }
 }
 
+impl Settings {
+    /// The greeting key, falling back to the renderer's own default when the
+    /// file predates the field or names something no longer offered.
+    #[must_use]
+    pub fn greeting(&self) -> String {
+        const OFFERED: [&str; 5] = ["blocks", "geometric", "legacy", "text", "none"];
+        self.greeting
+            .as_deref()
+            .filter(|g| OFFERED.contains(g))
+            .unwrap_or("blocks")
+            .to_string()
+    }
+
+    /// The adjustments, with any out-of-range value dropped.
+    ///
+    /// Per field rather than wholesale: this file is hand-editable, and one bad
+    /// number should cost that knob, not the other five.
+    #[must_use]
+    pub fn adjust(&self) -> crate::Adjust {
+        let knob = |v: Option<i8>| v.filter(|v| (-100..=100).contains(v)).unwrap_or(0);
+        crate::Adjust {
+            contrast: knob(self.contrast),
+            saturation: knob(self.saturation),
+            comments: knob(self.comments),
+            separation: knob(self.separation),
+            background: knob(self.background),
+            warmth: knob(self.warmth),
+        }
+    }
+
+    /// The optional packages to install, as `Options::with` wants them.
+    ///
+    /// Each offered package falls back to its own default, so a package added
+    /// to the loadout after this file was written arrives switched *on* rather
+    /// than silently missing. The empty set is a single empty string, because
+    /// an empty `with` means "everything" — the opposite of an empty checklist.
+    #[must_use]
+    pub fn packages(&self, offered: &crate::Packages) -> Vec<String> {
+        let mut names: Vec<String> = offered
+            .optional
+            .iter()
+            .filter(|p| self.wants_package(&p.name, p.default))
+            .map(|p| p.name.clone())
+            .collect();
+        names.extend(
+            self.extra
+                .split_whitespace()
+                .filter(|t| crate::is_package_name(t))
+                .map(str::to_string),
+        );
+        names.dedup();
+        if names.is_empty() {
+            vec![String::new()]
+        } else {
+            names
+        }
+    }
+
+    /// Fill in everything this file decides, leaving the paths to the caller.
+    ///
+    /// The wizard's apply screen and `cozy-theme --settings` both go through
+    /// here, so what the wizard builds and what the saved file rebuilds cannot
+    /// drift apart.
+    pub fn apply_to(&self, options: &mut crate::Options, offered: &crate::Packages) {
+        options.greeting = self.greeting();
+        options.adjust = self.adjust();
+        options.with = self.packages(offered);
+        options.patch_files = Self::existing(&self.files);
+        options.patch_dirs = Self::existing(&self.dirs);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,7 +192,7 @@ mod tests {
     fn round_trips_through_toml() {
         let dir = temp("round");
         let path = dir.join(FILE);
-        let mut s = State {
+        let mut s = Settings {
             greeting: Some("blocks".into()),
             theme: Some("gruvbox-dark".into()),
             extra: "emacs tmux".into(),
@@ -126,13 +202,13 @@ mod tests {
             bell_on_leader: Some(true),
             vcpus: Some(4),
             ram_mib: Some(8192),
-            ..State::default()
+            ..Settings::default()
         };
         s.packages.insert("fzf".into(), true);
         s.packages.insert("glow".into(), false);
         s.save(&path).unwrap();
 
-        let back = State::load(&path);
+        let back = Settings::load(&path);
         assert_eq!(back.greeting.as_deref(), Some("blocks"));
         assert_eq!(back.theme.as_deref(), Some("gruvbox-dark"));
         assert_eq!(back.extra, "emacs tmux");
@@ -151,7 +227,7 @@ mod tests {
     fn a_package_the_file_has_never_seen_keeps_its_own_default() {
         // The reason `packages` is a map and not a list: a package added to the
         // loadout after this file was written must not arrive switched off.
-        let mut s = State::default();
+        let mut s = Settings::default();
         s.packages.insert("fzf".into(), false);
         assert!(!s.wants_package("fzf", true), "a recorded answer wins");
         assert!(
@@ -163,7 +239,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_reads_as_defaults() {
-        let s = State::load(Path::new("/definitely/not/here.toml"));
+        let s = Settings::load(Path::new("/definitely/not/here.toml"));
         assert!(s.greeting.is_none() && s.theme.is_none() && s.packages.is_empty());
     }
 
@@ -174,7 +250,7 @@ mod tests {
         let dir = temp("corrupt");
         let path = dir.join(FILE);
         std::fs::write(&path, "this is not toml {{{").unwrap();
-        let s = State::load(&path);
+        let s = Settings::load(&path);
         assert!(s.theme.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -187,7 +263,7 @@ mod tests {
         let dir = temp("unknown");
         let path = dir.join(FILE);
         std::fs::write(&path, "theme = \"x\"\nnot_a_field = 1\n").unwrap();
-        assert!(State::load(&path).theme.is_none());
+        assert!(Settings::load(&path).theme.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -197,7 +273,7 @@ mod tests {
         let kept = dir.join("still-here");
         std::fs::write(&kept, "x").unwrap();
         let gone = dir.join("deleted");
-        let out = State::existing(&[kept.clone(), gone]);
+        let out = Settings::existing(&[kept.clone(), gone]);
         assert_eq!(
             out,
             vec![kept],

@@ -8,24 +8,23 @@ mod hostcfg;
 mod keys;
 mod picker;
 mod resources;
-mod state;
 mod theme;
 mod ui;
 
+use cozy_theme::Settings as State;
 use fetch::{Fetch, FetchKind};
 use greeting::Greeting;
 use hostcfg::{apply_client, apply_resources, client_config_path};
 use keys::{Bindings, Key};
 use picker::Picker;
 use resources::Resources;
-use state::State;
 use theme::Theme;
 
 use clap::Parser;
 use color_eyre::eyre::Result;
 use cozy_theme::{
-    loadout_patches, shadowed_by, user_patches, Adjust, OptionalPackage, Options, Scheme,
-    SchemeEntry,
+    is_package_name, loadout_patches, shadowed_by, user_patches, Adjust, OptionalPackage, Options,
+    Scheme, SchemeEntry,
 };
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
@@ -99,32 +98,25 @@ pub struct Args {
     #[arg(long, default_value = "schemes/vendor")]
     schemes: PathBuf,
 
-    /// Where to remember the answers between runs
-    #[arg(long, default_value = state::FILE)]
-    state: PathBuf,
+    /// The settings file to start from and write back to. Defaults to the
+    /// automatic one beside the loadout; point it at your own to keep a named
+    /// set of answers, which `cozy-theme --settings` can then render directly.
+    #[arg(long, default_value = cozy_theme::settings::FILE)]
+    settings: PathBuf,
 }
 
 // ---------------------------------------------------------------------------
 // Greeting
 // ---------------------------------------------------------------------------
 
+/// The filename offered when saving settings to a file of their own.
+fn suggested_settings_name() -> String {
+    "cozy-settings.toml".to_string()
+}
+
 /// The host home, which patch destinations are computed relative to.
 fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
-}
-
-/// Whether a typed token looks like a package name.
-///
-/// Deliberately conservative: lowercase letters, digits, and the punctuation
-/// that appears in real registry names (`ca-certificates`, `procps-ng`,
-/// `libstdc++`). Anything else is a typo, a shell fragment, or a paste
-/// accident, and the page shows what it accepted so a rejection is visible.
-fn is_package_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_.+".contains(c))
-        && s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
 // ---------------------------------------------------------------------------
@@ -135,39 +127,40 @@ fn is_package_name(s: &str) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Action {
     Generate,
-    GenerateAndInstall,
+    SaveAs,
     SaveOnly,
     Abort,
 }
 
 impl Action {
-    // Install first: it is the whole point of running the wizard, so it is
+    // Generate first: it is the whole point of running the wizard, so it is
     // what the cursor starts on rather than something to arrow down to.
     const ALL: [Action; 4] = [
-        Action::GenerateAndInstall,
         Action::Generate,
+        Action::SaveAs,
         Action::SaveOnly,
         Action::Abort,
     ];
 
-    fn label(self) -> &'static str {
+    fn label(self, install: bool) -> &'static str {
         match self {
+            Action::Generate if install => "Generate and install",
             Action::Generate => "Generate",
-            Action::GenerateAndInstall => "Generate and install",
+            Action::SaveAs => "Save these settings to a file",
             Action::SaveOnly => "Save settings and exit",
             Action::Abort => "Abort",
         }
     }
 
-    fn about(self) -> &'static str {
+    fn about(self, install: bool) -> &'static str {
+        // One line each: the list draws these unwrapped, so a longer sentence
+        // is a clipped sentence.
         match self {
-            Action::Generate => {
-                "Render the loadout into build/. Nothing outside this repo changes."
+            Action::Generate if install => {
+                "Render, install into ~/.config/minimal/loadouts/, apply detach and VM changes."
             }
-            Action::GenerateAndInstall => {
-                "Render into ~/.config/minimal/loadouts/, replacing what is there, and apply any \
-                 detach or VM changes."
-            }
+            Action::Generate => "Render into build/. Nothing outside this repo changes.",
+            Action::SaveAs => "Write these answers to a file `cozy-theme --settings` can rebuild.",
             Action::SaveOnly => "Remember these answers for next time without building anything.",
             Action::Abort => "Leave without building anything or remembering these answers.",
         }
@@ -237,8 +230,9 @@ fn run_generate_to(app: &App, repo: &Path, out: &Path, install: bool) -> Result<
             .unwrap_or_default(),
         ..Options::default()
     };
-    cozy_theme::build(&options).map_err(|e| format!("{e}"))?;
-    let mut report = format!("rendered {} into {}", scheme.name, out.display());
+    // The summary comes back rather than going to stdout, so it can be shown
+    // on the final frame instead of underneath it.
+    let mut report = cozy_theme::build(&options).map_err(|e| format!("{e}"))?;
 
     if install {
         // In-process, like the render. Shelling out to `just install` printed
@@ -329,6 +323,16 @@ struct App {
     adjust: Adjust,
     knob_row: usize,
     adjusting: bool,
+    /// `Some(name)` while the save-as prompt is open, and whatever the last
+    /// save said — kept after the prompt closes so the confirmation survives
+    /// long enough to read.
+    saving: Option<String>,
+    saved_note: Option<Result<String, String>>,
+
+    /// `Some(path)` while the apply page's "save these settings" prompt is
+    /// open, and whatever the last attempt said.
+    saving_settings: Option<String>,
+    settings_note: Option<Result<String, String>>,
 
     /// The session-key bindings from the client page, and its cursor. These
     /// configure minimal itself rather than the loadout — see `apply_client`.
@@ -351,8 +355,10 @@ struct App {
     /// What the last completed run chose. Consulted as each page opens rather
     /// than all at once, because the scheme list and the package list are only
     /// known once their page is entered.
-    /// The summary page's cursor, and how the chosen action went.
+    /// The summary page's cursor, whether installing is ticked, and how the
+    /// chosen action went.
     action_row: usize,
+    install: bool,
     applied: Applied,
     /// The repo the wizard is configuring — where `build/` and `templates/`
     /// live, and where `just` is run.
@@ -396,6 +402,10 @@ impl App {
             adjust: Adjust::default(),
             knob_row: 0,
             adjusting: false,
+            saving: None,
+            saved_note: None,
+            saving_settings: None,
+            settings_note: None,
             bindings: Bindings::default(),
             client_row: 0,
             editing: None,
@@ -421,6 +431,9 @@ impl App {
             pickers: Vec::new(),
             picker_focus: 0,
             action_row: 0,
+            // On by default: installing is what running the wizard is for, and
+            // an untouched run should produce a usable session.
+            install: true,
             applied: Applied::Idle,
             repo: PathBuf::from("."),
             saved,
@@ -560,6 +573,7 @@ impl App {
         if self.schemes.is_empty() {
             return;
         }
+        let before = self.theme_row;
         let last = self.schemes.len() - 1;
         let row = isize::try_from(self.theme_row)
             .unwrap_or(0)
@@ -570,6 +584,18 @@ impl App {
             self.theme_top = self.theme_row;
         } else if rows > 0 && self.theme_row >= self.theme_top + rows {
             self.theme_top = self.theme_row + 1 - rows;
+        }
+        // An adjustment belongs to the scheme it was made against: +40 comments
+        // rescues one palette and ruins the next. Landing on a different scheme
+        // therefore starts from what its author published.
+        //
+        // Guarded on the row actually changing, so holding ↑ at the top of the
+        // list — or any other clamped move — is not a way to lose your work.
+        if self.theme_row != before {
+            self.adjust = Adjust::default();
+            // The note is about the scheme that was under the cursor; carrying
+            // it onto another one would claim a save that did not happen here.
+            self.saved_note = None;
         }
         self.load_selected();
     }
@@ -629,7 +655,9 @@ impl App {
         // letter — a wizard that exits when you type `qt5` would be absurd.
         // Ctrl-C still gets you out from anywhere.
         let typing = (self.screen == Screen::Packages && self.focus == Focus::Input)
-            || (self.screen == Screen::Client && self.editing.is_some());
+            || (self.screen == Screen::Client && self.editing.is_some())
+            || (self.screen == Screen::Themes && self.saving.is_some())
+            || (self.screen == Screen::Apply && self.saving_settings.is_some());
         if ctrl_c || (key.code == KeyCode::Char('q') && !typing) {
             self.done = true;
             return;
@@ -767,19 +795,23 @@ impl App {
         let action = self.action();
         // Abort is the one action that does not keep the answers. Everything
         // else — including generating without installing — counts as having
-        // finished, so `main` writes the state file.
+        // finished, so `main` writes the settings file.
         self.completed = action.saves();
         match action {
             Action::Abort | Action::SaveOnly => self.done = true,
-            Action::Generate | Action::GenerateAndInstall => {
-                let install = action == Action::GenerateAndInstall;
-                self.applied = Applied::Running(action.label());
+            Action::SaveAs => {
+                self.completed = false;
+                self.saving_settings = Some(suggested_settings_name());
+            }
+            Action::Generate => {
+                let install = self.install;
+                self.applied = Applied::Running(action.label(install));
                 let repo = self.repo.clone();
                 self.applied = match run_generate(self, &repo, install) {
-                    // The host settings ride with `install`, not with
-                    // `Generate`: Generate promises that nothing outside this
-                    // repo changes, and minimal's config and minvmd's state
-                    // are both outside it.
+                    // The host settings ride with the install tick, not with a
+                    // bare render: generating promises that nothing outside
+                    // this repo changes, and minimal's config and minvmd's
+                    // state are both outside it.
                     Ok(report) if install => Applied::Ok(self.apply_host_settings(report)),
                     Ok(report) => Applied::Ok(report),
                     Err(why) => Applied::Failed(why),
@@ -884,7 +916,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
 
-    let saved = State::load(&args.state);
+    let saved = State::load(&args.settings);
 
     let terminal = ratatui::init();
     let result = run(terminal, args.schemes, saved);
@@ -920,10 +952,10 @@ fn main() -> Result<()> {
     // Only a finished run is an answer. Quitting part-way leaves whatever the
     // last completed run chose, rather than half-overwriting it.
     if app.completed {
-        match app.to_state().save(&args.state) {
-            Ok(()) => println!("saved: {}", args.state.display()),
+        match app.to_state().save(&args.settings) {
+            Ok(()) => println!("saved: {}", args.settings.display()),
             // Not fatal: the run happened, the answers just will not persist.
-            Err(why) => eprintln!("could not save {}: {why}", args.state.display()),
+            Err(why) => eprintln!("could not save {}: {why}", args.settings.display()),
         }
     }
 

@@ -50,7 +50,9 @@ pub fn draw_themes(frame: &mut Frame, inner: Rect, app: &App) {
         [columns, Rect::ZERO]
     };
 
-    if app.adjusting {
+    if app.saving.is_some() {
+        draw_save_prompt(frame, list_area, app, &t, show_preview);
+    } else if app.adjusting {
         draw_knobs(frame, list_area, app, &t, show_preview);
     } else {
         draw_theme_list(frame, list_area, app, &t, show_preview);
@@ -249,11 +251,41 @@ pub fn draw_theme_list(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divi
         .collect();
     frame.render_widget(List::new(items), inner);
 
-    // Position, so a long list does not feel bottomless.
+    // Position, so a long list does not feel bottomless — and, beside it, what
+    // the knobs are currently set to.
+    //
+    // The knobs are not on screen while you are browsing, and moving to another
+    // scheme clears them. Without this line that would be a silent loss: you
+    // would come back to the panel and find your work gone with nothing having
+    // said so. Here, it visibly empties as you scroll away.
     let counter = format!("{}/{}", app.theme_row + 1, app.schemes.len());
     let y = inner.y + inner.height.saturating_sub(1);
     frame.render_widget(
-        Paragraph::new(Line::styled(counter, Style::default().fg(t.comment))),
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("{counter:<9}"), Style::default().fg(t.comment)),
+            Span::styled(
+                // Truncated to what the column has left: six knobs will not fit
+                // in thirty cells, and the point of this line is that something
+                // is set, not the exact numbers — those are on the panel and on
+                // the summary page.
+                match (&app.saved_note, app.adjust.is_identity()) {
+                    // A save clears the knobs, so without this the line would
+                    // snap back to the hint and the save would look like it did
+                    // nothing.
+                    (Some(Ok(note)), _) => truncate(note, (inner.width as usize).saturating_sub(9)),
+                    (_, true) => "a to adjust".to_string(),
+                    (_, false) => truncate(
+                        &knob_summary(app.adjust),
+                        (inner.width as usize).saturating_sub(9),
+                    ),
+                },
+                Style::default().fg(match (&app.saved_note, app.adjust.is_identity()) {
+                    (Some(Ok(_)), _) => t.green,
+                    (_, true) => t.comment,
+                    (_, false) => t.orange,
+                }),
+            ),
+        ])),
         Rect {
             x: inner.x,
             y,
@@ -261,6 +293,20 @@ pub fn draw_theme_list(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divi
             height: 1,
         },
     );
+}
+
+/// The knobs that are set, as `contrast +10 accents -5`. Empty when none are.
+///
+/// Shared by the list footer and the summary page, which have to agree about
+/// what "adjusted" means.
+pub fn knob_summary(adjust: Adjust) -> String {
+    KNOBS
+        .iter()
+        .map(|k| (k.label, (k.get)(adjust)))
+        .filter(|(_, v)| *v != 0)
+        .map(|(label, v)| format!("{label} {v:+}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn draw_preview(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
@@ -354,6 +400,10 @@ pub fn draw_preview(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
 // --- keys -----------------------------------------------------------------
 
 pub fn on_key_themes(app: &mut App, key: KeyEvent) {
+    if app.saving.is_some() {
+        on_key_saving(app, key);
+        return;
+    }
     if app.adjusting {
         on_key_knobs(app, key);
         return;
@@ -364,6 +414,10 @@ pub fn on_key_themes(app: &mut App, key: KeyEvent) {
         // The knobs take the arrow keys, so entering and leaving them is its
         // own key rather than a focus that silently changes what ↑/↓ mean.
         KeyCode::Char('a') => app.adjusting = true,
+        KeyCode::Char('s') if !app.adjust.is_identity() => {
+            app.saving = Some(suggested_name(app));
+            app.saved_note = None;
+        }
         KeyCode::Up | KeyCode::Char('k') => app.move_theme(-1, page),
         KeyCode::Down | KeyCode::Char('j') => app.move_theme(1, page),
         KeyCode::PageUp => app.move_theme(-(isize::try_from(page).unwrap_or(10)), page),
@@ -403,9 +457,15 @@ pub fn enter_themes(app: &mut App) {
     // Re-discovered every time rather than once: the user can go back,
     // fetch the collection, and return, and the new schemes should be here.
     app.schemes = discover(&root);
-    app.theme_row = want
-        .and_then(|name| app.schemes.iter().position(|s| s.name == name))
-        .unwrap_or(0);
+    let found = want.and_then(|name| app.schemes.iter().position(|s| s.name == name));
+    // A remembered scheme that is no longer on disk drops its adjustments with
+    // it. They were tuned against a palette this checkout does not have, and
+    // silently re-applying them to whatever sorts first would be worse than
+    // starting clean.
+    if found.is_none() {
+        app.adjust = Adjust::default();
+    }
+    app.theme_row = found.unwrap_or(0);
     app.theme_top = app.theme_row;
     app.load_selected();
     app.screen = Screen::Themes;
@@ -436,6 +496,10 @@ fn on_key_knobs(app: &mut App, key: KeyEvent) {
         KeyCode::Home => jump(app, -100),
         KeyCode::End => jump(app, 100),
         KeyCode::Char('r') => app.adjust = Adjust::default(),
+        KeyCode::Char('s') if !app.adjust.is_identity() => {
+            app.saving = Some(suggested_name(app));
+            app.saved_note = None;
+        }
         KeyCode::Enter => {
             let templates = app.templates_dir();
             super::packages::enter_packages(app, &templates);
@@ -448,22 +512,178 @@ fn on_key_knobs(app: &mut App, key: KeyEvent) {
 
 /// The keys this screen answers to, for the footer.
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.saving.is_some() {
+        return vec![("type", "a name"), ("enter", "save"), ("esc", "cancel")];
+    }
     if app.adjusting {
         return vec![
             ("↑/↓", "pick"),
             ("←/→", "adjust"),
             ("home/end", "min/max"),
             ("r", "reset"),
+            ("s", "save as"),
             ("a/esc", "back to list"),
             ("enter", "done"),
         ];
     }
+    if app.adjust.is_identity() {
+        return vec![
+            ("↑/↓", "browse"),
+            ("pgup/pgdn", "page"),
+            ("a", "adjust"),
+            ("enter", "choose"),
+            ("esc", "back"),
+            ("q", "quit"),
+        ];
+    }
     vec![
         ("↑/↓", "browse"),
-        ("pgup/pgdn", "page"),
         ("a", "adjust"),
+        ("s", "save as"),
         ("enter", "choose"),
         ("esc", "back"),
         ("q", "quit"),
     ]
+}
+
+/// The default name offered when the prompt opens: the scheme's own, with a
+/// suffix. Nobody wants to type "Gruvbox dark, hard" again, and the suffix
+/// keeps it from clashing with the scheme it came from.
+fn suggested_name(app: &App) -> String {
+    app.loaded
+        .as_ref()
+        .map_or_else(|| "my scheme".to_string(), |s| format!("{} custom", s.name))
+}
+
+/// The name prompt. Reachable only when something is actually adjusted —
+/// saving an unmodified scheme under a second name is a copy, not a save.
+fn on_key_saving(app: &mut App, key: KeyEvent) {
+    let Some(buffer) = app.saving.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Esc => app.saving = None,
+        KeyCode::Backspace => {
+            buffer.pop();
+        }
+        KeyCode::Char(c) => buffer.push(c),
+        KeyCode::Enter => {
+            let name = buffer.clone();
+            match save_adjusted(app, &name) {
+                Ok(note) => {
+                    app.saving = None;
+                    app.saved_note = Some(Ok(note));
+                }
+                // A refused name keeps the prompt open with the text still in
+                // it: the fix is usually a word, not a fresh start.
+                Err(why) => app.saved_note = Some(Err(why)),
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Write the adjusted scheme out, then select it.
+///
+/// After saving, the adjustments go back to zero — not because they were
+/// discarded but because they are now *in* the scheme. Leaving them set would
+/// apply every one of them a second time on top of a palette that already has
+/// them.
+fn save_adjusted(app: &mut App, name: &str) -> Result<String, String> {
+    let Some(scheme) = app.scheme() else {
+        return Err("no scheme loaded".to_string());
+    };
+    let from = app
+        .loaded
+        .as_ref()
+        .map(|s| format!("Adapted from {:?} by {}.", s.name, s.author));
+    // The user's own schemes go beside the checked-in ones rather than into the
+    // vendored collection, which `just fetch-schemes` overwrites.
+    let dir = app
+        .schemes_dir
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| app.schemes_dir.clone(), Path::to_path_buf);
+
+    // `save_as` only knows about the directory it writes to. The wizard knows
+    // the whole discovered set, and `discover` lets `schemes/` shadow a
+    // vendored scheme of the same name — so saving "gruvbox-dark" would quietly
+    // hide the real one. Refuse that here, where the list is in hand.
+    let slug = cozy_theme::slugify(name);
+    if app.schemes.iter().any(|s| s.name == slug) {
+        return Err(format!("a scheme called {slug} already exists"));
+    }
+
+    let path = scheme
+        .save_as(&dir, name, from.as_deref())
+        .map_err(|e| e.to_string())?;
+
+    app.adjust = Adjust::default();
+    // Saving is the end of adjusting: close the panel so the new scheme is
+    // visible in the list, selected, with the confirmation under it.
+    app.adjusting = false;
+    // Re-discover so the new scheme is in the list, and land on it.
+    let saved_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    app.schemes = discover(&dir);
+    if let Some(i) = app.schemes.iter().position(|s| s.name == saved_name) {
+        app.theme_row = i;
+        app.theme_top = i.saturating_sub(3);
+    }
+    app.load_selected();
+    Ok(format!("saved as {saved_name}"))
+}
+
+/// The save-as prompt: a name, and what it will become.
+fn draw_save_prompt(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divider: bool) {
+    let block = Block::default()
+        .borders(if divider {
+            Borders::RIGHT
+        } else {
+            Borders::NONE
+        })
+        .border_style(Style::default().fg(t.selection))
+        .padding(Padding::right(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let name = app.saving.clone().unwrap_or_default();
+    let mut lines = vec![
+        Line::styled(
+            "Save this scheme as",
+            Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            format!("{name}_"),
+            Style::default().fg(t.green).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            // The filename, so the slugifying is not a surprise. Truncated
+            // rather than wrapped: a path broken across two lines is harder to
+            // read than one with its tail cut off.
+            truncate(
+                &format!("→ {}.yaml", cozy_theme::slugify(&name)),
+                inner.width as usize,
+            ),
+            Style::default().fg(t.comment),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "Saved into schemes/ as a scheme of its own, adjustments baked in.",
+            Style::default().fg(t.fg),
+        ),
+    ];
+    if let Some(Err(why)) = &app.saved_note {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(why.clone(), Style::default().fg(t.red)));
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
+        inner,
+    );
 }

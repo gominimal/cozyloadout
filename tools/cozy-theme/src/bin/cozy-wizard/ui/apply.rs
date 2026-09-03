@@ -43,23 +43,11 @@ pub fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
             if app.adjust.is_identity() {
                 "no — the scheme as published".to_string()
             } else {
-                // Name the knobs that are actually set, not all six: the
-                // summary is for spotting what you changed.
-                let set: Vec<String> = [
-                    ("contrast", app.adjust.contrast),
-                    ("accents", app.adjust.saturation),
-                    ("comments", app.adjust.comments),
-                    ("surfaces", app.adjust.separation),
-                    ("background", app.adjust.background),
-                    ("warmth", app.adjust.warmth),
-                ]
-                .into_iter()
-                .filter(|(_, v)| *v != 0)
-                .map(|(k, v)| format!("{k} {v:+}"))
-                .collect();
+                // Named by the same function the theme page's footer uses, so
+                // the two cannot describe one adjustment differently.
                 format!(
                     "{}  → {}",
-                    set.join(", "),
+                    super::themes::knob_summary(app.adjust),
                     app.scheme().map_or_else(String::new, |s| s.slug)
                 )
             },
@@ -125,9 +113,10 @@ pub fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
     let t = app.theme();
     frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
 
-    let [intro_area, summary_area, list_area, status_area] = Layout::vertical([
+    let [intro_area, summary_area, tick_area, list_area, status_area] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(11),
+        Constraint::Length(9),
+        Constraint::Length(2),
         Constraint::Length(9),
         Constraint::Min(1),
     ])
@@ -142,6 +131,26 @@ pub fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
     );
 
     frame.render_widget(summary_paragraph(app, &t), summary_area);
+
+    // The tick sits above the actions, not among them: the list is a list of
+    // actions, and a row where enter toggles rather than acts would be the one
+    // place on the screen where enter means something else.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                if app.install { "  [x] " } else { "  [ ] " },
+                Style::default()
+                    .fg(if app.install { t.green } else { t.comment })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "install into ~/.config/minimal/loadouts/",
+                Style::default().fg(if app.install { t.fg } else { t.comment }),
+            ),
+            Span::styled("   space toggles", Style::default().fg(t.comment)),
+        ])),
+        tick_area,
+    );
 
     let items: Vec<ListItem> = Action::ALL
         .iter()
@@ -159,15 +168,22 @@ pub fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
                 Style::default().fg(t.fg)
             };
             ListItem::new(vec![
-                Line::from(Span::styled(format!("  {:<24}", a.label()), style)),
                 Line::from(Span::styled(
-                    format!("    {}", a.about()),
+                    format!("  {:<28}", a.label(app.install)),
+                    style,
+                )),
+                Line::from(Span::styled(
+                    format!("    {}", a.about(app.install)),
                     Style::default().fg(t.comment),
                 )),
             ])
         })
         .collect();
-    frame.render_widget(List::new(items), list_area);
+    if app.saving_settings.is_some() {
+        draw_settings_prompt(frame, list_area, app, &t);
+    } else {
+        frame.render_widget(List::new(items), list_area);
+    }
 
     let status = match &app.applied {
         Applied::Idle => Line::raw(""),
@@ -204,6 +220,10 @@ pub fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
 // --- keys -----------------------------------------------------------------
 
 pub fn on_key_apply(app: &mut App, key: KeyEvent) {
+    if app.saving_settings.is_some() {
+        on_key_saving_settings(app, key);
+        return;
+    }
     // Once the action has run, any key leaves. Naming two specific keys
     // made people hunt for them, and there is nothing else to do here:
     // re-running from the same screen would be a second build nobody asked
@@ -221,9 +241,62 @@ pub fn on_key_apply(app: &mut App, key: KeyEvent) {
         KeyCode::Down | KeyCode::Char('j') => {
             app.action_row = (app.action_row + 1).min(Action::ALL.len() - 1);
         }
-        KeyCode::Enter | KeyCode::Char(' ') => app.apply(),
+        // Space toggles the tick from anywhere on the page rather than making
+        // it a row: the list is a list of *actions*, and a row where enter
+        // toggles instead of acting would be the one place enter means
+        // something else.
+        KeyCode::Char(' ') => app.install = !app.install,
+        KeyCode::Enter => app.apply(),
         _ => {}
     }
+}
+
+/// The prompt for where to write the settings.
+fn on_key_saving_settings(app: &mut App, key: KeyEvent) {
+    let Some(buffer) = app.saving_settings.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            app.saving_settings = None;
+            app.settings_note = None;
+        }
+        KeyCode::Backspace => {
+            buffer.pop();
+        }
+        KeyCode::Char(c) => buffer.push(c),
+        KeyCode::Enter => {
+            let path = PathBuf::from(buffer.trim());
+            match save_settings_to(app, &path) {
+                Ok(note) => {
+                    app.saving_settings = None;
+                    // Written, so this run counts as finished: the automatic
+                    // file should record it too.
+                    app.completed = true;
+                    app.applied = Applied::Ok(note);
+                }
+                // A refused path keeps the prompt open with the text in it.
+                Err(why) => app.settings_note = Some(Err(why)),
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Write the answers to a file of the user's choosing.
+fn save_settings_to(app: &App, path: &Path) -> Result<String, String> {
+    if path.as_os_str().is_empty() {
+        return Err("give it a name".to_string());
+    }
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    app.to_state().save(path)?;
+    Ok(format!(
+        "saved {}\nrebuild it with: cozy-theme --settings {}",
+        path.display(),
+        path.display()
+    ))
 }
 
 pub fn enter_apply(app: &mut App) {
@@ -236,10 +309,48 @@ pub fn enter_apply(app: &mut App) {
 
 /// The keys this screen answers to, for the footer.
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.saving_settings.is_some() {
+        return vec![("type", "a path"), ("enter", "save"), ("esc", "cancel")];
+    }
     // Once it has run there is nothing left to choose; the result is on screen
     // and any key takes you out.
     if matches!(app.applied, Applied::Ok(_) | Applied::Failed(_)) {
         return vec![("any key", "exit")];
     }
-    vec![("↑/↓", "move"), ("enter", "do it"), ("esc", "back")]
+    vec![
+        ("↑/↓", "move"),
+        ("space", "install on/off"),
+        ("enter", "do it"),
+        ("esc", "back"),
+    ]
+}
+
+/// Where to write the settings, and what that file is for.
+fn draw_settings_prompt(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    let path = app.saving_settings.clone().unwrap_or_default();
+    let mut lines = vec![
+        Line::styled(
+            "  Save these settings to",
+            Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            format!("  {path}_"),
+            Style::default().fg(t.green).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "  Every answer on this page, as a file. `cozy-theme --settings <file>` \
+             rebuilds this loadout from it on any machine.",
+            Style::default().fg(t.fg),
+        ),
+    ];
+    if let Some(Err(why)) = &app.settings_note {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(format!("  {why}"), Style::default().fg(t.red)));
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
+        area,
+    );
 }
