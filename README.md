@@ -72,7 +72,7 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 
 ## The wizard
 
-`just wizard` is the recommended way to set the loadout up. Five screens:
+`just wizard` is the recommended way to set the loadout up. Seven screens:
 
 | | |
 | --- | --- |
@@ -81,17 +81,24 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 | **Themes** | every scheme on disk, with the whole interface re-painting in each one as you scroll, next to a preview of a prompt, highlighted code and a diff |
 | **Packages** | which optional packages to install, with a description and licence for each, plus a field for any others you want |
 | **Patches** | file and directory pickers for your own dotfiles |
+| **Detach** | the leader and detach chords, checked against the rules minimal enforces |
+| **Resources** | how many cores and how much memory the microVM gets, within minvmd's own limits |
 
 It ends with a summary and four choices: generate and install, generate only,
 save your answers without building, or abort. `esc` goes back a screen from
 anywhere, and your answers are remembered in a gitignored `.cozy-wizard.toml`
 so the next run starts where you left off.
 
-Nothing it does is exclusive to it.
+The last two screens configure **minimal itself, not the loadout** — they write
+`~/.config/minimal/config.toml` and run `minvmd config set`, and they apply to
+every session rather than only this one. They only act when you change something
+away from the default, and only under *generate and install*; *generate* leaves
+everything outside this repo alone. The summary marks both rows so it's clear
+before anything is written.
 
 ### Without the wizard
 
-Every step it takes is a recipe you can run yourself:
+The loadout itself is entirely reachable from the recipes:
 
 ```shell
 just fetch-schemes             # optional: pull in the upstream schemes
@@ -104,6 +111,11 @@ Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is check
 ```shell
 cargo run --release --manifest-path tools/cozy-theme/Cargo.toml -- --help
 ```
+
+The two host-level screens have no recipe, because neither is the loadout's to
+set. Do those yourself: put `[session-keys]` in `~/.config/minimal/config.toml`
+(see minimal's loadouts reference for the rules), and run
+`minvmd config set --vcpus N --ram-mib M`.
 
 ## Patching in your own files
 

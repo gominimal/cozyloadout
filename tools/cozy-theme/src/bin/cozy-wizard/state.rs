@@ -40,6 +40,20 @@ pub struct State {
     /// Absolute paths chosen in the two pickers.
     pub files: Vec<PathBuf>,
     pub dirs: Vec<PathBuf>,
+
+    /// The session-key chords, in minimal's own config spelling (`ctrl-]`,
+    /// `d`). Stored as typed rather than parsed so a chord minimal later stops
+    /// accepting reads back as "unset" instead of failing the whole file.
+    pub leader: Option<String>,
+    pub detach: Option<String>,
+    pub forward: Option<String>,
+    pub bell_on_leader: Option<bool>,
+
+    /// The VM allocation. Re-checked against the host on load — this file
+    /// travels with the checkout, and a pick from a bigger machine must not
+    /// propose a VM this one cannot boot.
+    pub vcpus: Option<u8>,
+    pub ram_mib: Option<u32>,
 }
 
 impl State {
@@ -98,6 +112,10 @@ mod tests {
             extra: "emacs tmux".into(),
             files: vec![PathBuf::from("/etc/hosts")],
             dirs: vec![PathBuf::from("/tmp")],
+            leader: Some("ctrl-a".into()),
+            bell_on_leader: Some(true),
+            vcpus: Some(4),
+            ram_mib: Some(8192),
             ..State::default()
         };
         s.packages.insert("fzf".into(), true);
@@ -112,6 +130,10 @@ mod tests {
         assert_eq!(back.dirs, vec![PathBuf::from("/tmp")]);
         assert!(back.wants_package("fzf", false));
         assert!(!back.wants_package("glow", true));
+        assert_eq!(back.leader.as_deref(), Some("ctrl-a"));
+        assert_eq!(back.bell_on_leader, Some(true));
+        assert_eq!(back.vcpus, Some(4));
+        assert_eq!(back.ram_mib, Some(8192));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

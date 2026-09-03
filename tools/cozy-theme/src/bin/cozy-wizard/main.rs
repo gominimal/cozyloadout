@@ -2,10 +2,14 @@
 //!
 //! Run it with `just wizard`. See AGENTS.md for the build pipeline.
 
+mod keys;
 mod picker;
+mod resources;
 mod state;
 
+use keys::{Bindings, Key};
 use picker::{Pick, Picker};
+use resources::{Resources, Step};
 use state::State;
 
 use clap::Parser;
@@ -194,7 +198,7 @@ impl Greeting {
         }
     }
 
-    /// Whether the "ctrl-w to detach" line is printed under the mark.
+    /// Whether the "… to detach" line is printed under the mark.
     fn has_detach_line(self) -> bool {
         self != Greeting::None
     }
@@ -307,6 +311,108 @@ fn spawn_fetch(kind: FetchKind, dir: &Path) -> Fetch {
     Fetch::Running(0, rx)
 }
 
+/// Minimal's client config, which is where `[session-keys]` lives.
+///
+/// `$XDG_CONFIG_HOME` first, matching `paths::minimal_config_dir` in minimal —
+/// and matching the XDG spec's rule that a relative value is invalid and
+/// ignored. Otherwise `~/.config`, the same assumption the loadouts directory
+/// already makes.
+fn client_config_path(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".config"))
+        .join("minimal/config.toml")
+}
+
+/// Write `[session-keys]` into minimal's client config.
+///
+/// Edited rather than rewritten: this is a file the user may have written by
+/// hand, with comments and a `[loadouts]` section the wizard knows nothing
+/// about. `toml_edit` keeps all of it — formatting, comments, key order — and
+/// changes only the four values this page owns.
+///
+/// Returns what changed, for the summary line.
+fn apply_client(path: &Path, bindings: &Bindings) -> Result<String, String> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        format!(
+            "{} is not valid TOML ({e}); leaving it alone",
+            path.display()
+        )
+    })?;
+
+    let table = doc["session-keys"].or_insert(toml_edit::table());
+    // `implicit` would omit the header, which is wrong for a table the user is
+    // meant to find and edit later.
+    if let Some(t) = table.as_table_mut() {
+        t.set_implicit(false);
+    }
+    table["leader"] = toml_edit::value(bindings.leader.as_config_str());
+    table["bell_on_leader"] = toml_edit::value(bindings.bell);
+    let subs = table["subcommands"].or_insert(toml_edit::table());
+    if let Some(t) = subs.as_table_mut() {
+        t.set_implicit(false);
+    }
+    subs["detach"] = toml_edit::value(bindings.detach.as_config_str());
+    subs["forward"] = toml_edit::value(bindings.forward.as_config_str());
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, doc.to_string()).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(format!(
+        "detach is {} ({})",
+        bindings.hint(),
+        path.display()
+    ))
+}
+
+/// Persist the VM allocation by running `minvmd config set`.
+///
+/// Not by writing minvmd's `config.toml` directly: that command validates
+/// against host capacity, serialises the read-modify-write under the lifecycle
+/// lock, and derives its own state directory. Reproducing any of that here
+/// would be a guess that breaks silently when minvmd moves.
+fn apply_resources(alloc: resources::Allocation) -> Result<String, String> {
+    let Some(bin) = resources::minvmd_on_path() else {
+        return Err("minvmd is not on PATH".to_string());
+    };
+    let out = Command::new(&bin)
+        .args([
+            "config",
+            "set",
+            "--vcpus",
+            &alloc.vcpus.to_string(),
+            "--ram-mib",
+            &alloc.ram_mib.to_string(),
+        ])
+        .output()
+        .map_err(|e| format!("running {}: {e}", bin.display()))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if why.is_empty() {
+            format!("minvmd config set failed ({})", out.status)
+        } else {
+            why
+        });
+    }
+    Ok(format!(
+        "VM gets {} cores and {}",
+        alloc.vcpus,
+        resources::format_mib(alloc.ram_mib)
+    ))
+}
+
+/// The detach chord shown in the greeting preview.
+///
+/// The generated config reads `$MINIMAL_DETACH_HINT`, which minimald seeds from
+/// the keys negotiated for that attach channel — but there is no session to
+/// negotiate with while the wizard is running, so the preview shows the
+/// fallback. It is the same string the template falls back to, and the same one
+/// minimal's own orientation banner uses.
+const DETACH_FALLBACK: &str = "ctrl-] then d";
+
 /// The host home, which patch destinations are computed relative to.
 fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
@@ -360,9 +466,12 @@ impl Action {
 
     fn about(self) -> &'static str {
         match self {
-            Action::Generate => "Render the loadout into build/. Nothing outside this repo changes.",
+            Action::Generate => {
+                "Render the loadout into build/. Nothing outside this repo changes."
+            }
             Action::GenerateAndInstall => {
-                "Render, bundle, and unzip into ~/.config/minimal/loadouts/, replacing what is there."
+                "Render into ~/.config/minimal/loadouts/, replacing what is there, and apply any \
+                 detach or VM changes."
             }
             Action::SaveOnly => "Remember these answers for next time without building anything.",
             Action::Abort => "Leave without building anything or remembering these answers.",
@@ -469,6 +578,8 @@ enum Screen {
     Themes,
     Packages,
     Patches,
+    Client,
+    Resources,
     Apply,
 }
 
@@ -513,6 +624,18 @@ struct App {
     /// Package names installed regardless of any choice on this page — used
     /// only to tell the user a typed name is already covered.
     always: Vec<String>,
+    /// The session-key bindings from the client page, and its cursor. These
+    /// configure minimal itself rather than the loadout — see `apply_client`.
+    bindings: Bindings,
+    client_row: usize,
+    /// `Some(buffer)` while a chord is being retyped. Editing is modal because
+    /// the field takes arbitrary text, including the letters the page's own
+    /// keys would otherwise swallow.
+    editing: Option<String>,
+
+    /// The VM's share of this machine, probed on the way into the page.
+    resources: Resources,
+
     /// The two pickers on the patches page, and which one has the keys.
     /// Files and directories are separate because a loadout patches them
     /// differently: a file maps to one dest, a directory to a glob.
@@ -560,10 +683,16 @@ impl App {
             .and_then(Greeting::from_key)
             .and_then(|g| Greeting::ALL.iter().position(|x| *x == g))
             .unwrap_or(0);
-        Self {
+        let mut app = Self {
             screen: Screen::Greeting,
             schemes_dir,
             home: home(),
+            bindings: Bindings::default(),
+            client_row: 0,
+            editing: None,
+            // Probing reads /proc or runs sysctl, so it happens once here
+            // rather than on every frame.
+            resources: Resources::probe(),
             greeting_row,
             greeting: None,
             fetch_kind,
@@ -589,7 +718,12 @@ impl App {
             completed: false,
             extra: String::new(),
             done: false,
-        }
+        };
+        // Both host-settings pages restore here rather than on entry: neither
+        // depends on anything discovered later (unlike the scheme list), and
+        // the summary reads them even if the user never opens either page.
+        app.restore_host_settings();
+        app
     }
 
     /// Everything worth remembering from this run.
@@ -618,7 +752,40 @@ impl App {
                 .get(1)
                 .map(|p| p.chosen.iter().cloned().collect())
                 .unwrap_or_default(),
+            leader: Some(self.bindings.leader.as_config_str()),
+            detach: Some(self.bindings.detach.as_config_str()),
+            forward: Some(self.bindings.forward.as_config_str()),
+            bell_on_leader: Some(self.bindings.bell),
+            vcpus: Some(self.resources.allocation().vcpus),
+            ram_mib: Some(self.resources.allocation().ram_mib),
         }
+    }
+
+    /// Restore the two host-settings pages from the file.
+    ///
+    /// Both are restored *validated*: a chord set that no longer passes — the
+    /// file was hand-edited, or minimal tightened a rule — falls back to the
+    /// defaults whole rather than leaving a half-applied set, and a VM size
+    /// this host cannot offer is dropped per field by `Resources::restore`.
+    fn restore_host_settings(&mut self) {
+        let parse = |s: &Option<String>, fallback: Key| {
+            s.as_deref()
+                .and_then(|t| Key::parse(t).ok())
+                .unwrap_or(fallback)
+        };
+        let d = Bindings::default();
+        let restored = Bindings {
+            leader: parse(&self.saved.leader, d.leader),
+            detach: parse(&self.saved.detach, d.detach),
+            forward: parse(&self.saved.forward, d.forward),
+            bell: self.saved.bell_on_leader.unwrap_or(d.bell),
+        };
+        self.bindings = if restored.validate().is_ok() {
+            restored
+        } else {
+            d
+        };
+        self.resources.restore(self.saved.vcpus, self.saved.ram_mib);
     }
 
     /// Colours to draw with: the selected scheme's, or the wizard's own before
@@ -723,7 +890,8 @@ impl App {
         // `q` quits everywhere except inside the text field, where it is just a
         // letter — a wizard that exits when you type `qt5` would be absurd.
         // Ctrl-C still gets you out from anywhere.
-        let typing = self.screen == Screen::Packages && self.focus == Focus::Input;
+        let typing = (self.screen == Screen::Packages && self.focus == Focus::Input)
+            || (self.screen == Screen::Client && self.editing.is_some());
         if ctrl_c || (key.code == KeyCode::Char('q') && !typing) {
             self.done = true;
             return;
@@ -737,6 +905,8 @@ impl App {
             Screen::Themes => self.on_key_themes(key),
             Screen::Packages => self.on_key_packages(key),
             Screen::Patches => self.on_key_patches(key),
+            Screen::Client => self.on_key_client(key),
+            Screen::Resources => self.on_key_resources(key),
             Screen::Apply => self.on_key_apply(key),
         }
     }
@@ -986,7 +1156,7 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Esc => self.screen = Screen::Patches,
+            KeyCode::Esc => self.screen = Screen::Resources,
             KeyCode::Up | KeyCode::Char('k') => {
                 self.action_row = self.action_row.saturating_sub(1);
             }
@@ -1012,11 +1182,47 @@ impl App {
                 self.applied = Applied::Running(action.label());
                 let repo = self.repo.clone();
                 self.applied = match run_generate(self, &repo, install) {
+                    // The host settings ride with `install`, not with
+                    // `Generate`: Generate promises that nothing outside this
+                    // repo changes, and minimal's config and minvmd's state
+                    // are both outside it.
+                    Ok(report) if install => Applied::Ok(self.apply_host_settings(report)),
                     Ok(report) => Applied::Ok(report),
                     Err(why) => Applied::Failed(why),
                 };
             }
         }
+    }
+
+    /// Apply the two settings that live outside the loadout, appending what
+    /// happened to the install report.
+    ///
+    /// Neither failure is fatal. The loadout is already written by this point,
+    /// and "your detach chord could not be saved" is not a reason to tell
+    /// someone their install failed — so both are reported as extra lines
+    /// rather than by turning the whole run into a failure.
+    fn apply_host_settings(&self, mut report: String) -> String {
+        if !self.bindings.is_default() {
+            match apply_client(&client_config_path(&self.home), &self.bindings) {
+                Ok(what) => {
+                    let _ = write!(report, "\n{what}");
+                }
+                Err(why) => {
+                    let _ = write!(report, "\ndetach keys NOT saved: {why}");
+                }
+            }
+        }
+        if !self.resources.is_default() {
+            match apply_resources(self.resources.allocation()) {
+                Ok(what) => {
+                    let _ = write!(report, "\n{what}");
+                }
+                Err(why) => {
+                    let _ = write!(report, "\nVM settings NOT applied: {why}");
+                }
+            }
+        }
+        report
     }
 
     fn on_key_patches(&mut self, key: KeyEvent) {
@@ -1047,6 +1253,108 @@ impl App {
             // Enter finishes rather than descending: descending is on the
             // arrow that points into the tree, which leaves enter free to mean
             // the same thing it means on every other page.
+            KeyCode::Enter => self.screen = Screen::Client,
+            _ => {}
+        }
+    }
+
+    /// The four rows on the client page, in the order they are drawn.
+    const CLIENT_ROWS: usize = 4;
+
+    /// Read the row's current value back as text, for the edit buffer to start
+    /// from — retyping a chord usually means changing one character of it.
+    fn client_field_text(&self, row: usize) -> String {
+        match row {
+            0 => self.bindings.leader.as_config_str(),
+            1 => self.bindings.detach.as_config_str(),
+            2 => self.bindings.forward.as_config_str(),
+            _ => String::new(),
+        }
+    }
+
+    /// Commit an edited chord, or report why it cannot be committed.
+    ///
+    /// The whole binding set is re-validated rather than just the new key,
+    /// because the rules that matter here are about the set: a detach key is
+    /// only wrong *relative to* the leader and the forward key.
+    fn commit_client_field(&mut self, row: usize, text: &str) -> Result<(), keys::KeyError> {
+        let key = Key::parse(text.trim())?;
+        let mut next = self.bindings;
+        match row {
+            0 => next.leader = key,
+            1 => next.detach = key,
+            2 => next.forward = key,
+            _ => return Ok(()),
+        }
+        next.validate()?;
+        self.bindings = next;
+        Ok(())
+    }
+
+    fn on_key_client(&mut self, key: KeyEvent) {
+        if let Some(buffer) = self.editing.as_mut() {
+            match key.code {
+                KeyCode::Esc => self.editing = None,
+                KeyCode::Enter => {
+                    let text = buffer.clone();
+                    let row = self.client_row;
+                    // A rejected chord keeps the buffer open with the text
+                    // still in it: the error names what is wrong, and the fix
+                    // is usually one character.
+                    if self.commit_client_field(row, &text).is_ok() {
+                        self.editing = None;
+                    }
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                // `ctrl-]` is a chord the user may well want to type. Accept it
+                // as the text it stands for rather than as a keystroke, so the
+                // page can configure the very key it is being pressed with.
+                KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    *buffer = format!("ctrl-{}", c.to_ascii_lowercase());
+                }
+                KeyCode::Char(c) => buffer.push(c),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => self.screen = Screen::Patches,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.client_row = self.client_row.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.client_row = (self.client_row + 1).min(Self::CLIENT_ROWS - 1);
+            }
+            KeyCode::Char('r') => self.bindings = Bindings::default(),
+            KeyCode::Char(' ') if self.client_row == 3 => {
+                self.bindings.bell = !self.bindings.bell;
+            }
+            KeyCode::Char(' ') => {
+                self.editing = Some(self.client_field_text(self.client_row));
+            }
+            // Enter moves on, as it does on every other page. Space changes
+            // the row under the cursor, as it does on the packages page.
+            KeyCode::Enter => self.screen = Screen::Resources,
+            _ => {}
+        }
+    }
+
+    fn on_key_resources(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.screen = Screen::Client,
+            // Up/down pick the field and left/right change it — the same shape
+            // minimal's own resource screen uses.
+            KeyCode::Up | KeyCode::Down | KeyCode::Char('k' | 'j') => {
+                self.resources.toggle_field();
+            }
+            KeyCode::Left | KeyCode::Char('h') => self.resources.adjust(Step::Down),
+            KeyCode::Right | KeyCode::Char('l') => self.resources.adjust(Step::Up),
+            KeyCode::Char('r') => {
+                let host = self.resources.host;
+                self.resources = Resources::for_host(host);
+            }
             KeyCode::Enter => self.enter_apply(),
             _ => {}
         }
@@ -1267,6 +1575,8 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::Themes => draw_themes(frame, inner, app),
         Screen::Packages => draw_packages(frame, inner, app),
         Screen::Patches => draw_patches(frame, inner, app),
+        Screen::Client => draw_client(frame, inner, app),
+        Screen::Resources => draw_resources(frame, inner, app),
         Screen::Apply => draw_apply(frame, inner, app),
     }
     frame.render_widget(
@@ -1340,6 +1650,28 @@ fn footer_hints(app: &App) -> Vec<Span<'static>> {
             hint("space", "toggle"),
             hint("a/n", "all/none"),
             hint("i", "add by name"),
+            hint("esc", "back"),
+            hint("enter", "done"),
+        ]
+        .concat(),
+        Screen::Client if app.editing.is_some() => [
+            hint("type", "the chord"),
+            hint("enter", "accept"),
+            hint("esc", "cancel"),
+        ]
+        .concat(),
+        Screen::Client => [
+            hint("↑/↓", "move"),
+            hint("space", "change"),
+            hint("r", "reset"),
+            hint("esc", "back"),
+            hint("enter", "done"),
+        ]
+        .concat(),
+        Screen::Resources => [
+            hint("↑/↓", "cores/memory"),
+            hint("←/→", "adjust"),
+            hint("r", "reset"),
             hint("esc", "back"),
             hint("enter", "done"),
         ]
@@ -1426,7 +1758,7 @@ fn draw_greeting_preview(frame: &mut Frame, area: Rect, greeting: Greeting) {
         }
         lines.push(Line::from(vec![
             Span::raw("Welcome to minimal! "),
-            Span::styled("ctrl-w", Style::default().fg(Color::Cyan)),
+            Span::styled(DETACH_FALLBACK, Style::default().fg(Color::Cyan)),
             Span::raw(" to detach"),
         ]));
     } else {
@@ -2066,6 +2398,28 @@ fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
                 format!("{files} file(s), {dirs} director(ies)")
             },
         ),
+        // These two configure minimal itself, not the loadout, so they are
+        // marked as such: the rows above are undone by deleting `build/`,
+        // these are not.
+        row(
+            "detach",
+            if app.bindings.is_default() {
+                format!("{} (default, unchanged)", app.bindings.hint())
+            } else {
+                format!("{} — writes minimal's config", app.bindings.hint())
+            },
+        ),
+        row("vm", {
+            let a = app.resources.allocation();
+            let what = format!("{} cores, {}", a.vcpus, resources::format_mib(a.ram_mib));
+            if app.resources.is_default() {
+                format!("{what} (default, unchanged)")
+            } else if resources::minvmd_on_path().is_none() {
+                format!("{what} — minvmd not on PATH, will not be applied")
+            } else {
+                format!("{what} — runs minvmd config set")
+            }
+        }),
         // The same warning the patches page shows, repeated here because this
         // is the last screen before anything is written.
         if displaced.is_empty() {
@@ -2087,7 +2441,7 @@ fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
 
     let [intro_area, summary_area, list_area, status_area] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(8),
+        Constraint::Length(10),
         Constraint::Length(9),
         Constraint::Min(1),
     ])
@@ -2253,6 +2607,282 @@ fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
         summary,
     );
+}
+
+/// The client page: the session-key chords, which live in minimal's own
+/// config rather than in the loadout.
+///
+/// The page is emphatic about that boundary. Everything else the wizard
+/// collects ends up in `build/`, reversible by deleting it; these four rows end
+/// up in a file the user may have written by hand, and one of them decides
+/// whether they can get out of a session at all.
+fn draw_client(frame: &mut Frame, inner: Rect, app: &App) {
+    let t = app.theme();
+    let intro = intro_paragraph(
+        "How you get out of a session.",
+        format!(
+            "Detaching is a two-key gesture: the leader, then the detach key. \
+             These are minimal's own settings, not the loadout's — they go in \
+             {}, and they apply to every session, not just this one.",
+            shorten_home(&client_config_path(&app.home), &app.home)
+        ),
+    );
+
+    let [intro_area, body, footer] = Layout::vertical([
+        Constraint::Length(THEME_INTRO_ROWS + 1),
+        Constraint::Min(6),
+        Constraint::Length(3),
+    ])
+    .areas(inner);
+    frame.render_widget(intro, intro_area);
+
+    let b = &app.bindings;
+    let rows: [(&str, String, &str); 4] = [
+        (
+            "Leader",
+            b.leader.as_config_str(),
+            "enters command mode; swallowed, never sent to the shell",
+        ),
+        (
+            "Detach",
+            b.detach.as_config_str(),
+            "pressed after the leader, leaves the session running",
+        ),
+        (
+            "Forward",
+            b.forward.as_config_str(),
+            "sends a literal leader down to a nested session",
+        ),
+        (
+            "Bell on leader",
+            if b.bell { "yes".into() } else { "no".into() },
+            "ring the terminal bell when command mode opens",
+        ),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, value, about)) in rows.iter().enumerate() {
+        let focused = i == app.client_row;
+        let editing = focused && app.editing.is_some();
+        let shown = if editing {
+            // A caret, so an emptied field still shows where typing lands.
+            format!("{}_", app.editing.as_deref().unwrap_or(""))
+        } else {
+            value.clone()
+        };
+        let accent = if editing {
+            t.orange
+        } else if focused {
+            t.blue
+        } else {
+            t.fg
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} {label:<15}", if focused { "▸" } else { " " }),
+                if focused {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.fg)
+                },
+            ),
+            Span::styled(
+                format!("{shown:<14}"),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled((*about).to_string(), Style::default().fg(t.comment)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)), body);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(client_notes(app, &t))).wrap(Wrap { trim: true }),
+        footer,
+    );
+}
+
+/// The strip under the client page: whichever of these is true — the reason an
+/// edit cannot be accepted, or the warning that a plain leader is a poor
+/// choice — and always the resulting gesture, spelled out.
+fn client_notes(app: &App, t: &Theme) -> Vec<Line<'static>> {
+    let mut notes: Vec<Line> = Vec::new();
+    if let Some(buffer) = &app.editing {
+        if let Err(e) = Key::parse(buffer.trim()).and_then(|k| {
+            let mut next = app.bindings;
+            match app.client_row {
+                0 => next.leader = k,
+                1 => next.detach = k,
+                2 => next.forward = k,
+                _ => {}
+            }
+            next.validate()
+        }) {
+            notes.push(Line::styled(e.to_string(), Style::default().fg(t.red)));
+        }
+    } else if app.bindings.leader.is_awkward_leader() {
+        notes.push(Line::styled(
+            format!(
+                "`{}` is a plain key, so every press of it opens command mode. \
+                 Allowed, but awkward.",
+                app.bindings.leader.as_config_str()
+            ),
+            Style::default().fg(t.orange),
+        ));
+    }
+    notes.push(Line::from(vec![
+        Span::styled("Detach with ", Style::default().fg(t.comment)),
+        Span::styled(
+            app.bindings.hint(),
+            Style::default().fg(t.green).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if app.bindings.is_default() {
+                "  (the default — nothing will be written)"
+            } else {
+                "  (the greeting will say so too)"
+            },
+            Style::default().fg(t.comment),
+        ),
+    ]));
+    notes
+}
+
+/// The VM page: how much of this machine a session gets.
+fn draw_resources(frame: &mut Frame, inner: Rect, app: &App) {
+    let t = app.theme();
+    let r = &app.resources;
+    let intro = intro_paragraph(
+        "How much of this machine the VM gets.",
+        "Minimal runs sessions in a microVM. These are minvmd's settings, applied with \
+         `minvmd config set` and picked up at the next boot — the limits below are its \
+         own, so nothing here can be set to something that will not start."
+            .to_string(),
+    );
+
+    let [intro_area, body, footer] = Layout::vertical([
+        Constraint::Length(THEME_INTRO_ROWS + 1),
+        Constraint::Min(5),
+        Constraint::Length(3),
+    ])
+    .areas(inner);
+    frame.render_widget(intro, intro_area);
+
+    let known = r.host.total_mib > 0;
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("  {:<15}", "This machine"),
+                Style::default().fg(t.comment),
+            ),
+            Span::styled(
+                if known {
+                    format!(
+                        "{} cores · {}",
+                        r.host.logical_cores,
+                        resources::format_mib(r.host.total_mib)
+                    )
+                } else {
+                    format!("{} cores · memory unknown", r.host.logical_cores)
+                },
+                Style::default().fg(t.fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("  {:<15}", "Allocatable"),
+                Style::default().fg(t.comment),
+            ),
+            Span::styled(
+                format!(
+                    "up to {} cores · {}",
+                    r.max_vcpus,
+                    resources::format_mib(r.max_ram_mib())
+                ),
+                Style::default().fg(t.fg),
+            ),
+        ]),
+        Line::raw(""),
+    ];
+
+    lines.extend(resource_rows(r, &t));
+    frame.render_widget(Paragraph::new(Text::from(lines)), body);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(resource_notes(r, known, &t))).wrap(Wrap { trim: true }),
+        footer,
+    );
+}
+
+/// The two adjustable rows: `▸ label  ◂ value ▸  max …`, lit when focused.
+fn resource_rows(r: &Resources, t: &Theme) -> Vec<Line<'static>> {
+    let alloc = r.allocation();
+    [
+        (
+            resources::Field::Cpu,
+            "CPU cores",
+            alloc.vcpus.to_string(),
+            format!("max {}", r.max_vcpus),
+        ),
+        (
+            resources::Field::Memory,
+            "Memory",
+            resources::format_mib(alloc.ram_mib),
+            format!("max {}", resources::format_mib(r.max_ram_mib())),
+        ),
+    ]
+    .into_iter()
+    .map(|(field, label, value, max)| {
+        let focused = r.field == field;
+        // Arrows only on the focused row: an affordance for the keys that would
+        // act now, not decoration for every row.
+        let (left, right) = if focused {
+            ("◂ ", " ▸")
+        } else {
+            ("  ", "  ")
+        };
+        let accent = if focused { t.blue } else { t.fg };
+        Line::from(vec![
+            Span::styled(
+                format!("{} {label:<13}", if focused { "▸" } else { " " }),
+                if focused {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.fg)
+                },
+            ),
+            Span::styled(
+                format!("{left}{value:^9}{right}  "),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(max, Style::default().fg(t.comment)),
+        ])
+    })
+    .collect()
+}
+
+/// The strip under the VM page: why a limit is what it is, or why nothing will
+/// be applied.
+fn resource_notes(r: &Resources, host_known: bool, t: &Theme) -> Vec<Line<'static>> {
+    let mut notes: Vec<Line> = Vec::new();
+    if !host_known {
+        notes.push(Line::styled(
+            "Could not read this machine's memory, so the ceiling is the floor. \
+             Pick a size you know it has.",
+            Style::default().fg(t.orange),
+        ));
+    }
+    if resources::minvmd_on_path().is_none() {
+        notes.push(Line::styled(
+            "minvmd is not on PATH — the choice will be remembered, but nothing will be applied.",
+            Style::default().fg(t.orange),
+        ));
+    } else if r.is_default() {
+        notes.push(Line::styled(
+            "These are the defaults, so nothing will be applied.",
+            Style::default().fg(t.comment),
+        ));
+    }
+    notes
 }
 
 /// `~` for the home directory, because absolute paths are mostly prefix and
@@ -2583,7 +3213,7 @@ mod tests {
         }
         let text = flatten(&render_app(&a, 90, 30));
         assert!(
-            text.contains("ctrl-w to detach"),
+            text.contains("ctrl-] then d to detach"),
             "the detach line is the whole option"
         );
         assert!(!text.contains("████"), "no mark should be drawn");
@@ -2596,7 +3226,7 @@ mod tests {
             "an empty preview must say it is empty"
         );
         assert!(
-            !text.contains("ctrl-w to detach"),
+            !text.contains("ctrl-] then d to detach"),
             "nothing is printed at all"
         );
     }
@@ -2630,6 +3260,23 @@ mod tests {
                 g.key()
             );
         }
+    }
+
+    #[test]
+    fn the_previewed_detach_chord_is_the_one_the_template_falls_back_to() {
+        // The preview shows a chord the session has not negotiated yet, so the
+        // only thing keeping it honest is that it equals the template's own
+        // fallback. Both track minimal's `${MINIMAL_DETACH_HINT:-ctrl-] then
+        // d}`; if that default moves again, this is what says so.
+        let template = include_str!("../../../../../templates/fish/config.fish");
+        assert!(
+            template.contains(&format!("set -g __cozy_detach \"{DETACH_FALLBACK}\"")),
+            "the template's fallback no longer matches the preview's {DETACH_FALLBACK:?}"
+        );
+        assert!(
+            template.contains("set -g __cozy_detach $MINIMAL_DETACH_HINT"),
+            "the greeting should read the negotiated chord, not hardcode one"
+        );
     }
 
     #[test]
@@ -3435,7 +4082,7 @@ mod tests {
         a.on_key(press(KeyCode::Enter));
         assert_eq!(
             a.screen,
-            Screen::Apply,
+            Screen::Client,
             "enter should move on rather than descend"
         );
         std::fs::remove_dir_all(&root).unwrap();
@@ -3504,7 +4151,9 @@ mod tests {
 
         // And the summary repeats it, being the last screen before anything is
         // written.
-        a.on_key(press(KeyCode::Enter));
+        a.on_key(press(KeyCode::Enter)); // -> client
+        a.on_key(press(KeyCode::Enter)); // -> resources
+        a.on_key(press(KeyCode::Enter)); // -> apply
         assert_eq!(a.screen, Screen::Apply);
         let text = flatten(&render_app(&a, 110, 30));
         assert!(text.contains("replaces"), "{text}");
@@ -3634,7 +4283,9 @@ mod tests {
         a.on_key(press(KeyCode::Esc));
         let theme = a.schemes[a.theme_row].name.clone();
         a.on_key(press(KeyCode::Enter)); // packages -> patches
-        a.on_key(press(KeyCode::Enter)); // patches -> apply
+        a.on_key(press(KeyCode::Enter)); // patches -> client
+        a.on_key(press(KeyCode::Enter)); // client -> resources
+        a.on_key(press(KeyCode::Enter)); // resources -> apply
         assert_eq!(a.screen, Screen::Apply);
         for _ in 0..2 {
             a.on_key(press(KeyCode::Down)); // "save settings and exit"
@@ -3883,11 +4534,519 @@ mod tests {
     // -- the apply page ----------------------------------------------------
 
     fn on_apply() -> App {
-        let mut a = on_packages();
-        a.enter_patches();
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Resources);
         a.on_key(press(KeyCode::Enter));
         assert_eq!(a.screen, Screen::Apply);
         a
+    }
+
+    // -- the client and VM pages -------------------------------------------
+
+    fn on_client() -> App {
+        let mut a = on_packages();
+        a.enter_patches();
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Client);
+        a
+    }
+
+    fn on_resources() -> App {
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Enter));
+        a
+    }
+
+    #[test]
+    fn the_client_page_explains_that_it_is_not_the_loadout() {
+        // The one page that writes outside `build/`. If that stops being said
+        // plainly, someone will change their leader expecting it to be
+        // undone by deleting the repo.
+        let a = on_client();
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(text.contains("minimal's own settings"), "{text}");
+        assert!(text.contains("config.toml"), "{text}");
+        assert!(text.contains("every session"), "{text}");
+    }
+
+    #[test]
+    fn the_client_page_starts_on_minimals_shipped_defaults() {
+        let a = on_client();
+        assert!(a.bindings.is_default());
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(text.contains("ctrl-] then d"), "{text}");
+        assert!(
+            text.contains("nothing will be written"),
+            "an untouched page should promise to write nothing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn retyping_a_chord_changes_the_detach_gesture() {
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Char(' '))); // edit the leader
+        assert!(a.editing.is_some());
+        for _ in 0..8 {
+            a.on_key(press(KeyCode::Backspace));
+        }
+        typing(&mut a, "ctrl-a");
+        a.on_key(press(KeyCode::Enter));
+        assert!(a.editing.is_none(), "a valid chord should commit");
+        assert_eq!(a.bindings.hint(), "ctrl-a then d");
+        assert!(!a.bindings.is_default());
+    }
+
+    #[test]
+    fn a_chord_minimal_would_refuse_is_refused_here_with_the_reason() {
+        // ctrl-w is the one that matters: it is why the greeting's advice
+        // changed, and it is exactly what someone reaching for the old key
+        // would type.
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Char(' ')));
+        for _ in 0..8 {
+            a.on_key(press(KeyCode::Backspace));
+        }
+        typing(&mut a, "ctrl-w");
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(
+            text.contains("VWERASE"),
+            "the reason, not just a refusal:\n{text}"
+        );
+
+        a.on_key(press(KeyCode::Enter));
+        assert!(a.editing.is_some(), "a refused chord keeps the field open");
+        assert!(a.bindings.is_default(), "and changes nothing");
+    }
+
+    #[test]
+    fn a_detach_key_that_shadows_the_leader_is_refused_on_screen() {
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Down)); // the detach row
+        a.on_key(press(KeyCode::Char(' ')));
+        for _ in 0..4 {
+            a.on_key(press(KeyCode::Backspace));
+        }
+        // The default forward key *is* the leader, so this shadows both.
+        typing(&mut a, "ctrl-]");
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(text.contains("shadows"), "{text}");
+        a.on_key(press(KeyCode::Enter));
+        assert!(a.bindings.is_default(), "nothing should have changed");
+    }
+
+    #[test]
+    fn typing_the_leader_chord_itself_is_captured_as_text() {
+        // The page has to be able to configure the very key you press to get
+        // out of a session, so ctrl-<x> is read as the chord it names rather
+        // than as a keystroke to act on.
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Char(' ')));
+        a.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert_eq!(a.editing.as_deref(), Some("ctrl-a"));
+    }
+
+    #[test]
+    fn q_is_a_letter_while_typing_a_chord() {
+        // The same trap the packages page had: `q` quits everywhere else.
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Char(' ')));
+        a.on_key(press(KeyCode::Char('q')));
+        assert!(!a.done, "q should be text here, not the quit key");
+        assert!(a.editing.as_deref().unwrap_or("").ends_with('q'));
+    }
+
+    #[test]
+    fn r_puts_the_chords_back_to_the_defaults() {
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Char(' ')));
+        for _ in 0..8 {
+            a.on_key(press(KeyCode::Backspace));
+        }
+        typing(&mut a, "ctrl-a");
+        a.on_key(press(KeyCode::Enter));
+        assert!(!a.bindings.is_default());
+        a.on_key(press(KeyCode::Char('r')));
+        assert!(a.bindings.is_default(), "r should reset");
+    }
+
+    #[test]
+    fn the_bell_row_toggles_rather_than_opening_an_editor() {
+        let mut a = on_client();
+        for _ in 0..3 {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Char(' ')));
+        assert!(a.editing.is_none(), "the bell is a flag, not a chord");
+        assert!(a.bindings.bell);
+        a.on_key(press(KeyCode::Char(' ')));
+        assert!(!a.bindings.bell);
+    }
+
+    #[test]
+    fn enter_moves_on_from_the_client_page_like_everywhere_else() {
+        // Enter finishing a page is the one convention that holds across the
+        // whole wizard. The client page briefly used it to open an editor,
+        // which made this the only screen where finishing was a different key.
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Resources);
+        assert!(a.editing.is_none(), "enter must not open an editor");
+    }
+
+    #[test]
+    fn space_is_what_edits_a_chord() {
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Char(' ')));
+        assert_eq!(a.screen, Screen::Client, "space must not leave the page");
+        assert_eq!(a.editing.as_deref(), Some("ctrl-]"));
+    }
+
+    #[test]
+    fn neither_host_page_binds_tab() {
+        // Space changes the row under the cursor and enter finishes, as on the
+        // packages page. Tab has no third job to do here.
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Tab));
+        assert_eq!(a.screen, Screen::Client);
+        assert!(a.editing.is_none(), "tab should do nothing here");
+
+        let mut a = on_resources();
+        let before = a.resources.field;
+        a.on_key(press(KeyCode::Tab));
+        assert_eq!(a.screen, Screen::Resources);
+        assert_eq!(a.resources.field, before, "tab should do nothing here");
+    }
+
+    #[test]
+    fn the_client_footer_advertises_the_keys_it_actually_uses() {
+        let a = on_client();
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(text.contains("space change"), "{text}");
+        assert!(text.contains("enter done"), "{text}");
+    }
+
+    #[test]
+    fn the_vm_page_shows_the_host_and_its_ceilings() {
+        let a = on_resources();
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(text.contains("This machine"), "{text}");
+        assert!(text.contains("Allocatable"), "{text}");
+        assert!(
+            text.contains("CPU cores") && text.contains("Memory"),
+            "{text}"
+        );
+        assert!(
+            text.contains("minvmd"),
+            "it should name what applies this:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_vm_page_adjusts_the_focused_field_only() {
+        let mut a = on_resources();
+        let before = a.resources.allocation();
+        a.on_key(press(KeyCode::Right));
+        let after = a.resources.allocation();
+        assert_eq!(after.vcpus, before.vcpus + 1, "cores have the focus first");
+        assert_eq!(after.ram_mib, before.ram_mib, "memory should be untouched");
+
+        a.on_key(press(KeyCode::Down)); // switch fields
+        a.on_key(press(KeyCode::Right));
+        assert!(a.resources.allocation().ram_mib > before.ram_mib);
+    }
+
+    #[test]
+    fn both_pages_step_back_the_way_they_came() {
+        let mut a = on_resources();
+        a.on_key(press(KeyCode::Esc));
+        assert_eq!(a.screen, Screen::Client);
+        a.on_key(press(KeyCode::Esc));
+        assert_eq!(a.screen, Screen::Patches);
+    }
+
+    #[test]
+    fn the_summary_names_both_host_settings_and_says_when_they_are_untouched() {
+        let a = on_apply();
+        let text = flatten(&render_app(&a, 120, 40));
+        assert!(text.contains("detach"), "{text}");
+        assert!(text.contains("ctrl-] then d"), "{text}");
+        assert!(text.contains("vm"), "{text}");
+        // Untouched, so the summary must promise not to touch anything.
+        assert!(
+            text.matches("default, unchanged").count() >= 2,
+            "both rows should say they change nothing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_summary_says_when_a_host_setting_will_be_written() {
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Char(' ')));
+        for _ in 0..8 {
+            a.on_key(press(KeyCode::Backspace));
+        }
+        typing(&mut a, "ctrl-a");
+        a.on_key(press(KeyCode::Enter)); // commit the chord
+        a.on_key(press(KeyCode::Enter)); // client -> resources
+        a.on_key(press(KeyCode::Enter)); // resources -> apply
+        assert_eq!(a.screen, Screen::Apply);
+
+        let text = flatten(&render_app(&a, 120, 40));
+        assert!(text.contains("ctrl-a then d"), "{text}");
+        assert!(
+            text.contains("writes minimal's config"),
+            "the summary has to say this one leaves the repo:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_chords_and_the_vm_pick_survive_to_the_next_run() {
+        let mut a = on_client();
+        a.on_key(press(KeyCode::Char(' ')));
+        for _ in 0..8 {
+            a.on_key(press(KeyCode::Backspace));
+        }
+        typing(&mut a, "ctrl-a");
+        a.on_key(press(KeyCode::Enter)); // commit the chord
+        a.on_key(press(KeyCode::Enter)); // client -> resources
+        a.on_key(press(KeyCode::Right)); // one more core
+
+        let saved = a.to_state();
+        assert_eq!(saved.leader.as_deref(), Some("ctrl-a"));
+        assert_eq!(saved.vcpus, Some(a.resources.allocation().vcpus));
+
+        let back = App::with_state(a.schemes_dir.clone(), saved);
+        assert_eq!(back.bindings.hint(), "ctrl-a then d");
+        assert_eq!(
+            back.resources.allocation().vcpus,
+            a.resources.allocation().vcpus
+        );
+    }
+
+    #[test]
+    fn a_remembered_chord_set_that_no_longer_validates_falls_back_whole() {
+        // Hand-edited, or a rule minimal tightened later. Restoring half of a
+        // conflicting set would leave the user unable to detach at all, so the
+        // set falls back together.
+        let dir = temp_dir("bad-chords");
+        let saved = State {
+            leader: Some("ctrl-a".into()),
+            detach: Some("ctrl-a".into()), // shadows the leader
+            ..State::default()
+        };
+        let a = App::with_state(dir.clone(), saved);
+        assert!(
+            a.bindings.is_default(),
+            "an invalid set should not be half-restored: {:?}",
+            a.bindings
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_remembered_vm_size_this_host_cannot_offer_is_dropped() {
+        let dir = temp_dir("big-vm");
+        let saved = State {
+            vcpus: Some(250),
+            ram_mib: Some(1_048_576),
+            ..State::default()
+        };
+        let a = App::with_state(dir.clone(), saved);
+        assert!(a.resources.is_default(), "both were out of range");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writing_the_client_config_keeps_everything_else_in_the_file() {
+        // The whole reason this uses toml_edit. It is the user's file: it may
+        // have a [loadouts] section the wizard knows nothing about, and
+        // comments explaining why. Rewriting it from a value tree would throw
+        // both away silently.
+        let dir = temp_dir("client-cfg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "# my notes\n[loadouts]\ndefault_loadouts = [\"cozy\"]\nfollow_symlinks = true\n",
+        )
+        .unwrap();
+
+        let b = Bindings {
+            leader: Key::parse("ctrl-a").unwrap(),
+            forward: Key::parse("ctrl-a").unwrap(),
+            ..Bindings::default()
+        };
+        apply_client(&path, &b).unwrap();
+
+        let back = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            back.contains("# my notes"),
+            "the comment must survive:\n{back}"
+        );
+        assert!(back.contains("default_loadouts"), "{back}");
+        assert!(back.contains("follow_symlinks = true"), "{back}");
+        assert!(back.contains("[session-keys]"), "{back}");
+        assert!(back.contains("leader = \"ctrl-a\""), "{back}");
+        assert!(back.contains("[session-keys.subcommands]"), "{back}");
+        assert!(back.contains("detach = \"d\""), "{back}");
+
+        // And it has to be the shape minimal reads back.
+        let parsed: toml::Value = toml::from_str(&back).unwrap();
+        let sk = &parsed["session-keys"];
+        assert_eq!(sk["leader"].as_str(), Some("ctrl-a"));
+        assert_eq!(sk["bell_on_leader"].as_bool(), Some(false));
+        assert_eq!(sk["subcommands"]["detach"].as_str(), Some("d"));
+        assert_eq!(sk["subcommands"]["forward"].as_str(), Some("ctrl-a"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_written_shape_is_one_minimal_can_actually_read() {
+        // minimal's `SessionKeysConfig` schema, transcribed with
+        // `deny_unknown_fields` on — the same trick the generated atuin and
+        // lazygit configs are checked with. A misspelled key or a wrong nesting
+        // level fails here rather than at the user's next attach.
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Root {
+            #[serde(default, rename = "session-keys")]
+            session_keys: SessionKeysConfig,
+            // Present only so `deny_unknown_fields` above tolerates the
+            // section the wizard must not disturb.
+            #[serde(default)]
+            #[allow(dead_code)]
+            loadouts: Option<toml::Value>,
+        }
+        #[derive(Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SessionKeysConfig {
+            #[serde(default)]
+            leader: Option<String>,
+            #[serde(default)]
+            subcommands: SubcommandsConfig,
+            #[serde(default)]
+            bell_on_leader: bool,
+        }
+        #[derive(Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SubcommandsConfig {
+            #[serde(default)]
+            detach: Option<String>,
+            #[serde(default)]
+            forward: Option<String>,
+        }
+
+        let dir = temp_dir("client-schema");
+        let path = dir.join("config.toml");
+        let b = Bindings {
+            leader: Key::parse("ctrl-a").unwrap(),
+            detach: Key::parse("q").unwrap(),
+            forward: Key::parse("ctrl-b").unwrap(),
+            bell: true,
+        };
+        apply_client(&path, &b).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let root: Root = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("minimal would reject this file: {e}\n{text}"));
+        assert_eq!(root.session_keys.leader.as_deref(), Some("ctrl-a"));
+        assert_eq!(root.session_keys.subcommands.detach.as_deref(), Some("q"));
+        assert_eq!(
+            root.session_keys.subcommands.forward.as_deref(),
+            Some("ctrl-b")
+        );
+        assert!(root.session_keys.bell_on_leader);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn writing_the_client_config_creates_it_when_there_is_none() {
+        let dir = temp_dir("client-new");
+        let path = dir.join("nested/config.toml");
+        apply_client(&path, &Bindings::default()).unwrap();
+        let back = std::fs::read_to_string(&path).unwrap();
+        assert!(back.contains("[session-keys]"), "{back}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_second_write_updates_rather_than_appends() {
+        let dir = temp_dir("client-twice");
+        let path = dir.join("config.toml");
+        apply_client(&path, &Bindings::default()).unwrap();
+        let b = Bindings {
+            detach: Key::parse("x").unwrap(),
+            ..Bindings::default()
+        };
+        apply_client(&path, &b).unwrap();
+
+        let back = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(back.matches("[session-keys]").count(), 1, "{back}");
+        let parsed: toml::Value = toml::from_str(&back).unwrap();
+        assert_eq!(
+            parsed["session-keys"]["subcommands"]["detach"].as_str(),
+            Some("x")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_config_that_is_not_valid_toml_is_left_alone() {
+        // Refusing to write is the right answer: the alternative is
+        // overwriting a file whose contents we could not read.
+        let dir = temp_dir("client-broken");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "this is not toml {{{").unwrap();
+        let err = apply_client(&path, &Bindings::default()).unwrap_err();
+        assert!(err.contains("not valid TOML"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "this is not toml {{{",
+            "the file must be untouched"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_client_config_path_follows_xdg_when_it_is_absolute() {
+        // Matching minimal's own resolution, including the spec's rule that a
+        // relative XDG_CONFIG_HOME is invalid and ignored.
+        let home = PathBuf::from("/home/someone");
+        assert_eq!(
+            client_config_path(&home),
+            PathBuf::from("/home/someone/.config/minimal/config.toml"),
+            "with no XDG_CONFIG_HOME set in this test process"
+        );
+    }
+
+    /// Not a check — writes a real file so the result can be read by eye.
+    /// `cargo test --bin cozy-wizard -- --ignored show_written --nocapture`
+    #[test]
+    #[ignore = "writes a real file; run it deliberately"]
+    fn show_written_client_config() {
+        let path = std::env::var("COZY_SHOW_CONFIG").expect("set COZY_SHOW_CONFIG");
+        let b = Bindings {
+            leader: Key::parse("ctrl-a").unwrap(),
+            detach: Key::parse("q").unwrap(),
+            forward: Key::parse("ctrl-a").unwrap(),
+            bell: true,
+        };
+        println!("{}", apply_client(Path::new(&path), &b).unwrap());
+    }
+
+    /// Not a check — a way to eyeball the two new pages.
+    /// `cargo test --bin cozy-wizard -- --ignored show_ --nocapture`
+    #[test]
+    #[ignore = "prints frames to look at rather than asserting"]
+    fn show_the_host_pages() {
+        for (name, app) in [("client", on_client()), ("resources", on_resources())] {
+            println!("\n===== {name} =====");
+            for line in render_app(&app, 100, 24) {
+                println!("|{}|", line.trim_end());
+            }
+        }
     }
 
     #[test]
@@ -3933,7 +5092,7 @@ mod tests {
             );
         }
         a.on_key(press(KeyCode::Esc));
-        assert_eq!(a.screen, Screen::Patches, "esc should still step back");
+        assert_eq!(a.screen, Screen::Resources, "esc should still step back");
     }
 
     #[test]

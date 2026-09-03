@@ -224,8 +224,17 @@ end
 # this is "white" only in a dark scheme: base16 reverses the ramp for light
 # schemes, so base07 there is the darkest slot. Either way it is the maximum
 # contrast the scheme has against base00, which is what the mark wants. The
-# detach hint highlights the key in base0D, the accent helix gives headings and
+# detach hint highlights the chord in base0D, the accent helix gives headings and
 # zellij gives the active ribbon.
+#
+# The chord is read from `$MINIMAL_DETACH_HINT`, which minimald seeds per attach
+# channel from the negotiated session keys, so a remapped leader advertises
+# itself instead of this file lying about it. The fallback matches the one in
+# minimal's own orientation banner (`${MINIMAL_DETACH_HINT:-ctrl-] then d}`) —
+# it is what an un-negotiated shell gets, not a second opinion about the
+# default. Like that banner, the value is mint-scoped: a second client attaching
+# with a different chord gets a working one, but this line still shows the
+# minting channel's.
 #
 # fish's stock fish_greeting function prints $fish_greeting verbatim, newlines
 # and escape sequences included, so setting the variable is all this needs. It
@@ -236,15 +245,18 @@ end
 # against the left margin because any indent would land inside the art, and the
 # blank line separating the mark from the welcome text is a real newline inside
 # the quotes because fish does not expand \n in a double-quoted string.
-{% if greeting == "none" %}set -g fish_greeting{% elif greeting == "text" %}set -g fish_greeting (set_color $__cozy_b05)"Welcome to minimal! "(set_color $__cozy_b0d)"ctrl-w"(set_color $__cozy_b05)" to detach"(set_color normal){% else %}set -g fish_greeting (set_color $__cozy_b07)"{% if greeting == "legacy" %}▃🭕🭏🭕🭏 M I N I M A L{% elif greeting == "geometric" %}.◥◣◥◣ M I N I M A L{% else %}   ████  ████▄
+set -g __cozy_detach $MINIMAL_DETACH_HINT
+test -n "$__cozy_detach"; or set -g __cozy_detach "ctrl-] then d"
+{% if greeting == "none" %}set -g fish_greeting{% elif greeting == "text" %}set -g fish_greeting (set_color $__cozy_b05)"Welcome to minimal! "(set_color $__cozy_b0d)"$__cozy_detach"(set_color $__cozy_b05)" to detach"(set_color normal){% else %}set -g fish_greeting (set_color $__cozy_b07)"{% if greeting == "legacy" %}▃🭕🭏🭕🭏 M I N I M A L{% elif greeting == "geometric" %}.◥◣◥◣ M I N I M A L{% else %}   ████  ████▄
 ▄▄▄ ▀███▄ ▀███▄
 ▀███  ▀███  ▀███
   M I N I M A L{% endif %}
 
-"(set_color $__cozy_b05)"Welcome to minimal! "(set_color $__cozy_b0d)"ctrl-w"(set_color $__cozy_b05)" to detach"(set_color normal){% endif %}
+"(set_color $__cozy_b05)"Welcome to minimal! "(set_color $__cozy_b0d)"$__cozy_detach"(set_color $__cozy_b05)" to detach"(set_color normal){% endif %}
 
 set -e __cozy_b00 __cozy_b01 __cozy_b02 __cozy_b03 __cozy_b04 __cozy_b05 __cozy_b06 __cozy_b07 \
-    __cozy_b08 __cozy_b09 __cozy_b0a __cozy_b0b __cozy_b0c __cozy_b0d __cozy_b0e __cozy_b0f
+    __cozy_b08 __cozy_b09 __cozy_b0a __cozy_b0b __cozy_b0c __cozy_b0d __cozy_b0e __cozy_b0f \
+    __cozy_detach
 
 # --- zellij auto-start (kept before starship, as in the original) ---
 if command -q zellij; and test "$TERM" != dumb

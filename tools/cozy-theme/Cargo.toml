@@ -48,6 +48,10 @@ ratatui = "0.29.0"
 roxmltree = "0.21.1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Already in the lock as toml's own parser. Direct because the wizard edits a
+# config file the user may have hand-written: `toml` would round-trip it
+# through a value tree and drop their comments, `toml_edit` does not.
+toml_edit = "0.22.27"
 uuid = { version = "1", features = ["v5"] }
 yaml-rust2 = { version = "0.12.0", default-features = false }
 
