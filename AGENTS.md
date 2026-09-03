@@ -742,6 +742,14 @@ drawing in it. Two rules decide what goes in it:
 first; anything unrecognised takes the default file glyph rather than a wrong
 guess.
 
+The kind carries a **colour** as well, from the selected scheme, so a listing
+re-themes with everything else. It lights the *icon only* — on this page a
+colour already means something (green is chosen, dim is not selectable), and
+letting the file type fight that would cost more than it gives. Kinds share
+slots where their glyphs already differ: a sixteen-colour scheme has fewer
+distinct accents than there are kinds, and a lock is told apart from a zip by
+its icon.
+
 #### The preview pane
 
 A third column showing what the entry under the cursor holds: a file's first
@@ -830,6 +838,51 @@ session home — which at least keeps `/etc/hosts` distinguishable from
 `patch_dest` is the single implementation, and both the wizard's warnings and
 the renderer's output go through it. Directories get a trailing `/` on the dest
 and a `**/*` glob on the source; files get neither.
+
+#### Changing where a patch lands
+
+`e` retypes where the highlighted entry lands, **choosing it first if it is not
+chosen already**. Saying where a file should go is an unambiguous way of saying
+you want it.
+
+It originally required space beforehand, on the reasoning that a destination for
+an unpicked file answers a question nobody asked. That was wrong in practice:
+pressing `e` on a highlighted entry is the obvious thing to try, it silently did
+nothing, and the footer hint was gated the same way — so the key was not even
+advertised until after you had done the thing that made it work. It read as a
+dead binding. `e_chooses_the_entry_and_opens_the_editor` is the regression test.
+
+It still does nothing on an entry the picker cannot take — a directory in the
+*file* picker is scenery you walk through, and giving it a destination would
+answer for a patch that cannot exist.
+
+A `dest` is **always relative to the session user's home** — there is no way to
+spell anything else — which decides the whole shape of the editor:
+
+- `~/.config/helix` is *accepted* and the prefix dropped. That is exactly what a
+  dest means, and refusing it would be pedantry.
+- A leading `/` is *refused*, with the reason. It reads as an absolute path and
+  cannot be one, so silently reinterpreting it would be the surprising choice.
+- `..` is refused too: it cannot climb above the home it is relative to, so
+  honouring it would invent a meaning minimal does not have.
+
+`clean_dest` repairs and `check_dest` explains — two functions because the
+wizard wants to *tell* someone their `..` went nowhere rather than quietly
+dropping it. A directory keeps its trailing `/`, which is what tells the
+composer to unpack a glob into it rather than write a file.
+
+Retyping the computed answer stores **no** override. Storing it would be a
+silent promise to keep that exact path even if the mapping rule changed later.
+
+The editor lives in the **summary strip**, not the preview pane, because the
+strip is the only part of the page that is always drawn — the preview column is
+the first thing a narrow terminal loses, and an editor you cannot see is broken.
+Its field is truncated rather than wrapped for the same reason the warning above
+it is: three rows, and a field that wrapped to two would push the explanation of
+*why* a path was refused off the bottom.
+
+`--patch-dest <source>=<dest>` does the same from the command line, so the
+capability is not the wizard's alone.
 
 #### When your file collides with the loadout's
 

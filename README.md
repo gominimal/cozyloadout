@@ -146,6 +146,8 @@ The wizard's patches page — or `--patch-file` and `--patch-dir` — copies you
 | `/etc/hosts` | `~/etc/hosts` |
 | `~/.config/helix` | `~/.config/helix/`, whole tree |
 
+In the wizard, `e` on a chosen entry retypes where it lands — `~/` and a leading `/` are both dropped, since a destination is always relative to the session's home. `--patch-dest <source>=<dest>` does the same from the command line.
+
 If one of your files collides with a config the loadout ships, **yours wins** and the loadout's is left out rather than both being written. The wizard says which ones, on the patches page and again on the summary before anything is generated.
 
 ## Adjusting a scheme

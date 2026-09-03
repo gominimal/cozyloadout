@@ -915,6 +915,9 @@ pub struct Options {
     /// Defaults to `$HOME`; set explicitly so tests do not depend on the
     /// machine they run on.
     pub home: PathBuf,
+    /// Destinations typed by hand, keyed by the source path they belong to.
+    /// Anything absent takes the computed default.
+    pub patch_dests: BTreeMap<PathBuf, String>,
     /// Adjustments applied to the scheme before anything is rendered.
     /// `Adjust::default()` is the identity, so this is free to be unconditional.
     pub adjust: Adjust,
@@ -932,6 +935,7 @@ impl Default for Options {
             patch_files: Vec::new(),
             patch_dirs: Vec::new(),
             home: std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
+            patch_dests: BTreeMap::new(),
             adjust: Adjust::default(),
         }
     }
@@ -1226,21 +1230,96 @@ pub fn patch_dest(path: &Path, home: &Path, is_dir: bool) -> String {
 }
 
 /// Map the user's picks to patch entries.
-pub fn user_patches(files: &[PathBuf], dirs: &[PathBuf], home: &Path) -> Vec<UserPatch> {
+pub fn user_patches(
+    files: &[PathBuf],
+    dirs: &[PathBuf],
+    home: &Path,
+    overrides: &BTreeMap<PathBuf, String>,
+) -> Vec<UserPatch> {
+    let dest_for = |p: &PathBuf, is_dir: bool| {
+        overrides
+            .get(p)
+            .map(|d| clean_dest(d, is_dir))
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| patch_dest(p, home, is_dir))
+    };
     let mut out: Vec<UserPatch> = files
         .iter()
         .map(|p| UserPatch {
-            dest: patch_dest(p, home, false),
+            dest: dest_for(p, false),
             source: p.display().to_string(),
         })
         .collect();
     out.extend(dirs.iter().map(|p| UserPatch {
         // A glob source with a directory dest: minimal appends each match's
         // path under the walk root to the dest, so the tree keeps its shape.
-        dest: patch_dest(p, home, true),
+        dest: dest_for(p, true),
         source: format!("{}/**/*", p.display()),
     }));
     out
+}
+
+/// Force a hand-typed destination into the shape a loadout `dest` must have.
+///
+/// **A `dest` is always relative to the session user's home.** There is no way
+/// to spell anything else, so `/etc/hosts` and `~/.config` and `.config` are
+/// all the same request, and the leading `/` or `~/` is noise rather than a
+/// different answer. Parent components are dropped for the same reason: `..`
+/// cannot climb above the home it is relative to, so honouring it would be
+/// inventing a meaning minimal does not have.
+///
+/// Directories keep a trailing `/`, which is what tells the composer the dest
+/// is a directory to unpack a glob into rather than a file to write.
+#[must_use]
+pub fn clean_dest(dest: &str, is_dir: bool) -> String {
+    let trimmed = dest.trim();
+    let trimmed = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix('~'))
+        .unwrap_or(trimmed);
+    let mut parts: Vec<&str> = Vec::new();
+    for part in trimmed.split('/') {
+        match part {
+            "" | "." | ".." => {}
+            other => parts.push(other),
+        }
+    }
+    let mut out = parts.join("/");
+    if is_dir && !out.is_empty() {
+        out.push('/');
+    }
+    out
+}
+
+/// Why a typed destination cannot be used, if it cannot.
+///
+/// Separate from [`clean_dest`], which silently repairs: the wizard wants to
+/// *tell* someone that their `..` went nowhere rather than quietly dropping it.
+///
+/// # Errors
+///
+/// Returns a sentence naming the problem.
+pub fn check_dest(dest: &str) -> Result<(), String> {
+    let trimmed = dest.trim();
+    if trimmed.is_empty() {
+        return Err("a destination cannot be empty".into());
+    }
+    if clean_dest(trimmed, false).is_empty() {
+        return Err(format!("{trimmed:?} leaves nothing to write to"));
+    }
+    if trimmed.split('/').any(|p| p == "..") {
+        return Err("`..` cannot climb above the session's home".into());
+    }
+    if trimmed.starts_with('/') {
+        return Err(
+            "destinations are relative to the session's home, so the leading `/` is dropped".into(),
+        );
+    }
+    // A leading `~/` is *accepted* and dropped: a dest is relative to the
+    // session's home by definition, so `~/.config` is exactly what it looks
+    // like and refusing it would be pedantry. A leading `/` is refused instead,
+    // because it reads as an absolute path and cannot be one.
+    Ok(())
 }
 
 /// Whether one of the user's patches already covers this destination.
@@ -1332,7 +1411,12 @@ pub fn build(args: &Options) -> Result<String> {
     // The user's own picks, mapped first: the loadout's own entries below check
     // against them, because a file someone chose explicitly should win over the
     // one this loadout would have shipped for the same destination.
-    let user_picks = user_patches(&args.patch_files, &args.patch_dirs, &args.home);
+    let user_picks = user_patches(
+        &args.patch_files,
+        &args.patch_dirs,
+        &args.home,
+        &args.patch_dests,
+    );
     // Counted rather than derived from `entries.len()`: entries whose package
     // was declined are skipped, so the two numbers stopped agreeing.
     let mut written = 0usize;
@@ -1627,6 +1711,107 @@ base0f: d65d0e
     // -- where the user's own files land ------------------------------------
 
     #[test]
+    fn a_typed_destination_is_forced_relative_to_the_session_home() {
+        // There is no way to spell anything else, so `/etc/hosts`, `~/.config`
+        // and `.config` are all the same request. The prefix is noise, not a
+        // different answer.
+        assert_eq!(clean_dest("/etc/hosts", false), "etc/hosts");
+        assert_eq!(clean_dest("~/.config/helix", false), ".config/helix");
+        assert_eq!(clean_dest("~.zshrc", false), ".zshrc");
+        assert_eq!(
+            clean_dest(".config/fish/config.fish", false),
+            ".config/fish/config.fish"
+        );
+        assert_eq!(clean_dest("  .gitconfig  ", false), ".gitconfig");
+    }
+
+    #[test]
+    fn parent_components_are_dropped_rather_than_honoured() {
+        // `..` cannot climb above the home a dest is relative to, so honouring
+        // it would be inventing a meaning minimal does not have — and letting
+        // it through would be an escape from the session's home.
+        assert_eq!(clean_dest("../../etc/passwd", false), "etc/passwd");
+        assert_eq!(clean_dest("a/../../../b", false), "a/b");
+        assert_eq!(clean_dest("./x", false), "x");
+        assert_eq!(clean_dest("a//b", false), "a/b");
+    }
+
+    #[test]
+    fn a_directory_destination_keeps_its_trailing_slash() {
+        // The trailing slash is what tells the composer this is a directory to
+        // unpack a glob into rather than a file to write.
+        assert_eq!(clean_dest(".config/helix", true), ".config/helix/");
+        assert_eq!(clean_dest(".config/helix/", true), ".config/helix/");
+        assert_eq!(clean_dest("", true), "", "nothing left is still nothing");
+    }
+
+    #[test]
+    fn a_typed_destination_replaces_the_computed_one() {
+        let home = Path::new("/home/x");
+        let src = PathBuf::from("/home/x/.config/starship.toml");
+        let mut overrides = BTreeMap::new();
+        overrides.insert(src.clone(), "somewhere/else.toml".to_string());
+        let out = user_patches(&[src], &[], home, &overrides);
+        assert_eq!(out[0].dest, "somewhere/else.toml");
+
+        // And an empty override falls back rather than writing to nothing.
+        let src = PathBuf::from("/home/x/.gitconfig");
+        let mut overrides = BTreeMap::new();
+        overrides.insert(src.clone(), "   ".to_string());
+        let out = user_patches(&[src], &[], home, &overrides);
+        assert_eq!(out[0].dest, ".gitconfig");
+    }
+
+    #[test]
+    fn an_override_for_a_directory_still_gets_its_glob_and_slash() {
+        let home = Path::new("/home/x");
+        let src = PathBuf::from("/home/x/dots");
+        let mut overrides = BTreeMap::new();
+        overrides.insert(src.clone(), "/.config/mine".to_string());
+        let out = user_patches(&[], &[src], home, &overrides);
+        assert_eq!(out[0].dest, ".config/mine/");
+        assert!(out[0].source.ends_with("/**/*"), "{}", out[0].source);
+    }
+
+    #[test]
+    fn an_override_that_is_not_given_leaves_the_computed_answer_alone() {
+        let home = Path::new("/home/x");
+        let overrides = BTreeMap::new();
+        let out = user_patches(
+            &[PathBuf::from("/home/x/.gitconfig")],
+            &[PathBuf::from("/etc/skel")],
+            home,
+            &overrides,
+        );
+        assert_eq!(out[0].dest, ".gitconfig");
+        assert_eq!(out[1].dest, "etc/skel/");
+    }
+
+    #[test]
+    fn check_dest_explains_rather_than_silently_repairing() {
+        // `clean_dest` repairs; this is what lets the wizard say why, instead
+        // of quietly dropping half of what someone typed.
+        assert!(check_dest(".config/fish/config.fish").is_ok());
+        // `...` is three dots, a perfectly ordinary filename — not a parent
+        // reference, and not something to refuse.
+        assert!(check_dest("...").is_ok());
+        // `~/` is accepted and stripped rather than refused: a dest is
+        // home-relative by definition, so that is exactly what it means.
+        assert!(check_dest("~/.config/helix").is_ok());
+        for (bad, want) in [
+            ("", "empty"),
+            ("   ", "empty"),
+            ("/etc/hosts", "leading `/`"),
+            ("../escape", "climb above"),
+            (".", "nothing to write to"),
+            ("./", "nothing to write to"),
+        ] {
+            let err = check_dest(bad).unwrap_err();
+            assert!(err.contains(want), "{bad:?} -> {err:?}, wanted {want:?}");
+        }
+    }
+
+    #[test]
     fn a_path_under_home_keeps_its_shape() {
         // `dest` is relative to the session's home, so a dotfile has to arrive
         // where the tool that reads it will look. Taking the basename put
@@ -1678,6 +1863,7 @@ base0f: d65d0e
             &[PathBuf::from("/home/x/.config/starship.toml")],
             &[PathBuf::from("/home/x/.config/helix")],
             home,
+            &BTreeMap::new(),
         );
         // Exactly the file picked.
         assert!(shadowed_by(".config/starship.toml", &picks).is_some());

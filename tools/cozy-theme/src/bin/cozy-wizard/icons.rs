@@ -1,4 +1,5 @@
-//! Nerd Font glyphs for the file pickers, the way `eza --icons` draws them.
+//! Nerd Font glyphs and colours for the file listings, the way `eza` draws
+//! them.
 //!
 //! **Font Awesome 4 codepoints only** (`U+F000`–`U+F2FF`). Nerd Fonts patch in
 //! several icon sets, and the fashionable file-type icons come from Seti and
@@ -7,106 +8,166 @@
 //! font since the beginning. A handful of glyphs that always render beats a
 //! larger table that shows boxes on half the machines it meets.
 //!
-//! The table is by *kind*, not by language, for the same reason: a gear for
-//! anything that configures something is more useful at a glance than fifteen
-//! logos you have to learn.
+//! Everything is classified by **kind**, not by language: one gear for anything
+//! that configures something, one terminal for every shell. At a glance "this
+//! configures something" is more useful than fifteen logos you have to learn,
+//! it keeps the table inside the codepoint block above, and it gives the colour
+//! something meaningful to follow.
 
+use crate::theme::Theme;
+use ratatui::style::Color;
 use std::path::Path;
 
-/// The glyph for a directory. Open, because in a picker you are about to walk
-/// into it.
-const FOLDER: char = '\u{f07b}';
-/// Anything with no better answer.
-const FILE: char = '\u{f016}';
+/// What a listing entry is, as far as a glance is concerned.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Dir,
+    Config,
+    Shell,
+    Source,
+    Prose,
+    Data,
+    Media,
+    Archive,
+    Secret,
+    Build,
+    Vcs,
+    Doc,
+    Plain,
+}
 
-/// Extension to glyph. Grouped by what the file *is for*, since that is what
-/// you are scanning a list to find.
-const BY_EXTENSION: &[(&str, char)] = &[
+impl Kind {
+    /// The glyph, from the Font Awesome block.
+    pub fn icon(self) -> char {
+        match self {
+            Kind::Dir => '\u{f07b}',
+            Kind::Config => '\u{f013}',
+            Kind::Shell => '\u{f120}',
+            Kind::Source => '\u{f121}',
+            Kind::Prose => '\u{f0f6}',
+            Kind::Data => '\u{f1c0}',
+            Kind::Media => '\u{f1c5}',
+            Kind::Archive => '\u{f1c6}',
+            Kind::Secret => '\u{f084}',
+            Kind::Build => '\u{f085}',
+            Kind::Vcs => '\u{f1d3}',
+            Kind::Doc => '\u{f02d}',
+            Kind::Plain => '\u{f016}',
+        }
+    }
+
+    /// The colour, from the selected scheme — so the listing re-themes with
+    /// everything else, exactly as the syntax preview does.
+    ///
+    /// Slots are chosen for contrast between neighbours in a listing rather
+    /// than for any meaning in the colour itself: a directory has to stand out
+    /// from the files under it, and a lock file from a config beside it.
+    pub fn color(self, t: &Theme) -> Color {
+        match self {
+            Kind::Dir => t.blue,
+            Kind::Config => t.yellow,
+            Kind::Shell => t.green,
+            Kind::Media => t.magenta,
+            // Sharing a slot is fine where the glyphs already differ: there are
+            // more kinds than a sixteen-colour scheme has distinct accents, and
+            // a lock and a zip are told apart by their icon.
+            Kind::Archive | Kind::Secret => t.red,
+            Kind::Source | Kind::Vcs => t.orange,
+            Kind::Data | Kind::Build => t.cyan,
+            Kind::Prose | Kind::Doc => t.fg,
+            Kind::Plain => t.comment,
+        }
+    }
+}
+
+/// Extension to kind.
+const BY_EXTENSION: &[(&str, Kind)] = &[
     // Configuration — the overwhelming majority of what this page shows.
-    ("toml", '\u{f013}'),
-    ("yaml", '\u{f013}'),
-    ("yml", '\u{f013}'),
-    ("ini", '\u{f013}'),
-    ("cfg", '\u{f013}'),
-    ("conf", '\u{f013}'),
-    ("kdl", '\u{f013}'),
-    ("hjson", '\u{f013}'),
-    ("json", '\u{f013}'),
-    ("plist", '\u{f013}'),
-    ("tmtheme", '\u{f1fc}'),
+    ("toml", Kind::Config),
+    ("yaml", Kind::Config),
+    ("yml", Kind::Config),
+    ("ini", Kind::Config),
+    ("cfg", Kind::Config),
+    ("conf", Kind::Config),
+    ("kdl", Kind::Config),
+    ("hjson", Kind::Config),
+    ("json", Kind::Config),
+    ("plist", Kind::Config),
+    ("tmtheme", Kind::Media),
     // Shells and scripts.
-    ("fish", '\u{f120}'),
-    ("sh", '\u{f120}'),
-    ("bash", '\u{f120}'),
-    ("zsh", '\u{f120}'),
-    ("nu", '\u{f120}'),
+    ("fish", Kind::Shell),
+    ("sh", Kind::Shell),
+    ("bash", Kind::Shell),
+    ("zsh", Kind::Shell),
+    ("nu", Kind::Shell),
     // Source.
-    ("rs", '\u{f121}'),
-    ("go", '\u{f121}'),
-    ("py", '\u{f121}'),
-    ("js", '\u{f121}'),
-    ("ts", '\u{f121}'),
-    ("c", '\u{f121}'),
-    ("h", '\u{f121}'),
-    ("lua", '\u{f121}'),
-    ("vim", '\u{f121}'),
-    ("nix", '\u{f121}'),
+    ("rs", Kind::Source),
+    ("go", Kind::Source),
+    ("py", Kind::Source),
+    ("js", Kind::Source),
+    ("ts", Kind::Source),
+    ("c", Kind::Source),
+    ("h", Kind::Source),
+    ("lua", Kind::Source),
+    ("vim", Kind::Source),
+    ("nix", Kind::Source),
     // Prose and data.
-    ("md", '\u{f0f6}'),
-    ("markdown", '\u{f0f6}'),
-    ("txt", '\u{f0f6}'),
-    ("rst", '\u{f0f6}'),
-    ("log", '\u{f0f6}'),
-    ("csv", '\u{f0ce}'),
-    ("sql", '\u{f1c0}'),
+    ("md", Kind::Prose),
+    ("markdown", Kind::Prose),
+    ("txt", Kind::Prose),
+    ("rst", Kind::Prose),
+    ("log", Kind::Prose),
+    ("csv", Kind::Data),
+    ("sql", Kind::Data),
+    ("db", Kind::Data),
     // Media.
-    ("png", '\u{f1c5}'),
-    ("jpg", '\u{f1c5}'),
-    ("jpeg", '\u{f1c5}'),
-    ("gif", '\u{f1c5}'),
-    ("svg", '\u{f1c5}'),
-    ("webp", '\u{f1c5}'),
-    ("pdf", '\u{f1c1}'),
-    ("mp3", '\u{f001}'),
-    ("wav", '\u{f001}'),
-    ("mp4", '\u{f008}'),
+    ("png", Kind::Media),
+    ("jpg", Kind::Media),
+    ("jpeg", Kind::Media),
+    ("gif", Kind::Media),
+    ("svg", Kind::Media),
+    ("webp", Kind::Media),
+    ("pdf", Kind::Doc),
+    ("mp3", Kind::Media),
+    ("wav", Kind::Media),
+    ("mp4", Kind::Media),
     // Archives and keys.
-    ("zip", '\u{f1c6}'),
-    ("gz", '\u{f1c6}'),
-    ("xz", '\u{f1c6}'),
-    ("zst", '\u{f1c6}'),
-    ("tar", '\u{f1c6}'),
-    ("pem", '\u{f084}'),
-    ("key", '\u{f084}'),
-    ("pub", '\u{f084}'),
-    ("lock", '\u{f023}'),
+    ("zip", Kind::Archive),
+    ("gz", Kind::Archive),
+    ("xz", Kind::Archive),
+    ("zst", Kind::Archive),
+    ("tar", Kind::Archive),
+    ("pem", Kind::Secret),
+    ("key", Kind::Secret),
+    ("pub", Kind::Secret),
+    ("lock", Kind::Secret),
 ];
 
-/// Whole filenames that deserve their own glyph regardless of extension.
+/// Whole filenames that deserve their own kind regardless of extension.
 ///
 /// Matched case-insensitively on the full name, so `.gitignore` and `Makefile`
 /// — neither of which has a usable extension — are reachable at all.
-const BY_NAME: &[(&str, char)] = &[
-    (".gitignore", '\u{f1d3}'),
-    (".gitconfig", '\u{f1d3}'),
-    (".gitmodules", '\u{f1d3}'),
-    (".gitattributes", '\u{f1d3}'),
-    ("makefile", '\u{f085}'),
-    ("justfile", '\u{f085}'),
-    ("dockerfile", '\u{f085}'),
-    ("license", '\u{f02d}'),
-    ("readme", '\u{f02d}'),
-    ("readme.md", '\u{f02d}'),
+const BY_NAME: &[(&str, Kind)] = &[
+    (".gitignore", Kind::Vcs),
+    (".gitconfig", Kind::Vcs),
+    (".gitmodules", Kind::Vcs),
+    (".gitattributes", Kind::Vcs),
+    ("makefile", Kind::Build),
+    ("justfile", Kind::Build),
+    ("dockerfile", Kind::Build),
+    ("license", Kind::Doc),
+    ("readme", Kind::Doc),
+    ("readme.md", Kind::Doc),
 ];
 
-/// The glyph for one listing entry.
-pub fn for_entry(name: &str, is_dir: bool) -> char {
+/// The kind of one listing entry.
+pub fn kind_of(name: &str, is_dir: bool) -> Kind {
     if is_dir {
-        return FOLDER;
+        return Kind::Dir;
     }
     let lower = name.to_ascii_lowercase();
-    if let Some((_, icon)) = BY_NAME.iter().find(|(n, _)| *n == lower) {
-        return *icon;
+    if let Some((_, kind)) = BY_NAME.iter().find(|(n, _)| *n == lower) {
+        return *kind;
     }
     // `.gitignore` has no extension as far as `Path` is concerned, and a
     // dotfile like `.zshrc` reports `zshrc` — neither is in the table, so both
@@ -118,15 +179,23 @@ pub fn for_entry(name: &str, is_dir: bool) -> char {
             BY_EXTENSION
                 .iter()
                 .find(|(k, _)| *k == ext)
-                .map(|(_, icon)| *icon)
+                .map(|(_, kind)| *kind)
         })
-        .unwrap_or(FILE)
+        .unwrap_or(Kind::Plain)
 }
 
 /// A handful of glyphs for the greeting screen to show, so the reader can see
 /// whether their font has them before turning them on.
 pub fn sample() -> [char; 6] {
-    [FOLDER, '\u{f013}', '\u{f120}', '\u{f121}', '\u{f0f6}', FILE]
+    [
+        Kind::Dir,
+        Kind::Config,
+        Kind::Shell,
+        Kind::Source,
+        Kind::Prose,
+        Kind::Plain,
+    ]
+    .map(Kind::icon)
 }
 
 #[cfg(test)]
@@ -135,29 +204,29 @@ mod tests {
 
     #[test]
     fn a_directory_is_a_folder_whatever_it_is_called() {
-        assert_eq!(for_entry("anything.toml", true), FOLDER);
-        assert_eq!(for_entry("", true), FOLDER);
+        assert_eq!(kind_of("anything.toml", true), Kind::Dir);
+        assert_eq!(kind_of("", true), Kind::Dir);
     }
 
     #[test]
     fn config_formats_share_one_glyph() {
         // By kind, not by language: at a glance "this configures something" is
         // more useful than fifteen logos you have to learn.
-        let toml = for_entry("cozy.toml", false);
+        let toml = kind_of("cozy.toml", false);
         for name in ["a.yaml", "b.yml", "c.json", "d.ini", "e.conf", "f.kdl"] {
-            assert_eq!(for_entry(name, false), toml, "{name}");
+            assert_eq!(kind_of(name, false), toml, "{name}");
         }
     }
 
     #[test]
     fn the_kinds_are_told_apart() {
         let kinds = [
-            for_entry("a.toml", false),
-            for_entry("b.fish", false),
-            for_entry("c.rs", false),
-            for_entry("d.md", false),
-            for_entry("e.png", false),
-            for_entry("f.zip", false),
+            kind_of("a.toml", false).icon(),
+            kind_of("b.fish", false).icon(),
+            kind_of("c.rs", false).icon(),
+            kind_of("d.md", false).icon(),
+            kind_of("e.png", false).icon(),
+            kind_of("f.zip", false).icon(),
         ];
         let mut unique = kinds.to_vec();
         unique.sort_unstable();
@@ -167,11 +236,8 @@ mod tests {
 
     #[test]
     fn matching_ignores_case() {
-        assert_eq!(
-            for_entry("Cargo.TOML", false),
-            for_entry("cargo.toml", false)
-        );
-        assert_eq!(for_entry("Makefile", false), for_entry("makefile", false));
+        assert_eq!(kind_of("Cargo.TOML", false), kind_of("cargo.toml", false));
+        assert_eq!(kind_of("Makefile", false), kind_of("makefile", false));
     }
 
     #[test]
@@ -179,15 +245,15 @@ mod tests {
         // `.gitignore` has no extension as far as `Path` is concerned, so
         // without the name table it would be indistinguishable from any other
         // dotfile.
-        assert_ne!(for_entry(".gitignore", false), FILE);
-        assert_ne!(for_entry("README.md", false), for_entry("notes.md", false));
+        assert_eq!(kind_of(".gitignore", false), Kind::Vcs);
+        assert_ne!(kind_of("README.md", false), kind_of("notes.md", false));
     }
 
     #[test]
     fn an_unknown_file_gets_the_default_rather_than_a_wrong_guess() {
-        assert_eq!(for_entry("mystery.zzzz", false), FILE);
-        assert_eq!(for_entry("noextension", false), FILE);
-        assert_eq!(for_entry(".zshrc", false), FILE);
+        assert_eq!(kind_of("mystery.zzzz", false), Kind::Plain);
+        assert_eq!(kind_of("noextension", false), Kind::Plain);
+        assert_eq!(kind_of(".zshrc", false), Kind::Plain);
     }
 
     #[test]
@@ -197,10 +263,11 @@ mod tests {
         // every patched font there is. A glyph outside it is a box on somebody's
         // machine.
         let range = '\u{f000}'..='\u{f2ff}';
-        let mut all: Vec<char> = vec![FOLDER, FILE];
-        all.extend(BY_EXTENSION.iter().map(|(_, c)| *c));
-        all.extend(BY_NAME.iter().map(|(_, c)| *c));
+        let mut all: Vec<char> = BY_EXTENSION.iter().map(|(_, k)| k.icon()).collect();
+        all.extend(BY_NAME.iter().map(|(_, k)| k.icon()));
         all.extend(sample());
+        all.push(Kind::Dir.icon());
+        all.push(Kind::Plain.icon());
         for c in all {
             assert!(
                 range.contains(&c),
