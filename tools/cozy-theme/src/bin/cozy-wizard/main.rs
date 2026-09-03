@@ -5,6 +5,7 @@
 mod fetch;
 mod greeting;
 mod hostcfg;
+mod icons;
 mod keys;
 mod picker;
 mod preview;
@@ -325,6 +326,14 @@ struct App {
     /// the default.
     greeting: Option<Greeting>,
 
+    /// Whether the file pickers draw Nerd Font icons.
+    ///
+    /// Asked on the greeting screen because it is the same question that screen
+    /// already exists to answer — does this font have these glyphs — and asking
+    /// it twice, on two screens, would be asking the reader to judge their font
+    /// twice over.
+    icons: bool,
+
     fetch_kind: FetchKind,
     /// `true` = yes, the default when a fetch is actually possible.
     fetch_yes: bool,
@@ -474,6 +483,10 @@ impl App {
             resources: Resources::probe(),
             greeting_row,
             greeting: None,
+            // On by default, matching the `eza --icons` the loadout installs.
+            // Anyone whose font lacks them sees boxes in the sample right there
+            // and presses one key.
+            icons: saved.icons.unwrap_or(true),
             fetch_kind,
             fetch_yes: fetch_kind != FetchKind::Blocked,
             fetch: Fetch::Idle,
@@ -542,6 +555,7 @@ impl App {
             separation: Some(self.adjust.separation),
             background: Some(self.adjust.background),
             warmth: Some(self.adjust.warmth),
+            icons: Some(self.icons),
             leader: Some(self.bindings.leader.as_config_str()),
             detach: Some(self.bindings.detach.as_config_str()),
             forward: Some(self.bindings.forward.as_config_str()),

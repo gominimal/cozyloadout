@@ -53,6 +53,10 @@ pub struct Settings {
     pub forward: Option<String>,
     pub bell_on_leader: Option<bool>,
 
+    /// Whether the file pickers draw Nerd Font icons. `None` means never asked,
+    /// which takes the default rather than "off".
+    pub icons: Option<bool>,
+
     /// The six scheme adjustments, each a percentage in -100..=100. Stored
     /// flat rather than as a nested table so a value the wizard later stops
     /// accepting reads back as "unset" instead of failing the whole file.

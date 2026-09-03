@@ -54,6 +54,7 @@ pub fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
                 &app.pickers[i],
                 i == app.picker_focus,
                 &app.home,
+                app.icons,
                 &t,
             );
         }
@@ -69,11 +70,12 @@ pub fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
                 &app.pickers[i],
                 i == app.picker_focus,
                 &app.home,
+                app.icons,
                 &t,
             );
         }
     } else {
-        draw_picker(frame, body, app.picker(), true, &app.home, &t);
+        draw_picker(frame, body, app.picker(), true, &app.home, app.icons, &t);
     }
 
     let chosen = app.chosen_paths();
@@ -124,6 +126,7 @@ pub fn draw_picker(
     p: &Picker,
     focused: bool,
     home: &Path,
+    with_icons: bool,
     t: &Theme,
 ) {
     let accent = if focused { t.blue } else { t.selection };
@@ -184,10 +187,19 @@ pub fn draw_picker(
                 // not something space can take; no empty box to imply otherwise.
                 "    "
             };
-            let name = if e.is_dir {
-                format!("{}/", e.name)
+            // The icon sits between the checkbox and the name, where `eza`
+            // puts it. A trailing space of its own, because a Nerd Font glyph
+            // is drawn double-width in most terminals and would otherwise touch
+            // the name.
+            let icon = if with_icons {
+                format!("{} ", icons::for_entry(&e.name, e.is_dir))
             } else {
-                e.name.clone()
+                String::new()
+            };
+            let name = if e.is_dir {
+                format!("{icon}{}/", e.name)
+            } else {
+                format!("{icon}{}", e.name)
             };
             let style = if i == p.row && focused {
                 Style::default()

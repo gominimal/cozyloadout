@@ -163,7 +163,9 @@ fn intro_fits_in_its_rows() {
     for w in [50u16, 60, 72, 80, 100, 120] {
         let rows = render(w, 30);
         assert!(
-            flatten(&rows).contains("those glyphs."),
+            // The *last* words, not the first: the end of the sentence is
+            // what a row too few takes away, and this intro has grown twice.
+            flatten(&rows).contains("and the icons too."),
             "intro truncated at {w} columns — INTRO_ROWS is too small:\n{}",
             rows[..8].join("\n")
         );
@@ -194,4 +196,77 @@ fn the_preview_shows_the_chord_the_client_page_currently_holds() {
         !text.contains("ctrl-] then d"),
         "and must not still show the default:\n{text}"
     );
+}
+
+// -- the icon question -----------------------------------------------------
+
+#[test]
+fn the_greeting_screen_asks_about_icons_by_showing_them() {
+    // The same reason the marks are previewed rather than described: a font
+    // either has these glyphs or draws boxes, and one glance settles it.
+    let a = app();
+    let text = flatten(&render_app(&a, 100, 30));
+    assert!(text.contains("icons in the file lists"), "{text}");
+    assert!(text.contains("space toggles"), "{text}");
+    for glyph in crate::icons::sample() {
+        assert!(
+            text.contains(glyph),
+            "the sample must actually draw {:?} (U+{:04X}):\n{text}",
+            glyph,
+            glyph as u32
+        );
+    }
+}
+
+#[test]
+fn space_toggles_icons_without_leaving_the_page() {
+    let mut a = app();
+    assert!(
+        a.icons,
+        "on by default, matching the eza the loadout installs"
+    );
+    a.on_key(press(KeyCode::Char(' ')));
+    assert!(!a.icons);
+    assert_eq!(a.screen, Screen::Greeting, "space must not advance");
+    assert!(
+        a.greeting.is_none(),
+        "and must not count as choosing a mark"
+    );
+    assert!(flatten(&render_app(&a, 100, 30)).contains("[ ] icons"));
+
+    a.on_key(press(KeyCode::Char(' ')));
+    assert!(a.icons);
+    assert!(flatten(&render_app(&a, 100, 30)).contains("[x] icons"));
+}
+
+#[test]
+fn enter_still_chooses_the_mark_and_moves_on() {
+    let mut a = app();
+    a.on_key(press(KeyCode::Enter));
+    assert_eq!(a.screen, Screen::Schemes);
+    assert!(a.greeting.is_some());
+}
+
+#[test]
+fn the_answer_survives_to_the_next_run() {
+    let mut a = app();
+    a.on_key(press(KeyCode::Char(' ')));
+    let saved = a.to_state();
+    assert_eq!(saved.icons, Some(false));
+    assert!(!app_with(a.schemes_dir.clone(), saved).icons);
+
+    // Never asked takes the default rather than "off" — a settings file written
+    // before this existed should not silently turn them off.
+    let older = cozy_theme::Settings::default();
+    assert_eq!(older.icons, None);
+    assert!(app_with(a.schemes_dir.clone(), older).icons);
+}
+
+#[test]
+#[ignore = "prints a frame to look at rather than asserting"]
+fn show_the_greeting_screen() {
+    let a = app();
+    for line in render_app(&a, 96, 22) {
+        println!("|{}|", line.trim_end());
+    }
 }
