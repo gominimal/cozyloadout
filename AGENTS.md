@@ -129,16 +129,38 @@ of those: filesystem navigation and selection with no drawing in it, so what a
 listing contains, what is selectable, and what happens at `/` are all testable
 against real temporary directories instead of through a rendered frame.
 
-Its first page asks which fish greeting to install: the mark drawn with Symbols
-for Legacy Computing (`▃🭕🭏🭕🭏 M I N I M A L`, the U+1FB00 block, Unicode 13)
-or the block-element mark that ships today (U+2580–U+259F). The newer glyphs are
-missing from many fonts, so both are drawn **unstyled, in the terminal's own
-foreground** — the user is judging their font, and a preview that is not the
-real thing is worthless. `blocks_art_matches_the_shipped_fish_greeting` pins the
-preview to `templates/fish/config.fish` so the two cannot drift.
+Its first page asks which fish greeting to install. Five options:
 
-**The greeting choice is not wired to the render yet.** The wizard prints it and
-exits; nothing reads it.
+| Option | Mark | Glyphs |
+| --- | --- | --- |
+| Default | `▃🭕🭏🭕🭏 M I N I M A L` | Symbols for Legacy Computing, U+1FB00, Unicode 13 |
+| Geometric shapes | `.◥◣◥◣ M I N I M A L` | Geometric Shapes, U+25A0–U+25FF, Unicode 1.1; the base is a plain `.` |
+| Block elements | `████` over three lines, plus `M I N I M A L` | U+2580–U+259F, Unicode 1.1 |
+| No logo | — | just the `ctrl-w to detach` line |
+| Nothing at all | — | a silent shell |
+
+**Order is best-looking first, not safest first.** The sharpest mark leads even
+though its glyphs are the least widely available, because this is the one
+screen where a font that cannot draw something says so plainly — and the two
+options directly beneath it are the fallbacks for anyone whose font cannot.
+
+`--greeting` still defaults to `blocks`, deliberately: the CLI has no preview,
+so the answer it picks without being asked should be the one that renders
+everywhere. The wizard preselects the sharp mark *because* it shows you whether
+it works.
+
+The three marked ones differ *only* in which Unicode block their glyphs come
+from, which is the whole point: a font either has them or draws tofu, and no
+description beats putting them on screen. So the preview is drawn **unstyled,
+in the terminal's own foreground** — the user is judging their font, and a
+preview that is not the real thing is worthless.
+
+**A list with one preview, not a box per option.** Five options with a
+four-line mark among them do not fit as stacked boxes in a 24-row terminal, and
+only the highlighted one is being judged.
+`every_greeting_matches_what_the_template_will_print` pins every mark *and*
+every template branch to `templates/fish/config.fish`, so the preview cannot
+promise something the generated config does not do.
 
 Its second page offers to fetch the upstream scheme collection, and does. What
 it runs is decided by what is on disk (`FetchKind`):
@@ -445,6 +467,47 @@ Key choices worth keeping:
 
 Both pickers start at `$HOME`. Selections survive walking away and coming back,
 and the summary line under them names every path with `~` for the home prefix.
+
+#### Where a picked path lands
+
+A loadout's `dest` is interpreted relative to the *session's* home, so mapping a
+host path to one is the whole job:
+
+| Picked | `dest` |
+| --- | --- |
+| `~/.config/starship.toml` | `.config/starship.toml` |
+| `~/.gitconfig` | `.gitconfig` |
+| `/etc/hosts` | `etc/hosts` |
+| `~/.config/helix` (a directory) | `.config/helix/`, sourced from `…/helix/**/*` |
+
+A path under the host's home keeps its shape, because that shape is what makes
+it a dotfile in the first place. A path outside the home has no home-relative
+form, so it drops its leading `/` and arrives at the same place under the
+session home — which at least keeps `/etc/hosts` distinguishable from
+`~/.config/hosts`, where flattening to the basename would not.
+
+`patch_dest` is the single implementation, and both the wizard's warnings and
+the renderer's output go through it. Directories get a trailing `/` on the dest
+and a `**/*` glob on the source; files get neither.
+
+#### When your file collides with the loadout's
+
+Yours wins — you asked for it specifically — and the loadout's own entry is
+dropped rather than both being written and one silently losing. Picking
+`~/.config/helix` displaces every config the loadout puts under `.config/helix`.
+
+But it is said out loud, in two places: the patches page (`using yours instead
+of …`) and the summary page (`replaces …`). A config the loadout exists to
+install quietly going missing is the kind of thing you discover three sessions
+later wondering why the theme is half-applied. `displaced_configs` computes it
+by running the manifest through the same `patch_dest`, and skips configs
+belonging to packages that were declined — those are not written anyway, so
+calling them displaced would be noise.
+
+The warning renders *above* the chosen-path line, and the summary strip grows a
+row to fit it. It used to sit below a line that wraps, so a few long paths
+clipped the warning off the bottom exactly when it had something to say;
+`a_long_list_of_picks_cannot_push_the_warning_off_the_screen` holds that.
 
 ## Template grammar
 

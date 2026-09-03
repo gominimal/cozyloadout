@@ -30,7 +30,11 @@ struct Args {
     loadout: String,
 
     /// Which fish greeting to install
-    #[arg(long, value_parser = ["blocks", "legacy"], default_value = "blocks")]
+    #[arg(
+        long,
+        value_parser = ["blocks", "geometric", "legacy", "text", "none"],
+        default_value = "blocks"
+    )]
     greeting: String,
 
     /// Optional packages to include. Repeat the flag or comma-separate.
@@ -68,6 +72,7 @@ impl From<&Args> for Options {
             with: a.with.clone(),
             patch_files: a.patch_files.clone(),
             patch_dirs: a.patch_dirs.clone(),
+            ..Options::default()
         }
     }
 }
