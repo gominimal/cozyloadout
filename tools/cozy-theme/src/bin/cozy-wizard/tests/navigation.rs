@@ -22,7 +22,7 @@ fn revisiting_a_page_keeps_what_you_changed_this_run() {
         extra: "from-the-file".into(),
         ..State::default()
     };
-    let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), saved);
+    let mut a = app_with(PathBuf::from("../../schemes/vendor"), saved);
     a.on_key(press(KeyCode::Enter));
     a.on_key(press(KeyCode::Char('n')));
     a.on_key(press(KeyCode::Enter)); // -> themes, restored to "3024"
@@ -91,7 +91,7 @@ fn revisiting_the_patches_page_keeps_this_run_s_choices() {
 fn every_page_after_the_first_offers_a_way_back() {
     // Esc steps back everywhere it can, but a key nobody mentions is a key
     // nobody presses.
-    let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), State::default());
+    let mut a = app_with(PathBuf::from("../../schemes/vendor"), State::default());
     a.on_key(press(KeyCode::Enter));
     for expect_back in [
         Screen::Schemes,

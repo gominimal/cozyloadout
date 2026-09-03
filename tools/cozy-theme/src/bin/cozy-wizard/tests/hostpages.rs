@@ -40,9 +40,7 @@ fn retyping_a_chord_changes_the_detach_gesture() {
     let mut a = on_client();
     a.on_key(press(KeyCode::Char(' '))); // edit the leader
     assert!(a.editing.is_some());
-    for _ in 0..8 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "ctrl-a");
     a.on_key(press(KeyCode::Enter));
     assert!(a.editing.is_none(), "a valid chord should commit");
@@ -57,9 +55,7 @@ fn a_chord_minimal_would_refuse_is_refused_here_with_the_reason() {
     // would type.
     let mut a = on_client();
     a.on_key(press(KeyCode::Char(' ')));
-    for _ in 0..8 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "ctrl-w");
     let text = flatten(&render_app(&a, 110, 30));
     assert!(
@@ -113,9 +109,7 @@ fn q_is_a_letter_while_typing_a_chord() {
 fn r_puts_the_chords_back_to_the_defaults() {
     let mut a = on_client();
     a.on_key(press(KeyCode::Char(' ')));
-    for _ in 0..8 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "ctrl-a");
     a.on_key(press(KeyCode::Enter));
     assert!(!a.bindings.is_default());

@@ -3,7 +3,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::prelude::*;
-use super::truncate;
+use super::{shorten_home, truncate};
 
 /// The scheme list, and the preview that re-paints as it moves.
 pub fn draw_themes(frame: &mut Frame, inner: Rect, app: &App) {
@@ -460,7 +460,7 @@ pub fn enter_themes(app: &mut App) {
 
     // Re-discovered every time rather than once: the user can go back,
     // fetch the collection, and return, and the new schemes should be here.
-    app.schemes = discover(&root);
+    app.schemes = discover(&root, Some(&app.user_schemes));
     let found = want.and_then(|name| app.schemes.iter().position(|s| s.name == name));
     // A remembered scheme that is no longer on disk drops its adjustments with
     // it. They were tuned against a palette this checkout does not have, and
@@ -601,13 +601,10 @@ fn save_adjusted(app: &mut App, name: &str) -> Result<String, String> {
         .loaded
         .as_ref()
         .map(|s| format!("Adapted from {:?} by {}.", s.name, s.author));
-    // The user's own schemes go beside the checked-in ones rather than into the
-    // vendored collection, which `just fetch-schemes` overwrites.
-    let dir = app
-        .schemes_dir
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map_or_else(|| app.schemes_dir.clone(), Path::to_path_buf);
+    // Into the user's own directory, not the repository. A scheme you tuned is
+    // yours: it should survive re-cloning this repo, and be there from every
+    // checkout rather than only the one you saved it from.
+    let dir = app.user_schemes.clone();
 
     // `save_as` only knows about the directory it writes to. The wizard knows
     // the whole discovered set, and `discover` lets `schemes/` shadow a
@@ -632,7 +629,7 @@ fn save_adjusted(app: &mut App, name: &str) -> Result<String, String> {
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_string();
-    app.schemes = discover(&dir);
+    app.schemes = discover(&app.repo_schemes(), Some(&dir));
     if let Some(i) = app.schemes.iter().position(|s| s.name == saved_name) {
         app.theme_row = i;
         app.theme_top = i.saturating_sub(3);
@@ -671,14 +668,21 @@ fn draw_save_prompt(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divider
             // rather than wrapped: a path broken across two lines is harder to
             // read than one with its tail cut off.
             truncate(
-                &format!("→ {}.yaml", cozy_theme::slugify(&name)),
+                &format!(
+                    "→ {}",
+                    shorten_home(
+                        &app.user_schemes
+                            .join(format!("{}.yaml", cozy_theme::slugify(&name))),
+                        &app.home,
+                    )
+                ),
                 inner.width as usize,
             ),
             Style::default().fg(t.comment),
         ),
         Line::raw(""),
         Line::styled(
-            "Saved into schemes/ as a scheme of its own, adjustments baked in.",
+            "A scheme of its own, adjustments baked in — and picked up by every checkout.",
             Style::default().fg(t.fg),
         ),
     ];

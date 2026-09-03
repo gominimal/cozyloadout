@@ -714,20 +714,61 @@ pub struct SchemeEntry {
     pub path: PathBuf,
 }
 
+/// The user's config directory for this tool, `~/.config/cozy` by default.
+///
+/// `$XDG_CONFIG_HOME` first when it is absolute, matching the spec's rule that
+/// a relative value is invalid and ignored — and matching how minimal resolves
+/// its own. `cozy`, not `minimal`: this is the loadout's own tool, and putting
+/// files under `minimal/` would be taking a namespace that is not ours.
+#[must_use]
+pub fn config_dir(home: &Path) -> PathBuf {
+    config_home(home).join("cozy")
+}
+
+/// `$XDG_CONFIG_HOME` when absolute, otherwise `<home>/.config`.
+#[must_use]
+pub fn config_home(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".config"))
+}
+
+/// Where schemes saved from the wizard go.
+///
+/// Not the repository's `schemes/`, which is checked in: a scheme you tuned is
+/// yours, it should survive re-cloning the repo, and it should be there for
+/// every checkout rather than the one you happened to save it from.
+#[must_use]
+pub fn user_schemes_dir(home: &Path) -> PathBuf {
+    config_dir(home).join("schemes")
+}
+
+/// Where the wizard remembers its answers.
+#[must_use]
+pub fn user_settings_path(home: &Path) -> PathBuf {
+    config_dir(home).join("settings.toml")
+}
+
 /// Find every scheme the loadout can be built from.
 ///
 /// The search order matches `_resolve` in the justfile: this repo's own
 /// schemes first, then vendored base16, then base24, with earlier entries
 /// winning a name collision. `tinted8` is deliberately unreachable — it is an
 /// 8-colour system the loadout cannot use.
-pub fn discover(schemes_dir: &Path) -> Vec<SchemeEntry> {
+pub fn discover(schemes_dir: &Path, user: Option<&Path>) -> Vec<SchemeEntry> {
+    // Most specific first: a scheme you saved wins over one checked into the
+    // repository, which wins over a vendored one. The same rule `schemes/`
+    // already had over `vendor/`, extended one step outward.
     let sources = [
-        (schemes_dir.to_path_buf(), "cozy"),
-        (schemes_dir.join("vendor/base16"), "base16"),
-        (schemes_dir.join("vendor/base24"), "base24"),
+        (user.map(Path::to_path_buf), "mine"),
+        (Some(schemes_dir.to_path_buf()), "cozy"),
+        (Some(schemes_dir.join("vendor/base16")), "base16"),
+        (Some(schemes_dir.join("vendor/base24")), "base24"),
     ];
     let mut seen = BTreeMap::new();
     for (dir, source) in sources {
+        let Some(dir) = dir else { continue };
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };

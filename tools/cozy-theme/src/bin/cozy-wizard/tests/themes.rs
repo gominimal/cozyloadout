@@ -292,19 +292,14 @@ fn the_knobs_survive_to_the_next_run_and_a_bad_value_does_not() {
     a.on_key(press(KeyCode::Right));
     let saved = a.to_state();
     assert_eq!(saved.contrast, Some(5));
-    assert_eq!(
-        App::with_state(a.schemes_dir.clone(), saved)
-            .adjust
-            .contrast,
-        5
-    );
+    assert_eq!(app_with(a.schemes_dir.clone(), saved).adjust.contrast, 5);
 
     let bad = State {
         contrast: Some(120),
         warmth: Some(-30),
         ..State::default()
     };
-    let back = App::with_state(a.schemes_dir.clone(), bad);
+    let back = app_with(a.schemes_dir.clone(), bad);
     assert_eq!(back.adjust.contrast, 0, "an out-of-range knob falls back");
     assert_eq!(back.adjust.warmth, -30, "without taking the others with it");
 }
@@ -447,7 +442,7 @@ fn a_remembered_scheme_that_is_gone_takes_its_adjustments_with_it() {
         contrast: Some(60),
         ..State::default()
     };
-    let mut a = App::with_state(dir.clone(), saved);
+    let mut a = app_with(dir.clone(), saved);
     assert_eq!(a.adjust.contrast, 60, "restored before the page is entered");
     crate::ui::themes::enter_themes(&mut a);
     assert!(
@@ -465,7 +460,7 @@ fn a_remembered_scheme_that_is_still_here_keeps_its_adjustments() {
     let saved = a.to_state();
     assert_eq!(saved.contrast, Some(100));
 
-    let mut back = App::with_state(a.schemes_dir.clone(), saved);
+    let mut back = app_with(a.schemes_dir.clone(), saved);
     crate::ui::themes::enter_themes(&mut back);
     assert_eq!(
         back.adjust.contrast, 100,
@@ -512,7 +507,11 @@ fn on_private_themes(tag: &str) -> (App, PathBuf) {
     std::fs::write(vendor.join("minimal-dark.yaml"), &src).unwrap();
     std::fs::write(vendor.join("zzz-other.yaml"), &src).unwrap();
 
-    let mut a = App::with_state(root.join("vendor"), State::default());
+    let mut a = app_with(root.join("vendor"), State::default());
+    // Saved schemes go to the user's own directory; point that at the fixture
+    // so a test cannot write into a real home.
+    a.user_schemes.clone_from(&root);
+    a.home.clone_from(&root);
     a.on_key(press(KeyCode::Enter));
     a.on_key(press(KeyCode::Char('n')));
     a.on_key(press(KeyCode::Enter));
@@ -564,9 +563,7 @@ fn the_prompt_suggests_a_name_and_shows_the_file_it_will_write() {
 #[test]
 fn saving_writes_a_scheme_that_loads_back() {
     let (mut a, root) = at_save_prompt("writes");
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "My Theme");
     a.on_key(press(KeyCode::Enter));
     assert!(a.saving.is_none(), "a good name should close the prompt");
@@ -584,9 +581,7 @@ fn a_saved_scheme_has_the_adjustments_baked_in_and_the_knobs_reset() {
     // them set would apply every one of them a second time.
     let (mut a, root) = at_save_prompt("baked");
     let adjusted = a.scheme().unwrap().palette.clone();
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "Baked");
     a.on_key(press(KeyCode::Enter));
 
@@ -602,9 +597,7 @@ fn a_saved_scheme_has_the_adjustments_baked_in_and_the_knobs_reset() {
 #[test]
 fn saving_selects_the_new_scheme_in_the_list() {
     let (mut a, root) = at_save_prompt("select");
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "Aaa Mine");
     a.on_key(press(KeyCode::Enter));
 
@@ -627,9 +620,7 @@ fn saving_selects_the_new_scheme_in_the_list() {
 #[test]
 fn a_name_that_is_taken_keeps_the_prompt_open_and_says_why() {
     let (mut a, root) = at_save_prompt("taken");
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "minimal-dark");
     a.on_key(press(KeyCode::Enter));
 
@@ -643,9 +634,7 @@ fn a_name_that_is_taken_keeps_the_prompt_open_and_says_why() {
 #[test]
 fn a_name_with_nothing_in_it_is_refused_rather_than_writing_yaml() {
     let (mut a, root) = at_save_prompt("empty");
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "!!!");
     a.on_key(press(KeyCode::Enter));
     assert!(a.saving.is_some());
@@ -693,9 +682,7 @@ fn q_is_a_letter_while_naming_a_scheme() {
 #[test]
 fn moving_on_clears_a_stale_save_confirmation() {
     let (mut a, root) = at_save_prompt("stale");
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "Zzz Last");
     a.on_key(press(KeyCode::Enter));
     assert!(a.saved_note.is_some());
@@ -716,9 +703,7 @@ fn show_the_save_flow() {
     for line in render_app(&a, 96, 16) {
         println!("|{}|", line.trim_end());
     }
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "Warm Dark");
     a.on_key(press(KeyCode::Enter));
     println!("\n=== after saving");
@@ -736,7 +721,8 @@ fn the_preview_survives_the_scheme_list_emptying_underneath_it() {
     let src = std::fs::read_to_string("../../schemes/minimal-dark.yaml").unwrap();
     std::fs::write(vendor.join("minimal-dark.yaml"), &src).unwrap();
 
-    let mut a = App::with_state(root.join("vendor"), State::default());
+    let mut a = app_with(root.join("vendor"), State::default());
+    a.user_schemes = root.join("mine");
     a.on_key(press(KeyCode::Enter));
     a.on_key(press(KeyCode::Char('n')));
     a.on_key(press(KeyCode::Enter));
@@ -749,4 +735,25 @@ fn the_preview_survives_the_scheme_list_emptying_underneath_it() {
     assert!(a.schemes.is_empty());
     let _ = render_app(&a, 110, 30);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn no_test_can_write_into_a_real_home() {
+    // This suite once wrote four schemes into the developer's own
+    // ~/.config/cozy/schemes, because the save target moved to the user's
+    // directory before the fixtures did. Every App a test builds must point
+    // somewhere disposable.
+    let real =
+        std::env::var_os("HOME").map(|h| cozy_theme::user_schemes_dir(std::path::Path::new(&h)));
+    for (name, app) in [
+        ("on_themes", on_themes()),
+        ("on_private_themes", on_private_themes("guard").0),
+    ] {
+        if let Some(real) = &real {
+            assert_ne!(
+                &app.user_schemes, real,
+                "{name} would save into a real home directory"
+            );
+        }
+    }
 }

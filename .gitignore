@@ -13,5 +13,7 @@
 # macOS
 .DS_Store
 
-# What the wizard remembers between runs: one person's answers, not the repo's.
+# What the wizard remembered between runs, before those answers moved to
+# ~/.config/cozy/settings.toml. Still read when it is the only one there, so an
+# older checkout does not lose its answers; never written again.
 /.cozy-wizard.toml

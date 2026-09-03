@@ -98,20 +98,55 @@ pub struct Args {
     #[arg(long, default_value = "schemes/vendor")]
     schemes: PathBuf,
 
-    /// The settings file to start from and write back to. Defaults to the
-    /// automatic one beside the loadout; point it at your own to keep a named
-    /// set of answers, which `cozy-theme --settings` can then render directly.
-    #[arg(long, default_value = cozy_theme::settings::FILE)]
-    settings: PathBuf,
+    /// The settings file to start from and write back to. Defaults to
+    /// `~/.config/cozy/settings.toml`; point it at your own to keep a named set
+    /// of answers, which `cozy-theme --settings` can then render directly.
+    #[arg(long)]
+    settings: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
 // Greeting
 // ---------------------------------------------------------------------------
 
-/// The filename offered when saving settings to a file of their own.
-fn suggested_settings_name() -> String {
-    "cozy-settings.toml".to_string()
+/// Where the wizard reads its answers from, and where it writes them back.
+///
+/// Normally the same file: `~/.config/cozy/settings.toml`, not one in the
+/// checkout, because the answers are yours and should survive re-cloning it.
+///
+/// They differ exactly once. A `.cozy-wizard.toml` left in the working
+/// directory by an older run is still *read* when there is no new file yet, so
+/// nobody loses their answers to the move — but the run writes the new
+/// location, which migrates them. Reading and writing the old path would have
+/// meant the file never moved at all.
+fn settings_paths(explicit: Option<PathBuf>) -> (PathBuf, PathBuf) {
+    if let Some(path) = explicit {
+        return (path.clone(), path);
+    }
+    settings_paths_in(
+        &cozy_theme::user_settings_path(&home()),
+        Path::new(cozy_theme::settings::FILE),
+    )
+}
+
+/// The read/write decision, against two given paths. Pure, so it can be checked
+/// without a real home.
+fn settings_paths_in(modern: &Path, legacy: &Path) -> (PathBuf, PathBuf) {
+    if !modern.exists() && legacy.exists() {
+        return (legacy.to_path_buf(), modern.to_path_buf());
+    }
+    (modern.to_path_buf(), modern.to_path_buf())
+}
+
+/// The path offered when saving settings to a file of their own.
+///
+/// Beside the automatic one, in the user's own directory — the point of a named
+/// settings file is that it outlives the checkout.
+fn suggested_settings_name(home: &Path) -> String {
+    cozy_theme::config_dir(home)
+        .join("my-loadout.toml")
+        .display()
+        .to_string()
 }
 
 /// The host home, which patch destinations are computed relative to.
@@ -370,6 +405,12 @@ struct App {
     /// parallel tests doing that raced each other.
     home: PathBuf,
 
+    /// Where schemes saved here go, and where saved ones are read back from.
+    /// Resolved once for the same reason `home` is — it depends on
+    /// `$XDG_CONFIG_HOME`, which a test cannot change without racing every
+    /// other test in the process.
+    user_schemes: PathBuf,
+
     saved: State,
     /// Set only by finishing the last page. Quitting leaves it false, so an
     /// abandoned run does not overwrite the answers from a finished one.
@@ -399,6 +440,7 @@ impl App {
             screen: Screen::Greeting,
             schemes_dir,
             home: home(),
+            user_schemes: cozy_theme::user_schemes_dir(&home()),
             adjust: Adjust::default(),
             knob_row: 0,
             adjusting: false,
@@ -526,6 +568,15 @@ impl App {
             d
         };
         self.resources.restore(self.saved.vcpus, self.saved.ram_mib);
+    }
+
+    /// The repository's scheme root — `schemes/`, the parent of the vendored
+    /// collection this was pointed at.
+    fn repo_schemes(&self) -> PathBuf {
+        self.schemes_dir
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or_else(|| self.schemes_dir.clone(), Path::to_path_buf)
     }
 
     /// The scheme as it will actually be rendered — adjustments applied.
@@ -801,7 +852,7 @@ impl App {
             Action::Abort | Action::SaveOnly => self.done = true,
             Action::SaveAs => {
                 self.completed = false;
-                self.saving_settings = Some(suggested_settings_name());
+                self.saving_settings = Some(suggested_settings_name(&self.home));
             }
             Action::Generate => {
                 let install = self.install;
@@ -916,7 +967,10 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
 
-    let saved = State::load(&args.settings);
+    // Resolved once, as a pair: a run that reads a legacy file writes the new
+    // location, which is what moves it.
+    let (read_from, settings) = settings_paths(args.settings);
+    let saved = State::load(&read_from);
 
     let terminal = ratatui::init();
     let result = run(terminal, args.schemes, saved);
@@ -952,10 +1006,10 @@ fn main() -> Result<()> {
     // Only a finished run is an answer. Quitting part-way leaves whatever the
     // last completed run chose, rather than half-overwriting it.
     if app.completed {
-        match app.to_state().save(&args.settings) {
-            Ok(()) => println!("saved: {}", args.settings.display()),
+        match app.to_state().save(&settings) {
+            Ok(()) => println!("saved: {}", settings.display()),
             // Not fatal: the run happened, the answers just will not persist.
-            Err(why) => eprintln!("could not save {}: {why}", args.settings.display()),
+            Err(why) => eprintln!("could not save {}: {why}", settings.display()),
         }
     }
 

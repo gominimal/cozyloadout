@@ -52,9 +52,7 @@ fn the_summary_names_both_host_settings_and_says_when_they_are_untouched() {
 fn the_summary_says_when_a_host_setting_will_be_written() {
     let mut a = on_client();
     a.on_key(press(KeyCode::Char(' ')));
-    for _ in 0..8 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "ctrl-a");
     a.on_key(press(KeyCode::Enter)); // commit the chord
     a.on_key(press(KeyCode::Enter)); // client -> resources
@@ -76,7 +74,7 @@ fn the_repo_root_is_never_an_empty_path() {
     // Passing it to `Command::current_dir` fails, which is exactly how
     // generating from a default `--schemes` broke.
     for dir in ["schemes/vendor", "./schemes/vendor", "/abs/schemes/vendor"] {
-        let a = App::with_state(PathBuf::from(dir), State::default());
+        let a = app_with(PathBuf::from(dir), State::default());
         let root = a.repo_root();
         assert!(
             !root.as_os_str().is_empty(),
@@ -381,7 +379,11 @@ fn save_as_opens_a_prompt_rather_than_writing_blind() {
 
     let text = flatten(&render_app(&a, 110, 34));
     assert!(text.contains("Save these settings to"), "{text}");
-    assert!(text.contains("cozy-settings.toml"), "a suggestion:\n{text}");
+    assert!(
+        text.contains("my-loadout.toml"),
+        "a suggestion, in the user's own directory rather than the checkout:\n{text}"
+    );
+    assert!(text.contains(".config/cozy"), "{text}");
     assert!(
         text.contains("cozy-theme --settings"),
         "and what the file is for:\n{text}"
@@ -398,9 +400,7 @@ fn the_saved_file_rebuilds_the_same_loadout() {
     let mut a = on_apply();
     a.on_key(press(KeyCode::Down));
     a.on_key(press(KeyCode::Enter));
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, path.to_str().unwrap());
     a.on_key(press(KeyCode::Enter));
     assert!(a.saving_settings.is_none(), "a good path should close it");
@@ -422,9 +422,7 @@ fn saving_settings_refuses_to_overwrite_and_keeps_the_prompt_open() {
     let mut a = on_apply();
     a.on_key(press(KeyCode::Down));
     a.on_key(press(KeyCode::Enter));
-    for _ in 0..40 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, path.to_str().unwrap());
     a.on_key(press(KeyCode::Enter));
 
@@ -474,7 +472,7 @@ fn a_named_settings_file_is_what_the_run_starts_from() {
     };
     saved.save(&path).unwrap();
 
-    let mut back = App::with_state(
+    let mut back = app_with(
         PathBuf::from("../../schemes/vendor"),
         cozy_theme::Settings::load(&path),
     );
@@ -524,4 +522,29 @@ fn the_render_summary_lands_on_the_frame_not_on_stdout() {
     );
     assert!(text.contains("0x96f"), "naming what was rendered:\n{text}");
     let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn an_old_settings_file_is_read_once_and_then_migrated() {
+    // The move must not lose anyone's answers, and must not leave the file
+    // where it was either — reading and writing the old path would mean it
+    // never moved.
+    let dir = temp_dir("migrate");
+    std::fs::create_dir_all(&dir).unwrap();
+    let legacy = dir.join(cozy_theme::settings::FILE);
+    let modern = dir.join("config/cozy/settings.toml");
+
+    // Only the old one exists: read it, write the new one.
+    std::fs::write(&legacy, "theme = \"from-the-old-file\"\n").unwrap();
+    let (read, write) = settings_paths_in(&modern, &legacy);
+    assert_eq!(read, legacy, "the old answers still come back");
+    assert_eq!(write, modern, "but the run writes the new location");
+
+    // Once the new one exists, the old one is out of the picture.
+    std::fs::create_dir_all(modern.parent().unwrap()).unwrap();
+    std::fs::write(&modern, "theme = \"moved\"\n").unwrap();
+    let (read, write) = settings_paths_in(&modern, &legacy);
+    assert_eq!(read, modern);
+    assert_eq!(write, modern);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
