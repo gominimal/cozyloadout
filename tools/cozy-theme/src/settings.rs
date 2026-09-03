@@ -75,18 +75,52 @@ impl Settings {
     ///
     /// A corrupt or hand-edited file must not stop the wizard running: this is
     /// a convenience, and the worst it should ever cost is the convenience.
+    /// Use [`Self::read`] where the caller named the file and deserves to hear
+    /// why it could not be used.
+    #[must_use]
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| toml::from_str(&text).ok())
-            .unwrap_or_default()
+        Self::read(path).unwrap_or_default()
+    }
+
+    /// Read the file, reporting why it could not be read.
+    ///
+    /// The distinction matters for a file the user *named*: silently falling
+    /// back to defaults there turns "your TOML has a typo on line 4" into a
+    /// loadout that is quietly not the one they asked for.
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be read, or is not valid settings TOML.
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Write the file. Only called for a completed run — quitting early leaves
     /// whatever was there, because a half-answered wizard is not an answer.
+    ///
+    /// Written to a sibling temporary file and renamed, so an interrupted write
+    /// cannot leave a truncated file where the previous answers were. `rename`
+    /// is atomic within a filesystem, and the temporary is a sibling precisely
+    /// so it is on the same one.
+    ///
+    /// # Errors
+    ///
+    /// If the settings cannot be serialised, or the write or rename fails.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+        }
+        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("{}: {e}", path.display())
+        })
     }
 
     /// Whether a remembered package choice applies, falling back to the
@@ -279,6 +313,85 @@ mod tests {
             vec![kept],
             "a path that no longer exists must not come back"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_named_file_reports_why_it_could_not_be_read() {
+        // `load` swallows the reason, which is right for the automatic file and
+        // wrong for one the user named: a typo should say where, not silently
+        // render defaults.
+        let dir = temp("read-err");
+        let path = dir.join(FILE);
+        std::fs::write(&path, "this is not toml {{{").unwrap();
+        let err = Settings::read(&path).unwrap_err();
+        assert!(err.contains("TOML parse error"), "{err}");
+        assert!(
+            err.contains(path.to_str().unwrap()),
+            "and name the file: {err}"
+        );
+        assert_eq!(
+            Settings::load(&path),
+            Settings::default(),
+            "load still falls back"
+        );
+
+        let err = Settings::read(&dir.join("absent.toml")).unwrap_err();
+        assert!(err.contains("absent.toml"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_previous_answers_intact() {
+        // Written via a sibling temporary and renamed, so there is no window
+        // where the file on disk is half of the new content.
+        let dir = temp("atomic");
+        let path = dir.join(FILE);
+        let first = Settings {
+            theme: Some("keep-me".into()),
+            ..Settings::default()
+        };
+        first.save(&path).unwrap();
+
+        // A directory where the temporary wants to go: the rename cannot
+        // happen, and the original must survive it.
+        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        std::fs::create_dir(&tmp).unwrap();
+        let second = Settings {
+            theme: Some("lose-me".into()),
+            ..Settings::default()
+        };
+        assert!(second.save(&path).is_err());
+        assert_eq!(
+            Settings::load(&path).theme.as_deref(),
+            Some("keep-me"),
+            "the previous answers must still be there"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saving_creates_the_directory_it_was_pointed_at() {
+        // "Save these settings to a file" takes a path the user typed; a
+        // reasonable one names a directory that does not exist yet.
+        let dir = temp("mkdir");
+        let path = dir.join("nested/deeper/mine.toml");
+        Settings::default().save(&path).unwrap();
+        assert!(path.is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn no_temporary_file_is_left_behind() {
+        let dir = temp("no-litter");
+        let path = dir.join(FILE);
+        Settings::default().save(&path).unwrap();
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, vec![FILE.to_string()], "{left:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -133,7 +133,7 @@ question "where does this behaviour live" should have a boring answer:
 | `ui/<screen>.rs` | one screen: what it draws *and* what its keys do |
 | `ui/mod.rs` | the frame around every screen — outer block, footer, heading |
 | `ui/prelude.rs` | what the screen modules draw with, so their headers stay short |
-| `greeting.rs` `fetch.rs` `keys.rs` `picker.rs` `resources.rs` `state.rs` `theme.rs` | models: no drawing, no `Frame` |
+| `greeting.rs` `fetch.rs` `keys.rs` `picker.rs` `resources.rs` `theme.rs` | models: no drawing, no `Frame` |
 | `hostcfg.rs` | the two writes that leave this repo |
 | `tests/` | one module per screen, over shared fixtures in `tests/util.rs` |
 
@@ -349,16 +349,13 @@ The `[N files]` the renderer prints counts what it actually wrote, not
 
 ### The apply page
 
-The last screen: a summary of every choice, then four actions.
-
-Install is listed **first**, and is where the cursor starts: it is the point of
-running the wizard, so making it the second option means everyone arrows past
-the one they wanted.
+The last screen: a summary of every choice, a tick for installing, then four
+actions.
 
 | Action | Builds | Installs | Remembers |
 | --- | --- | --- | --- |
-| Generate and install | yes | yes | yes |
-| Generate | yes | no | yes |
+| Generate | yes | when ticked | yes |
+| Save these settings to a file | no | no | yes, and to the named file |
 | Save settings and exit | no | no | yes |
 | Abort | no | no | **no** |
 
@@ -633,8 +630,8 @@ directory. Reproducing any of that here would be a guess that breaks silently.
 minvmd missing from `PATH` is not an error — the page says the choice will be
 remembered but not applied.
 
-Both are applied by **Generate and install**, not by **Generate**: Generate
-promises nothing outside the repo changes, and both of these are outside it.
+Both are applied only when the install tick is set: a bare render promises
+nothing outside the repo changes, and both of these are outside it.
 Neither failure is fatal to an install that has already written the loadout;
 they append a line to the report instead. And neither is applied at all when it
 still equals the default, so an untouched wizard writes no config file it did

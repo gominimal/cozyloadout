@@ -363,7 +363,11 @@ pub fn draw_preview(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
         ),
         Span::styled("just theme ", Style::default().fg(t.fg)),
         Span::styled(
-            &app.schemes[app.theme_row].name,
+            // The scheme's own slug, not the list row. `loaded` outlives the
+            // list — re-entering the page after the collection was deleted
+            // leaves a scheme on screen with nothing behind it — and indexing
+            // the row panicked in the middle of drawing.
+            scheme.slug.clone(),
             Style::default().fg(t.yellow),
         ),
     ]));

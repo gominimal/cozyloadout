@@ -727,3 +727,26 @@ fn show_the_save_flow() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn the_preview_survives_the_scheme_list_emptying_underneath_it() {
+    let root = temp_dir("vanishing");
+    let vendor = root.join("vendor/base16");
+    std::fs::create_dir_all(&vendor).unwrap();
+    let src = std::fs::read_to_string("../../schemes/minimal-dark.yaml").unwrap();
+    std::fs::write(vendor.join("minimal-dark.yaml"), &src).unwrap();
+
+    let mut a = App::with_state(root.join("vendor"), State::default());
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Char('n')));
+    a.on_key(press(KeyCode::Enter));
+    let _ = render_app(&a, 110, 30);
+
+    // The collection goes away while the wizard is on another page.
+    std::fs::remove_dir_all(&vendor).unwrap();
+    a.on_key(press(KeyCode::Enter)); // -> packages
+    crate::ui::themes::enter_themes(&mut a); // and back
+    assert!(a.schemes.is_empty());
+    let _ = render_app(&a, 110, 30);
+    let _ = std::fs::remove_dir_all(&root);
+}

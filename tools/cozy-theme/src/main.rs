@@ -5,7 +5,8 @@
 //!
 //! See AGENTS.md for the template grammar and the build pipeline.
 
-use clap::Parser;
+use clap::parser::ValueSource;
+use clap::{CommandFactory, Parser};
 use color_eyre::eyre::{bail, eyre, Result};
 use cozy_theme::{Adjust, Options, Packages, Settings};
 use std::path::{Path, PathBuf};
@@ -143,6 +144,103 @@ impl From<&Args> for Options {
     }
 }
 
+/// Fold a settings file into `options`, under whatever flags were typed.
+///
+/// Applied first and overridden by the command line: the file is a starting
+/// point, not an override, so `--settings mine.toml --greeting none` is one
+/// answer changed rather than a file to edit.
+///
+/// # Errors
+///
+/// If the file cannot be read, names no theme, or names one that is not under
+/// `--schemes`.
+fn layer_settings(args: &Args, options: &mut Options) -> Result<()> {
+    let Some(path) = &args.settings else {
+        return Ok(());
+    };
+    // `read`, not `load`: the user named this file, so a typo in it should
+    // say where, rather than falling back to defaults and rendering
+    // something quietly different from what they asked for.
+    let settings = Settings::read(path).map_err(|e| eyre!(e))?;
+    let offered = Packages::load(&args.templates.join("packages.toml"))?;
+    let mut from_file = options.clone();
+    settings.apply_to(&mut from_file, &offered);
+    // Re-apply whichever flags the user actually typed. Asked of clap
+    // rather than inferred by comparing against the defaults: that
+    // comparison cannot see `--greeting blocks` or `--contrast 0`, so
+    // explicitly asking for a default value silently lost to the file.
+    let matches = Args::command().get_matches_from(std::env::args_os());
+    let typed_flag = |name: &str| matches.value_source(name) == Some(ValueSource::CommandLine);
+    let typed = Options::from(args);
+    if typed_flag("greeting") {
+        from_file.greeting = typed.greeting;
+    }
+    if typed_flag("with") {
+        from_file.with = typed.with;
+    }
+    if typed_flag("patch_files") {
+        from_file.patch_files = typed.patch_files;
+    }
+    if typed_flag("patch_dirs") {
+        from_file.patch_dirs = typed.patch_dirs;
+    }
+    // Per knob, not all six together: `--warmth 10` alongside a file that
+    // sets contrast should change the warmth and leave the contrast.
+    for (name, from, to) in [
+        (
+            "contrast",
+            typed.adjust.contrast,
+            &mut from_file.adjust.contrast,
+        ),
+        (
+            "saturation",
+            typed.adjust.saturation,
+            &mut from_file.adjust.saturation,
+        ),
+        (
+            "comments",
+            typed.adjust.comments,
+            &mut from_file.adjust.comments,
+        ),
+        (
+            "separation",
+            typed.adjust.separation,
+            &mut from_file.adjust.separation,
+        ),
+        (
+            "background",
+            typed.adjust.background,
+            &mut from_file.adjust.background,
+        ),
+        ("warmth", typed.adjust.warmth, &mut from_file.adjust.warmth),
+    ] {
+        if typed_flag(name) {
+            *to = from;
+        }
+    }
+    *options = from_file;
+
+    // The file names its scheme; a path on the command line still wins.
+    if args.scheme.is_none() {
+        let name = settings
+            .theme
+            .clone()
+            .ok_or_else(|| eyre!("{} names no theme", path.display()))?;
+        options.scheme = cozy_theme::discover(&args.schemes)
+            .into_iter()
+            .find(|e| e.name == name)
+            .map(|e| e.path)
+            .ok_or_else(|| {
+                eyre!(
+                    "{} wants the scheme {name:?}, which is not under {}",
+                    path.display(),
+                    args.schemes.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
@@ -152,58 +250,7 @@ fn main() -> Result<()> {
     // the build/ tree would not be reachable from the scheme now on disk.
     let mut options = Options::from(&args);
 
-    // A settings file fills in what the flags did not. Applied first so an
-    // explicit flag still wins: the file is a starting point, not an override.
-    if let Some(path) = &args.settings {
-        let settings = Settings::load(path);
-        if settings == Settings::default() {
-            bail!(
-                "{} is missing, empty, or not a settings file",
-                path.display()
-            );
-        }
-        let offered = Packages::load(&args.templates.join("packages.toml"))?;
-        let mut from_file = options.clone();
-        settings.apply_to(&mut from_file, &offered);
-        // Re-apply whichever flags the user actually typed.
-        let typed = Options::from(&args);
-        let defaults = Options::from(&Args::parse_from(["cozy-theme"]));
-        if typed.greeting != defaults.greeting {
-            from_file.greeting = typed.greeting;
-        }
-        if typed.adjust != defaults.adjust {
-            from_file.adjust = typed.adjust;
-        }
-        if !typed.with.is_empty() {
-            from_file.with = typed.with;
-        }
-        if !typed.patch_files.is_empty() {
-            from_file.patch_files = typed.patch_files;
-        }
-        if !typed.patch_dirs.is_empty() {
-            from_file.patch_dirs = typed.patch_dirs;
-        }
-        options = from_file;
-
-        // The file names its scheme; a path on the command line still wins.
-        if args.scheme.is_none() {
-            let name = settings
-                .theme
-                .clone()
-                .ok_or_else(|| eyre!("{} names no theme", path.display()))?;
-            options.scheme = cozy_theme::discover(&args.schemes)
-                .into_iter()
-                .find(|e| e.name == name)
-                .map(|e| e.path)
-                .ok_or_else(|| {
-                    eyre!(
-                        "{} wants the scheme {name:?}, which is not under {}",
-                        path.display(),
-                        args.schemes.display()
-                    )
-                })?;
-        }
-    }
+    layer_settings(&args, &mut options)?;
     if let (Some(name), Some(scheme)) = (&args.save_as, &args.scheme) {
         let loaded = cozy_theme::Scheme::load(scheme)?;
         let from = format!(
