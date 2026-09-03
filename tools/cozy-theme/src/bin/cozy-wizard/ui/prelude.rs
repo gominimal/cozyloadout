@@ -7,6 +7,7 @@
 pub(crate) use cozy_theme::{discover, Adjust, Packages, SLOTS};
 
 pub(crate) use crate::greeting::Greeting;
+pub(crate) use crate::icons;
 pub(crate) use crate::keys::{Bindings, Key};
 pub(crate) use crate::picker::{Pick, Picker};
 pub(crate) use crate::preview;

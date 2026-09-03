@@ -504,3 +504,46 @@ fn preview_a_real_directory() {
         "a preview must not stall the interface"
     );
 }
+
+#[test]
+fn the_pickers_draw_icons_when_they_are_on() {
+    let (mut a, root) = on_patches("icons");
+    a.icons = true;
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(
+        text.contains(crate::icons::for_entry("notes.md", false)),
+        "a markdown file should carry its glyph:\n{text}"
+    );
+    assert!(
+        text.contains(crate::icons::for_entry("dotfiles", true)),
+        "and a directory the folder one:\n{text}"
+    );
+
+    a.icons = false;
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(
+        !text.contains(crate::icons::for_entry("notes.md", false)),
+        "turned off means gone, not blank:\n{text}"
+    );
+    assert!(
+        text.contains("notes.md"),
+        "the names stay either way:\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn turning_icons_off_does_not_disturb_selection() {
+    // The icon is decoration in front of the name; the checkbox and what it
+    // means must not move with it.
+    let (mut a, root) = on_patches("icons-select");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    let chosen: Vec<PathBuf> = a.chosen_paths().into_iter().cloned().collect();
+    a.icons = false;
+    let after: Vec<PathBuf> = a.chosen_paths().into_iter().cloned().collect();
+    assert_eq!(after, chosen);
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains("[x]"), "still ticked:\n{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}

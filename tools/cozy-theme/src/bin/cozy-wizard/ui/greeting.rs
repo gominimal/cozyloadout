@@ -7,17 +7,18 @@ use super::prelude::*;
 pub fn draw_greeting(frame: &mut Frame, inner: Rect, app: &App) {
     let intro = intro_paragraph(
         "Welcome to the minimal cozy loadout wizard.",
-        "Pick a greeting. The preview below is exactly what fish prints — if a \
-         mark shows boxes, this font lacks those glyphs."
+        "Pick a greeting — the preview is what fish prints. Boxes mean this \
+         font lacks those glyphs, and the icons too."
             .into(),
     );
 
     // A list plus one preview, rather than a box per option. With five options
     // and a four-line mark among them, stacking a box each does not fit in a
     // 24-row terminal — and only the highlighted one is being judged anyway.
-    let [intro_area, list_area, preview_area] = Layout::vertical([
+    let [intro_area, list_area, icon_area, preview_area] = Layout::vertical([
         Constraint::Length(INTRO_ROWS),
         Constraint::Length(u16::try_from(Greeting::ALL.len()).unwrap_or(5)),
+        Constraint::Length(2),
         Constraint::Min(3),
     ])
     .areas(inner);
@@ -43,6 +44,38 @@ pub fn draw_greeting(frame: &mut Frame, inner: Rect, app: &App) {
         })
         .collect();
     frame.render_widget(List::new(items), list_area);
+
+    // The icons themselves, not a description of them — the same reason the
+    // marks above are previewed rather than named. A font either draws these or
+    // shows boxes, and one glance settles it.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                if app.icons { "  [x] " } else { "  [ ] " },
+                Style::default()
+                    .fg(if app.icons {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "icons in the file lists  ",
+                Style::default().fg(if app.icons {
+                    Color::Reset
+                } else {
+                    Color::DarkGray
+                }),
+            ),
+            Span::styled(
+                icons::sample().iter().collect::<String>(),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled("   space toggles", Style::default().fg(Color::DarkGray)),
+        ])),
+        icon_area,
+    );
 
     draw_greeting_preview(
         frame,
@@ -100,7 +133,10 @@ pub fn on_key_greeting(app: &mut App, key: KeyEvent) {
         KeyCode::Down | KeyCode::Char('j') => {
             app.greeting_row = (app.greeting_row + 1).min(Greeting::ALL.len() - 1);
         }
-        KeyCode::Enter | KeyCode::Char(' ') => {
+        // Space is the tick, not a second confirm: the apply page already
+        // spends it that way, and enter is what finishes a page everywhere.
+        KeyCode::Char(' ') => app.icons = !app.icons,
+        KeyCode::Enter => {
             app.greeting = Some(app.current_greeting());
             app.screen = Screen::Schemes;
         }
@@ -112,5 +148,10 @@ pub fn on_key_greeting(app: &mut App, key: KeyEvent) {
 
 /// The keys this screen answers to, for the footer.
 pub fn hints(_app: &App) -> Vec<(&'static str, &'static str)> {
-    vec![("↑/↓", "move"), ("enter", "choose"), ("q", "quit")]
+    vec![
+        ("↑/↓", "move"),
+        ("space", "icons on/off"),
+        ("enter", "choose"),
+        ("q", "quit"),
+    ]
 }

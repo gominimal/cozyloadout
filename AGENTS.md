@@ -159,6 +159,18 @@ Its first page asks which fish greeting to install. Five options:
 | No logo | — | just the `… to detach` line |
 | Nothing at all | — | a silent shell |
 
+The screen asks a **second** question, with a tick: whether the file pickers
+draw Nerd Font icons. It belongs here because it is the same question — does
+this font have these glyphs — and asking it twice, on two screens, would be
+asking someone to judge their font twice over. It is asked the way the marks
+are: by drawing the glyphs, not by describing them.
+
+`space` toggles it and `enter` still chooses the mark, matching the apply page's
+install tick. On by default, matching the `eza --icons` the loadout installs;
+anyone whose font lacks them sees boxes in the sample and presses one key.
+`icons: Option<bool>` in the settings, so `None` — a file written before this
+existed — takes the default rather than reading as "off".
+
 **Order is best-looking first, not safest first.** The sharpest mark leads even
 though its glyphs are the least widely available, because this is the one
 screen where a font that cannot draw something says so plainly — and the two
@@ -708,6 +720,27 @@ Key choices worth keeping:
 
 Both pickers start at `$HOME`. Selections survive walking away and coming back,
 and the summary line under them names every path with `~` for the home prefix.
+
+#### Icons
+
+`icons.rs` is a table from extension (and whole filename) to glyph, with no
+drawing in it. Two rules decide what goes in it:
+
+- **Font Awesome codepoints only** (`U+F000`–`U+F2FF`). Nerd Fonts patch in
+  several icon sets, and the fashionable file-type icons come from Seti and
+  Devicons — which *moved codepoints between Nerd Font v2 and v3*. The Font
+  Awesome block has been stable and present in every patched font since the
+  beginning. A handful of glyphs that always render beats a larger table that
+  shows boxes on half the machines it meets, and
+  `every_glyph_is_in_the_font_awesome_block` keeps it that way.
+- **By kind, not by language.** One gear for everything that configures
+  something, one terminal for every shell, one `</>` for every language. At a
+  glance "this configures something" is more useful than fifteen logos you have
+  to learn — and it keeps the table inside the block above.
+
+`.gitignore` and `Makefile` have no usable extension, so whole names are matched
+first; anything unrecognised takes the default file glyph rather than a wrong
+guess.
 
 #### The preview pane
 
