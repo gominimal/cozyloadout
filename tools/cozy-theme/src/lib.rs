@@ -484,6 +484,10 @@ pub struct Options {
     pub with: Vec<String>,
     pub patch_files: Vec<PathBuf>,
     pub patch_dirs: Vec<PathBuf>,
+    /// The host home, which patch destinations are computed relative to.
+    /// Defaults to `$HOME`; set explicitly so tests do not depend on the
+    /// machine they run on.
+    pub home: PathBuf,
 }
 
 impl Default for Options {
@@ -497,6 +501,7 @@ impl Default for Options {
             with: Vec::new(),
             patch_files: Vec::new(),
             patch_dirs: Vec::new(),
+            home: std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
         }
     }
 }
@@ -746,32 +751,107 @@ fn resolve_packages<'a>(with: &'a [String], packages: &'a Packages) -> Vec<&'a s
     names
 }
 
-/// Patch entries for the user's own files and directories.
+/// One patch the user asked for, already mapped to a session destination.
+pub struct UserPatch {
+    /// Where it lands, relative to the session's home. Ends in `/` for a
+    /// directory, which is how minimal spells "and everything under it".
+    pub dest: String,
+    /// The host path or glob it comes from.
+    pub source: String,
+}
+
+/// Where a host path lands inside the session.
 ///
-/// A directory becomes a glob with a trailing-slash dest, which is how
-/// minimal's loadout schema spells "everything under here". Both land under
-/// the session's home, named after the last path component.
-fn user_patches(files: &[PathBuf], dirs: &[PathBuf]) -> String {
-    let mut out = String::new();
-    for path in files {
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            let _ = writeln!(
-                out,
-                "    {{ dest = \"{name}\", source = \"{}\" }},",
-                path.display()
-            );
-        }
+/// `dest` is interpreted relative to the session user's home, so a path under
+/// the host's home keeps its shape: `~/.config/helix` becomes `.config/helix`
+/// and lands where helix will actually look. Taking only the last component —
+/// which this used to do — dropped everything at the home root, so a picked
+/// `~/.config/starship.toml` arrived as `~/starship.toml` and starship never
+/// saw it.
+///
+/// A path outside the home has no home-relative form, so the leading `/` is
+/// dropped instead: `/etc/hosts` becomes `etc/hosts`. Keeping the whole path
+/// is also what stops two files with the same basename colliding on one dest.
+pub fn patch_dest(path: &Path, home: &Path, is_dir: bool) -> String {
+    let rel = path.strip_prefix(home).map_or_else(
+        |_| {
+            // Not under the home directory: strip the root instead.
+            path.components()
+                .filter(|c| {
+                    !matches!(
+                        c,
+                        std::path::Component::RootDir | std::path::Component::Prefix(_)
+                    )
+                })
+                .collect::<PathBuf>()
+        },
+        Path::to_path_buf,
+    );
+    let mut dest = rel.to_string_lossy().into_owned();
+    if is_dir && !dest.is_empty() && !dest.ends_with('/') {
+        dest.push('/');
     }
-    for path in dirs {
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            let _ = writeln!(
-                out,
-                "    {{ dest = \"{name}/\", source = \"{}/**/*\" }},",
-                path.display()
-            );
-        }
-    }
+    dest
+}
+
+/// Map the user's picks to patch entries.
+pub fn user_patches(files: &[PathBuf], dirs: &[PathBuf], home: &Path) -> Vec<UserPatch> {
+    let mut out: Vec<UserPatch> = files
+        .iter()
+        .map(|p| UserPatch {
+            dest: patch_dest(p, home, false),
+            source: p.display().to_string(),
+        })
+        .collect();
+    out.extend(dirs.iter().map(|p| UserPatch {
+        // A glob source with a directory dest: minimal appends each match's
+        // path under the walk root to the dest, so the tree keeps its shape.
+        dest: patch_dest(p, home, true),
+        source: format!("{}/**/*", p.display()),
+    }));
     out
+}
+
+/// Whether one of the user's patches already covers this destination.
+///
+/// An exact match, or anything beneath a directory patch — picking
+/// `~/.config/helix` shadows the loadout's own `.config/helix/config.toml` and
+/// its themes too. The user's file wins: they asked for theirs specifically,
+/// and two sources for one destination is a composition minimal would refuse.
+pub fn shadowed_by<'a>(dest: &str, user: &'a [UserPatch]) -> Option<&'a UserPatch> {
+    user.iter().find(|u| {
+        if u.dest.ends_with('/') {
+            dest.starts_with(u.dest.as_str())
+        } else {
+            dest == u.dest
+        }
+    })
+}
+
+/// A patch the loadout itself would write, and the optional package it belongs
+/// to. Exposed so the wizard can warn about the ones a user's own pick will
+/// displace, before anything is generated.
+pub struct LoadoutPatch {
+    pub dest: String,
+    pub package: Option<String>,
+}
+
+/// Every destination this loadout would write for a given scheme slug.
+pub fn loadout_patches(templates: &Path, loadout: &str, slug: &str) -> Result<Vec<LoadoutPatch>> {
+    let entries = parse_manifest(&templates.join("manifest.toml"))?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|e| {
+            let dest = e
+                .dest?
+                .replace("{slug}", slug)
+                .replace("{loadout}", loadout);
+            Some(LoadoutPatch {
+                dest,
+                package: e.package,
+            })
+        })
+        .collect())
 }
 
 pub fn build(args: &Options) -> Result<()> {
@@ -812,6 +892,10 @@ pub fn build(args: &Options) -> Result<()> {
             .replace("{loadout}", &args.loadout)
     };
     let mut patches = String::new();
+    // The user's own picks, mapped first: the loadout's own entries below check
+    // against them, because a file someone chose explicitly should win over the
+    // one this loadout would have shipped for the same destination.
+    let user_picks = user_patches(&args.patch_files, &args.patch_dirs, &args.home);
     // Counted rather than derived from `entries.len()`: entries whose package
     // was declined are skipped, so the two numbers stopped agreeing.
     let mut written = 0usize;
@@ -837,6 +921,12 @@ pub fn build(args: &Options) -> Result<()> {
         written += 1;
 
         if let Some(dest) = &e.dest {
+            // Skipped rather than emitted alongside: two sources for one
+            // destination is a composition minimal refuses, so writing both
+            // would produce a loadout that cannot activate.
+            if shadowed_by(&sub(dest), &user_picks).is_some() {
+                continue;
+            }
             // One line per entry. TOML forbids newlines inside an inline
             // table, so the wrapped `{ dest = …,\n source = … }` form this
             // file used to be written in was not actually valid TOML — it
@@ -850,7 +940,13 @@ pub fn build(args: &Options) -> Result<()> {
         }
     }
 
-    patches.push_str(&user_patches(&args.patch_files, &args.patch_dirs));
+    for patch in &user_picks {
+        let _ = writeln!(
+            patches,
+            "    {{ dest = \"{}\", source = \"{}\" }},",
+            patch.dest, patch.source
+        );
+    }
 
     // The loadout manifest itself: same template grammar, plus `patches`,
     // which is built from the list above so it cannot describe a file that
@@ -1089,6 +1185,96 @@ base0f: d65d0e
         assert!(
             err.to_string().contains("nothing built"),
             "an empty build directory should explain itself: {err}"
+        );
+    }
+
+    // -- where the user's own files land ------------------------------------
+
+    #[test]
+    fn a_path_under_home_keeps_its_shape() {
+        // `dest` is relative to the session's home, so a dotfile has to arrive
+        // where the tool that reads it will look. Taking the basename put
+        // `~/.config/starship.toml` at `~/starship.toml`, where starship never
+        // looks — which is the bug this replaced.
+        let home = Path::new("/Users/evan");
+        assert_eq!(
+            patch_dest(Path::new("/Users/evan/.config/starship.toml"), home, false),
+            ".config/starship.toml"
+        );
+        assert_eq!(
+            patch_dest(Path::new("/Users/evan/.gitconfig"), home, false),
+            ".gitconfig"
+        );
+        assert_eq!(
+            patch_dest(Path::new("/Users/evan/.config/helix"), home, true),
+            ".config/helix/",
+            "a directory dest ends in a slash"
+        );
+    }
+
+    #[test]
+    fn a_path_outside_home_drops_its_leading_slash() {
+        let home = Path::new("/Users/evan");
+        assert_eq!(
+            patch_dest(Path::new("/etc/hosts"), home, false),
+            "etc/hosts"
+        );
+        assert_eq!(
+            patch_dest(Path::new("/opt/things"), home, true),
+            "opt/things/"
+        );
+    }
+
+    #[test]
+    fn two_files_with_the_same_name_no_longer_collide() {
+        // The other half of keeping the whole path: basenames are not unique,
+        // and two patches for one dest is a composition minimal refuses.
+        let home = Path::new("/home/x");
+        let a = patch_dest(Path::new("/home/x/.config/helix/config.toml"), home, false);
+        let b = patch_dest(Path::new("/home/x/.config/bat/config.toml"), home, false);
+        assert_ne!(a, b, "{a} and {b} should be distinct destinations");
+    }
+
+    #[test]
+    fn a_directory_pick_shadows_everything_beneath_it() {
+        let home = Path::new("/home/x");
+        let picks = user_patches(
+            &[PathBuf::from("/home/x/.config/starship.toml")],
+            &[PathBuf::from("/home/x/.config/helix")],
+            home,
+        );
+        // Exactly the file picked.
+        assert!(shadowed_by(".config/starship.toml", &picks).is_some());
+        // Anything under the directory picked, including nested themes.
+        assert!(shadowed_by(".config/helix/config.toml", &picks).is_some());
+        assert!(shadowed_by(".config/helix/themes/nord.toml", &picks).is_some());
+        // And nothing else.
+        assert!(shadowed_by(".config/zellij/config.kdl", &picks).is_none());
+        assert!(shadowed_by(".config/starship.toml.bak", &picks).is_none());
+    }
+
+    #[test]
+    fn the_loadouts_own_patch_list_is_readable_for_the_warning() {
+        // The wizard needs to know what it would displace *before* generating.
+        let patches = loadout_patches(Path::new("../../templates"), "cozy", "nord").unwrap();
+        assert!(patches.len() > 10, "expected the manifest's dests");
+        assert!(
+            patches
+                .iter()
+                .any(|p| p.dest == ".config/helix/themes/nord.toml"),
+            "the slug should be substituted"
+        );
+        assert!(
+            patches
+                .iter()
+                .any(|p| p.dest.contains("cozy-delta.gitconfig")),
+            "and the loadout name too"
+        );
+        assert!(
+            patches
+                .iter()
+                .any(|p| p.package.as_deref() == Some("atuin")),
+            "optional packages should be identifiable so declined ones are not warned about"
         );
     }
 

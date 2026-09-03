@@ -76,7 +76,7 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 
 | | |
 | --- | --- |
-| **Greeting** | two versions of the Minimal mark, shown in your own font — the newer one needs glyphs some fonts lack, so you pick whichever renders |
+| **Greeting** | five greetings previewed in your own font: three versions of the Minimal mark drawn from different Unicode blocks, the detach line on its own, or nothing at all |
 | **Schemes** | offers to download or update the upstream scheme collection |
 | **Themes** | every scheme on disk, with the whole interface re-painting in each one as you scroll, next to a preview of a prompt, highlighted code and a diff |
 | **Packages** | which optional packages to install, with a description and licence for each, plus a field for any others you want |
@@ -104,6 +104,19 @@ Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is check
 ```shell
 cargo run --release --manifest-path tools/cozy-theme/Cargo.toml -- --help
 ```
+
+## Patching in your own files
+
+The wizard's patches page — or `--patch-file` and `--patch-dir` — copies your own dotfiles into the session alongside the loadout's. Destinations are relative to the session's home, so a path under your home keeps its shape and one outside it drops the leading `/`:
+
+| You pick | Lands at |
+| --- | --- |
+| `~/.config/starship.toml` | `~/.config/starship.toml` |
+| `~/.gitconfig` | `~/.gitconfig` |
+| `/etc/hosts` | `~/etc/hosts` |
+| `~/.config/helix` | `~/.config/helix/`, whole tree |
+
+If one of your files collides with a config the loadout ships, **yours wins** and the loadout's is left out rather than both being written. The wizard says which ones, on the patches page and again on the summary before anything is generated.
 
 ## Choosing a scheme
 

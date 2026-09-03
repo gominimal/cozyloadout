@@ -11,7 +11,8 @@ use state::State;
 use clap::Parser;
 use color_eyre::eyre::Result;
 use cozy_theme::{
-    discover, mix, OptionalPackage, Options, Packages, Rgb, Scheme, SchemeEntry, SLOTS,
+    discover, loadout_patches, mix, shadowed_by, user_patches, OptionalPackage, Options, Packages,
+    Rgb, Scheme, SchemeEntry, SLOTS,
 };
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
@@ -35,9 +36,6 @@ const SCHEMES_REPO: &str = "https://github.com/tinted-theming/schemes.git";
 /// Columns of padding inside every bordered box, so text is not jammed against
 /// the border.
 const BOX_PADDING_X: u16 = 2;
-
-/// Blank rows between one option box and the next.
-const BOX_GAP: u16 = 1;
 
 /// Rows of padding above and below the art inside an option box.
 ///
@@ -107,26 +105,50 @@ struct Args {
 // ---------------------------------------------------------------------------
 
 /// Which fish greeting the loadout should install.
+///
+/// The three marked variants differ only in which Unicode block their glyphs
+/// come from, and that is the whole point: a font either has them or draws
+/// tofu, and no amount of describing it beats putting them on screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Greeting {
-    /// `▃🭕🭏🭕🭏 M I N I M A L` — the mark drawn with Symbols for Legacy
-    /// Computing (the U+1FB00 block, Unicode 13). Sharper, but a font without
-    /// those glyphs shows tofu, which is the whole reason this is a choice.
+    /// Symbols for Legacy Computing (the U+1FB00 block, Unicode 13). The
+    /// sharpest mark and the least widely supported.
     Legacy,
-    /// The block-element mark that ships today. Only U+2580–U+259F, which
-    /// essentially every monospace font has had for decades.
+    /// Geometric Shapes (U+25A0–U+25FF). Decades older than the block above,
+    /// so a font that lacks those may well still have these.
+    Geometric,
+    /// Block Elements (U+2580–U+259F), which essentially every monospace font
+    /// has had for decades.
     Blocks,
+    /// No logo — just the line telling you how to detach.
+    Text,
+    /// Nothing at all: a silent shell.
+    None,
 }
 
 impl Greeting {
-    const ALL: [Greeting; 2] = [Greeting::Legacy, Greeting::Blocks];
+    /// Order is best-looking first, then descending font support, then the two
+    /// that have no mark at all. The sharpest mark leads even though its glyphs
+    /// are the least widely available: this is the one screen where a font that
+    /// cannot draw something says so plainly, and the next two options are
+    /// right underneath for anyone whose font cannot.
+    const ALL: [Greeting; 5] = [
+        Greeting::Legacy,
+        Greeting::Geometric,
+        Greeting::Blocks,
+        Greeting::Text,
+        Greeting::None,
+    ];
 
-    /// Stable spelling for the state file. Not `Debug`, which is for
-    /// programmers and free to change.
+    /// Stable spelling for the state file and the renderer's `--greeting`.
+    /// Not `Debug`, which is for programmers and free to change.
     fn key(self) -> &'static str {
         match self {
             Greeting::Legacy => "legacy",
+            Greeting::Geometric => "geometric",
             Greeting::Blocks => "blocks",
+            Greeting::Text => "text",
+            Greeting::None => "none",
         }
     }
 
@@ -138,34 +160,43 @@ impl Greeting {
 
     fn label(self) -> &'static str {
         match self {
-            Greeting::Legacy => " Newer symbols ",
-            Greeting::Blocks => " Block elements ",
+            Greeting::Legacy => "Default",
+            Greeting::Geometric => "Geometric shapes",
+            Greeting::Blocks => "Block elements",
+            Greeting::Text => "No logo",
+            Greeting::None => "Nothing at all",
         }
     }
 
     fn note(self) -> &'static str {
         match self {
             Greeting::Legacy => "Needs a font with Symbols for Legacy Computing.",
-            Greeting::Blocks => "Works in any font with block-drawing characters.",
+            Greeting::Geometric => "Geometric Shapes — older, and more widely available.",
+            Greeting::Blocks => "Block-drawing characters, which any font has.",
+            Greeting::Text => "Just the line telling you how to detach.",
+            Greeting::None => "A silent shell.",
         }
     }
 
-    /// The mark exactly as fish will print it, minus the colour.
+    /// The mark, exactly as fish will print it. Empty for the two variants
+    /// that have none.
     fn art(self) -> Vec<&'static str> {
         match self {
-            // One line, because that is how it renders: a font missing the
-            // glyphs shows tofu or blanks right here, which is the point.
             Greeting::Legacy => vec!["▃🭕🭏🭕🭏 M I N I M A L"],
-            Greeting::Blocks => vec!["   ████  ████▄", "▄▄▄ ▀███▄ ▀███▄", "▀███  ▀███  ▀███"],
+            Greeting::Geometric => vec![".◥◣◥◣ M I N I M A L"],
+            Greeting::Blocks => vec![
+                "   ████  ████▄",
+                "▄▄▄ ▀███▄ ▀███▄",
+                "▀███  ▀███  ▀███",
+                "  M I N I M A L",
+            ],
+            Greeting::Text | Greeting::None => Vec::new(),
         }
     }
 
-    /// Rows the art needs, plus the block's borders and `pad_y` above and
-    /// below. The caption is not counted: it rides on the bottom border. Get
-    /// this wrong and the box clips its own contents.
-    fn height(self, pad_y: u16) -> u16 {
-        // The cast is over a 1- or 3-element literal array; it cannot overflow.
-        u16::try_from(self.art().len()).unwrap_or(u16::MAX) + 2 + pad_y * 2
+    /// Whether the "ctrl-w to detach" line is printed under the mark.
+    fn has_detach_line(self) -> bool {
+        self != Greeting::None
     }
 }
 
@@ -276,6 +307,11 @@ fn spawn_fetch(kind: FetchKind, dir: &Path) -> Fetch {
     Fetch::Running(0, rx)
 }
 
+/// The host home, which patch destinations are computed relative to.
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+}
+
 /// Whether a typed token looks like a package name.
 ///
 /// Deliberately conservative: lowercase letters, digits, and the punctuation
@@ -368,6 +404,7 @@ fn run_generate_to(app: &App, repo: &Path, out: &Path, install: bool) -> Result<
         .ok_or_else(|| "no scheme selected".to_string())?;
 
     let options = Options {
+        home: app.home.clone(),
         scheme: scheme.path.clone(),
         templates: repo.join("templates"),
         out: out.to_path_buf(),
@@ -492,6 +529,12 @@ struct App {
     /// live, and where `just` is run.
     repo: PathBuf,
 
+    /// The host home, which patch destinations are computed relative to. A
+    /// field rather than a call to `std::env` at the point of use: the tests
+    /// need to point it at a fixture, and `set_var` is process-wide, so
+    /// parallel tests doing that raced each other.
+    home: PathBuf,
+
     saved: State,
     /// Set only by finishing the last page. Quitting leaves it false, so an
     /// abandoned run does not overwrite the answers from a finished one.
@@ -520,6 +563,7 @@ impl App {
         Self {
             screen: Screen::Greeting,
             schemes_dir,
+            home: home(),
             greeting_row,
             greeting: None,
             fetch_kind,
@@ -880,6 +924,43 @@ impl App {
     }
 
     /// Everything chosen across both pickers, files first.
+    /// The loadout's own config files that the user's picks would displace.
+    ///
+    /// Not an error — the user asked for theirs specifically, so theirs wins —
+    /// but it has to be said out loud. Silently dropping a config the loadout
+    /// exists to install is the kind of thing you discover three sessions
+    /// later wondering why your theme is half applied.
+    fn displaced_configs(&self) -> Vec<String> {
+        let Some(scheme) = &self.loaded else {
+            return Vec::new();
+        };
+        let collect = |i: usize| -> Vec<PathBuf> {
+            self.pickers
+                .get(i)
+                .map(|p| p.chosen.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        let picks = user_patches(&collect(0), &collect(1), &self.home);
+        if picks.is_empty() {
+            return Vec::new();
+        }
+        let Ok(ours) = loadout_patches(&self.templates_dir(), "cozy", &scheme.slug) else {
+            return Vec::new();
+        };
+        let chosen = self.chosen_packages();
+        ours.into_iter()
+            .filter(|p| {
+                // A declined package's config is not written anyway, so
+                // warning that it was displaced would be noise.
+                p.package
+                    .as_ref()
+                    .is_none_or(|pkg| chosen.contains(&pkg.as_str()))
+            })
+            .filter(|p| shadowed_by(&p.dest, &picks).is_some())
+            .map(|p| p.dest)
+            .collect()
+    }
+
     fn chosen_paths(&self) -> Vec<&PathBuf> {
         self.pickers.iter().flat_map(|p| p.chosen.iter()).collect()
     }
@@ -1281,88 +1362,79 @@ fn intro_paragraph(heading: &str, body: String) -> Paragraph<'static> {
 fn draw_greeting(frame: &mut Frame, inner: Rect, app: &App) {
     let intro = intro_paragraph(
         "Welcome to the minimal cozy loadout wizard.",
-        "Pick the greeting that renders correctly here. If one shows boxes or gaps, \
-         this font lacks those glyphs."
+        "Pick a greeting. The preview below is exactly what fish prints — if a \
+         mark shows boxes, this font lacks those glyphs."
             .into(),
     );
 
-    // Both the padding inside the boxes and the gap between them are comforts
-    // that give way when rows run short — in that order, since the padding is
-    // worth more than the gap. What never gives way is the art: at 50x18 an
-    // unconditional padding clipped the block mark to a single line, and the
-    // mark is the thing this screen exists to show. There is no spacer row
-    // above the first box either; each box carries its own top padding.
-    //
-    // Ordered most- to least-generous; the first that fits wins.
-    let options = u16::try_from(Greeting::ALL.len()).unwrap_or(1);
-    let needed = |pad_y: u16, gap: u16| {
-        INTRO_ROWS
-            + Greeting::ALL.iter().map(|g| g.height(pad_y)).sum::<u16>()
-            + gap * (options - 1)
-    };
-    let (pad_y, gap) = [
-        (BOX_PADDING_Y, BOX_GAP),
-        (BOX_PADDING_Y, 0),
-        (0, BOX_GAP),
-        (0, 0),
-    ]
-    .into_iter()
-    .find(|&(pad_y, gap)| needed(pad_y, gap) <= inner.height)
-    .unwrap_or((0, 0));
+    // A list plus one preview, rather than a box per option. With five options
+    // and a four-line mark among them, stacking a box each does not fit in a
+    // 24-row terminal — and only the highlighted one is being judged anyway.
+    let [intro_area, list_area, preview_area] = Layout::vertical([
+        Constraint::Length(INTRO_ROWS),
+        Constraint::Length(u16::try_from(Greeting::ALL.len()).unwrap_or(5)),
+        Constraint::Min(3),
+    ])
+    .areas(inner);
+    frame.render_widget(intro, intro_area);
 
-    let mut constraints = vec![Constraint::Length(INTRO_ROWS)];
-    let mut option_rows = Vec::with_capacity(Greeting::ALL.len());
-    for (i, greeting) in Greeting::ALL.iter().enumerate() {
-        if i > 0 && gap > 0 {
-            constraints.push(Constraint::Length(gap));
-        }
-        option_rows.push(constraints.len());
-        constraints.push(Constraint::Length(greeting.height(pad_y)));
-    }
-    constraints.push(Constraint::Min(0));
-    let areas = Layout::vertical(constraints).split(inner);
+    let items: Vec<ListItem> = Greeting::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let selected = i == app.greeting_row;
+            let style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("  {:<18}", g.label()), style),
+                Span::styled(g.note(), Style::default().fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+    frame.render_widget(List::new(items), list_area);
 
-    frame.render_widget(intro, areas[0]);
-    for (i, greeting) in Greeting::ALL.iter().enumerate() {
-        draw_option(
-            frame,
-            areas[option_rows[i]],
-            *greeting,
-            pad_y,
-            i == app.greeting_row,
-        );
-    }
+    draw_greeting_preview(frame, preview_area, app.current_greeting());
 }
 
-fn draw_option(frame: &mut Frame, area: Rect, greeting: Greeting, pad_y: u16, selected: bool) {
-    let accent = if selected {
-        Color::Cyan
-    } else {
-        Color::DarkGray
-    };
+/// The selected greeting as fish will print it.
+///
+/// Unstyled on purpose: this is the user judging their own font, so it renders
+/// in the terminal's own foreground rather than in colours chosen here.
+fn draw_greeting_preview(frame: &mut Frame, area: Rect, greeting: Greeting) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(accent))
-        .padding(Padding::symmetric(BOX_PADDING_X, pad_y))
-        .title_bottom(Span::styled(
-            format!(" {} ", greeting.note()),
-            Style::default().fg(Color::DarkGray),
-        ))
+        .border_style(Style::default().fg(Color::DarkGray))
+        .padding(Padding::symmetric(BOX_PADDING_X, BOX_PADDING_Y))
         .title(Span::styled(
-            greeting.label(),
-            if selected {
-                Style::default().fg(accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(accent)
-            },
+            " what fish will print ",
+            Style::default().fg(Color::DarkGray),
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // The art is deliberately unstyled: it renders in the terminal's own
-    // foreground, which is what the user is being asked to judge.
-    let lines: Vec<Line> = greeting.art().into_iter().map(Line::raw).collect();
+    let mut lines: Vec<Line> = greeting.art().into_iter().map(Line::raw).collect();
+    if greeting.has_detach_line() {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::from(vec![
+            Span::raw("Welcome to minimal! "),
+            Span::styled("ctrl-w", Style::default().fg(Color::Cyan)),
+            Span::raw(" to detach"),
+        ]));
+    } else {
+        lines.push(Line::styled(
+            "(a silent shell)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
@@ -1958,6 +2030,7 @@ fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
     let files = app.pickers.first().map_or(0, |p| p.chosen.len());
     let dirs = app.pickers.get(1).map_or(0, |p| p.chosen.len());
     let extras = app.extra_packages();
+    let displaced = app.displaced_configs();
     Paragraph::new(Text::from(vec![
         row(
             "greeting",
@@ -1993,6 +2066,16 @@ fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
                 format!("{files} file(s), {dirs} director(ies)")
             },
         ),
+        // The same warning the patches page shows, repeated here because this
+        // is the last screen before anything is written.
+        if displaced.is_empty() {
+            Line::raw("")
+        } else {
+            Line::from(vec![
+                Span::styled("  replaces ", Style::default().fg(t.orange)),
+                Span::styled(displaced.join("  "), Style::default().fg(t.comment)),
+            ])
+        },
     ]))
     .wrap(Wrap { trim: false })
 }
@@ -2004,7 +2087,7 @@ fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
 
     let [intro_area, summary_area, list_area, status_area] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(7),
+        Constraint::Length(8),
         Constraint::Length(9),
         Constraint::Min(1),
     ])
@@ -2097,10 +2180,15 @@ fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
     ]))
     .wrap(Wrap { trim: true });
 
+    let displaced = app.displaced_configs();
+    // Two rows for the chosen-path line, which wraps, plus one for the warning
+    // when there is one. Sizing this for the common case clipped the warning
+    // off the bottom exactly when it had something to say.
+    let summary_rows = if displaced.is_empty() { 2 } else { 3 };
     let [intro_area, body, summary] = Layout::vertical([
         Constraint::Length(THEME_INTRO_ROWS),
         Constraint::Min(3),
-        Constraint::Length(2),
+        Constraint::Length(summary_rows),
     ])
     .areas(inner);
     frame.render_widget(intro, intro_area);
@@ -2112,10 +2200,17 @@ fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(body);
         for (i, area) in [left, right].into_iter().enumerate() {
-            draw_picker(frame, area, &app.pickers[i], i == app.picker_focus, &t);
+            draw_picker(
+                frame,
+                area,
+                &app.pickers[i],
+                i == app.picker_focus,
+                &app.home,
+                &t,
+            );
         }
     } else {
-        draw_picker(frame, body, app.picker(), true, &t);
+        draw_picker(frame, body, app.picker(), true, &app.home, &t);
     }
 
     let chosen = app.chosen_paths();
@@ -2133,27 +2228,45 @@ fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
             Span::styled(
                 chosen
                     .iter()
-                    .map(|p| shorten_home(p))
+                    .map(|p| shorten_home(p, &app.home))
                     .collect::<Vec<_>>()
                     .join("  "),
                 Style::default().fg(t.comment),
             ),
         ])
     };
-    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), summary);
+    // Say which of the loadout's own configs a pick has displaced. Theirs wins
+    // — they chose it — but a config the loadout exists to install quietly
+    // going missing is something you find out three sessions later.
+    let lines = if displaced.is_empty() {
+        vec![line]
+    } else {
+        vec![
+            Line::from(vec![
+                Span::styled("using yours instead of ", Style::default().fg(t.orange)),
+                Span::styled(displaced.join("  "), Style::default().fg(t.comment)),
+            ]),
+            line,
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
+        summary,
+    );
 }
 
 /// `~` for the home directory, because absolute paths are mostly prefix and
 /// the summary line has no room to spare.
-fn shorten_home(path: &Path) -> String {
+fn shorten_home(path: &Path, home: &Path) -> String {
     let full = path.display().to_string();
-    std::env::var_os("HOME")
-        .map(|h| h.to_string_lossy().to_string())
-        .filter(|h| !h.is_empty() && full.starts_with(h.as_str()))
-        .map_or_else(|| full.clone(), |h| format!("~{}", &full[h.len()..]))
+    let home = home.display().to_string();
+    if home.is_empty() || !full.starts_with(&home) {
+        return full;
+    }
+    format!("~{}", &full[home.len()..])
 }
 
-fn draw_picker(frame: &mut Frame, area: Rect, p: &Picker, focused: bool, t: &Theme) {
+fn draw_picker(frame: &mut Frame, area: Rect, p: &Picker, focused: bool, home: &Path, t: &Theme) {
     let accent = if focused { t.blue } else { t.selection };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2171,7 +2284,7 @@ fn draw_picker(frame: &mut Frame, area: Rect, p: &Picker, focused: bool, t: &The
         // The path is on the bottom border: it is context you glance at, and
         // it costs no rows there.
         .title_bottom(Span::styled(
-            format!(" {} ", shorten_home(&p.cwd)),
+            format!(" {} ", shorten_home(&p.cwd, home)),
             Style::default().fg(t.comment),
         ));
     let inner = block.inner(area);
@@ -2408,24 +2521,130 @@ mod tests {
 
     #[test]
     fn selection_moves_and_clamps() {
+        // Written against ALL rather than named variants: the list has grown
+        // from two to five once already, and a test that hard-codes which
+        // variant sits where breaks every time it does.
         let mut a = app();
-        assert_eq!(a.current_greeting(), Greeting::Legacy);
+        let last = *Greeting::ALL.last().unwrap();
+        assert_eq!(a.current_greeting(), Greeting::ALL[0]);
         a.on_key(press(KeyCode::Up));
         assert_eq!(
             a.current_greeting(),
-            Greeting::Legacy,
+            Greeting::ALL[0],
             "up at the top stays put"
         );
         a.on_key(press(KeyCode::Down));
-        assert_eq!(a.current_greeting(), Greeting::Blocks);
-        a.on_key(press(KeyCode::Down));
-        assert_eq!(
-            a.current_greeting(),
-            Greeting::Blocks,
-            "down at the end stays put"
-        );
+        assert_eq!(a.current_greeting(), Greeting::ALL[1]);
+        for _ in 0..Greeting::ALL.len() + 3 {
+            a.on_key(press(KeyCode::Down));
+        }
+        assert_eq!(a.current_greeting(), last, "down at the end stays put");
         a.on_key(press(KeyCode::Char('k')));
-        assert_eq!(a.current_greeting(), Greeting::Legacy);
+        assert_eq!(a.current_greeting(), Greeting::ALL[Greeting::ALL.len() - 2]);
+    }
+
+    #[test]
+    fn the_preview_shows_only_the_selected_greeting() {
+        // Five options and one preview: moving the cursor has to change what is
+        // drawn, or the page is claiming something it does not do.
+        let mut a = app();
+        for expected in Greeting::ALL {
+            assert_eq!(a.current_greeting(), expected);
+            let text = flatten(&render_app(&a, 90, 30));
+            for line in expected.art() {
+                // `flatten` collapses runs of spaces, so the expected line has
+                // to be collapsed the same way — the block mark has a double
+                // space inside it.
+                let want = line.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(text.contains(&want), "{expected:?}: {line:?} not previewed");
+            }
+            // Nobody else's mark is on screen at the same time.
+            for other in Greeting::ALL {
+                if other == expected {
+                    continue;
+                }
+                if let Some(first) = other.art().first() {
+                    let head: String = first.chars().take(4).collect();
+                    assert!(
+                        !text.contains(&head) || expected.art().iter().any(|l| l.contains(&head)),
+                        "{other:?}'s mark leaked into {expected:?}'s preview"
+                    );
+                }
+            }
+            a.on_key(press(KeyCode::Down));
+        }
+    }
+
+    #[test]
+    fn the_markless_greetings_preview_honestly() {
+        let mut a = app();
+        while a.current_greeting() != Greeting::Text {
+            a.on_key(press(KeyCode::Down));
+        }
+        let text = flatten(&render_app(&a, 90, 30));
+        assert!(
+            text.contains("ctrl-w to detach"),
+            "the detach line is the whole option"
+        );
+        assert!(!text.contains("████"), "no mark should be drawn");
+
+        a.on_key(press(KeyCode::Down));
+        assert_eq!(a.current_greeting(), Greeting::None);
+        let text = flatten(&render_app(&a, 90, 30));
+        assert!(
+            text.contains("(a silent shell)"),
+            "an empty preview must say it is empty"
+        );
+        assert!(
+            !text.contains("ctrl-w to detach"),
+            "nothing is printed at all"
+        );
+    }
+
+    #[test]
+    fn the_blocky_mark_carries_the_wordmark_too() {
+        let art = Greeting::Blocks.art();
+        assert!(art.iter().any(|l| l.contains("████")), "the mark itself");
+        assert_eq!(
+            art.last().map(|l| l.trim()),
+            Some("M I N I M A L"),
+            "and the wordmark under it"
+        );
+    }
+
+    #[test]
+    fn every_greeting_matches_what_the_template_will_print() {
+        // The preview is a promise about the generated config. If the template
+        // stops carrying one of these marks, the promise is a lie.
+        let template = include_str!("../../../../../templates/fish/config.fish");
+        for g in Greeting::ALL {
+            for line in g.art() {
+                assert!(
+                    template.contains(line),
+                    "{g:?}: templates/fish/config.fish no longer contains {line:?}"
+                );
+            }
+            assert!(
+                template.contains(&format!("greeting == \"{}\"", g.key())) || g == Greeting::Blocks,
+                "{g:?}: the template has no branch for {:?}",
+                g.key()
+            );
+        }
+    }
+
+    #[test]
+    fn the_geometric_mark_avoids_the_glyphs_the_legacy_one_needs() {
+        // The point of offering it: Geometric Shapes (U+25A0-U+25FF) are
+        // decades older than Symbols for Legacy Computing, so a font without
+        // the latter may well still have these.
+        let art = Greeting::Geometric.art()[0];
+        for c in art.chars() {
+            assert!(
+                !('\u{1FB00}'..='\u{1FBFF}').contains(&c),
+                "{c:?} is a Legacy Computing glyph, which this option exists to avoid"
+            );
+        }
+        assert!(art.chars().any(|c| ('\u{25A0}'..='\u{25FF}').contains(&c)));
     }
 
     #[test]
@@ -2433,7 +2652,7 @@ mod tests {
         let mut a = app();
         a.on_key(press(KeyCode::Down));
         a.on_key(press(KeyCode::Enter));
-        assert_eq!(a.greeting, Some(Greeting::Blocks));
+        assert_eq!(a.greeting, Some(Greeting::ALL[1]));
         assert_eq!(a.screen, Screen::Schemes, "enter moves to the next screen");
         assert!(!a.done, "choosing is not quitting");
     }
@@ -2449,7 +2668,7 @@ mod tests {
             ));
             assert_eq!(
                 a.current_greeting(),
-                Greeting::Legacy,
+                Greeting::ALL[0],
                 "{kind:?} should not move"
             );
         }
@@ -2599,7 +2818,7 @@ mod tests {
         for w in [50u16, 60, 72, 80, 100, 120] {
             let rows = render(w, 30);
             assert!(
-                flatten(&rows).contains("glyphs."),
+                flatten(&rows).contains("those glyphs."),
                 "intro truncated at {w} columns — INTRO_ROWS is too small:\n{}",
                 rows[..8].join("\n")
             );
@@ -2618,65 +2837,6 @@ mod tests {
                 rows[..9].join("\n")
             );
         }
-    }
-
-    #[test]
-    fn both_greetings_are_shown_together() {
-        let text = render(80, 24).join(" ");
-        assert!(text.contains("▃"), "legacy mark missing");
-        assert!(text.contains("🭕"), "legacy symbols missing");
-        for line in Greeting::Blocks.art() {
-            assert!(text.contains(line.trim()), "blocks mark missing {line:?}");
-        }
-    }
-
-    #[test]
-    fn art_survives_a_small_terminal() {
-        // The padding is allowed to disappear when rows run short; the art is
-        // not. Adding vertical padding without a fallback clipped the block
-        // mark to one line at 50x18.
-        for (w, h) in [(50u16, 18u16), (60, 20), (80, 24), (120, 40)] {
-            let text = render(w, h).join(" ");
-            for line in Greeting::Blocks.art() {
-                assert!(
-                    text.contains(line.trim()),
-                    "block mark line {line:?} missing at {w}x{h}"
-                );
-            }
-            assert!(text.contains("🭕"), "legacy mark missing at {w}x{h}");
-        }
-    }
-
-    fn box_top(rows: &[String], title: &str) -> usize {
-        rows.iter()
-            .position(|r| r.contains(title))
-            .expect("box not drawn")
-    }
-
-    #[test]
-    fn gap_separates_the_options_when_there_is_room() {
-        let rows = render(80, 24);
-        let first_bottom = box_top(&rows, "Needs a font");
-        let second_top = box_top(&rows, "Block elements");
-        assert_eq!(
-            second_top - first_bottom,
-            2,
-            "expected one blank row between the boxes:\n{}",
-            rows[first_bottom..=second_top].join("\n")
-        );
-    }
-
-    #[test]
-    fn padding_is_present_when_there_is_room() {
-        let rows = render(80, 24);
-        let top = box_top(&rows, "Newer symbols");
-        assert!(
-            rows[top + 1]
-                .trim_matches(|c| c == '│' || c == ' ')
-                .is_empty(),
-            "expected a blank padding row under the box title:\n{}",
-            rows[top + 1]
-        );
     }
 
     #[test]
@@ -3303,6 +3463,114 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A patches page whose file picker sits in a fake `~/.config` holding a
+    /// file the loadout also installs.
+    fn on_patches_with_conflict(tag: &str) -> (App, PathBuf) {
+        let home = temp_dir(&format!("conflict-{tag}"));
+        std::fs::create_dir_all(home.join(".config/helix")).unwrap();
+        std::fs::write(home.join(".config/helix/config.toml"), "mine").unwrap();
+        std::fs::write(home.join(".config/starship.toml"), "mine").unwrap();
+        let mut a = on_packages();
+        // Destinations are computed against this, not against the real home.
+        a.home.clone_from(&home);
+        a.enter_patches();
+        a.pickers = vec![
+            Picker::new(Pick::Files, &home.join(".config")),
+            Picker::new(Pick::Dirs, &home.join(".config")),
+        ];
+        (a, home)
+    }
+
+    #[test]
+    fn picking_your_own_config_displaces_the_loadouts_and_says_so() {
+        let (mut a, home) = on_patches_with_conflict("file");
+
+        while a.picker().current().unwrap().name != "starship.toml" {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Char(' ')));
+
+        let displaced = a.displaced_configs();
+        assert!(
+            displaced.iter().any(|d| d == ".config/starship.toml"),
+            "the loadout's own starship config should be displaced: {displaced:?}"
+        );
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(text.contains("using yours instead of"), "{text}");
+        assert!(
+            text.contains(".config/starship.toml"),
+            "and should name it:\n{text}"
+        );
+
+        // And the summary repeats it, being the last screen before anything is
+        // written.
+        a.on_key(press(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Apply);
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(text.contains("replaces"), "{text}");
+        assert!(text.contains(".config/starship.toml"), "{text}");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_long_list_of_picks_cannot_push_the_warning_off_the_screen() {
+        // The summary strip was a fixed two rows and the chosen-path line
+        // wraps, so a couple of long paths ate both and the warning — the one
+        // thing on it that is not repeated anywhere else — was clipped away.
+        let (mut a, home) = on_patches_with_conflict("crowded");
+        while a.picker().current().unwrap().name != "starship.toml" {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Char(' ')));
+        // Enough paths to wrap the chosen line well past one row.
+        for i in 0..6 {
+            a.pickers[0]
+                .chosen
+                .insert(home.join(format!(".config/a-fairly-long-config-name-{i}.toml")));
+        }
+
+        let text = flatten(&render_app(&a, 90, 26));
+        assert!(
+            text.contains("using yours instead of") && text.contains(".config/starship.toml"),
+            "the warning has to survive a crowded summary line:\n{text}"
+        );
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn picking_a_directory_displaces_everything_the_loadout_puts_in_it() {
+        let (mut a, home) = on_patches_with_conflict("dir");
+
+        a.on_key(press(KeyCode::Tab));
+        while a.picker().current().unwrap().name != "helix" {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Char(' ')));
+
+        let displaced = a.displaced_configs();
+        assert!(
+            displaced.len() >= 3,
+            "config, languages and the theme: {displaced:?}"
+        );
+        assert!(
+            displaced.iter().all(|d| d.starts_with(".config/helix/")),
+            "{displaced:?}"
+        );
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn nothing_picked_means_nothing_displaced() {
+        let (a, home) = on_patches_with_conflict("none");
+        assert!(a.displaced_configs().is_empty());
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(
+            !text.contains("using yours instead of"),
+            "no warning without a conflict"
+        );
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
     #[test]
     fn esc_steps_back_to_the_packages() {
         let (mut a, root) = on_patches("esc");
@@ -3375,7 +3643,7 @@ mod tests {
 
         assert!(a.completed, "choosing anything but abort completes the run");
         let st = a.to_state();
-        assert_eq!(st.greeting.as_deref(), Some("blocks"));
+        assert_eq!(st.greeting.as_deref(), Some(Greeting::ALL[1].key()));
         assert_eq!(st.theme.as_deref(), Some(theme.as_str()));
         assert_eq!(st.extra, "emacs");
         assert_eq!(
@@ -3427,7 +3695,7 @@ mod tests {
         let mut b = App::with_state(PathBuf::from("../../schemes/vendor"), first);
         assert_eq!(
             b.current_greeting(),
-            Greeting::Blocks,
+            Greeting::ALL[1],
             "greeting should be restored"
         );
         b.on_key(press(KeyCode::Enter));
