@@ -511,18 +511,18 @@ fn the_pickers_draw_icons_when_they_are_on() {
     a.icons = true;
     let text = flatten(&render_app(&a, 120, 24));
     assert!(
-        text.contains(crate::icons::for_entry("notes.md", false)),
+        text.contains(crate::icons::kind_of("notes.md", false).icon()),
         "a markdown file should carry its glyph:\n{text}"
     );
     assert!(
-        text.contains(crate::icons::for_entry("dotfiles", true)),
+        text.contains(crate::icons::kind_of("dotfiles", true).icon()),
         "and a directory the folder one:\n{text}"
     );
 
     a.icons = false;
     let text = flatten(&render_app(&a, 120, 24));
     assert!(
-        !text.contains(crate::icons::for_entry("notes.md", false)),
+        !text.contains(crate::icons::kind_of("notes.md", false).icon()),
         "turned off means gone, not blank:\n{text}"
     );
     assert!(
@@ -545,5 +545,293 @@ fn turning_icons_off_does_not_disturb_selection() {
     assert_eq!(after, chosen);
     let text = flatten(&render_app(&a, 120, 24));
     assert!(text.contains("[x]"), "still ticked:\n{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// -- editing where a patch lands -------------------------------------------
+
+#[test]
+fn the_destination_shows_for_a_chosen_entry_only() {
+    // A destination for a file you have not picked is an answer to a question
+    // nobody asked.
+    let (mut a, root) = on_patches("dest-shows");
+    land_on(&mut a, "notes.md");
+    assert!(!flatten(&render_app(&a, 120, 24)).contains("e to change"));
+
+    a.on_key(press(KeyCode::Char(' ')));
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains("e to change"), "{text}");
+    assert!(text.contains("notes.md"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_destination_can_be_retyped() {
+    let (mut a, root) = on_patches("dest-edit");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+    assert!(a.editing_dest.is_some());
+    clear_input(&mut a);
+    typing(&mut a, ".config/notes/README.md");
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.editing_dest.is_none(), "a good path should commit");
+
+    let picked = a.chosen_paths()[0].clone();
+    assert_eq!(
+        a.dest_overrides.get(&picked).map(String::as_str),
+        Some(".config/notes/README.md")
+    );
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains(".config/notes/README.md"), "{text}");
+    assert!(text.contains("changed"), "and it should say so:\n{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_destination_outside_the_session_home_is_refused_with_a_reason() {
+    // There is no way to spell anything but a path under `~`, so the wizard
+    // says why rather than silently repairing what was typed.
+    let (mut a, root) = on_patches("dest-refuse");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+    for (bad, want) in [("/etc/passwd", "leading `/`"), ("../up", "climb above")] {
+        clear_input(&mut a);
+        typing(&mut a, bad);
+        a.on_key(press(KeyCode::Enter));
+        assert!(a.editing_dest.is_some(), "{bad} should keep the field open");
+        let text = flatten(&render_app(&a, 70, 24));
+        assert!(text.contains(want), "{bad} -> {text}");
+    }
+    assert!(a.dest_overrides.is_empty(), "and change nothing");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn retyping_the_computed_answer_stores_no_override() {
+    // Storing it would be a silent promise to keep that exact path even if the
+    // mapping rule changed later.
+    let (mut a, root) = on_patches("dest-same");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    let picked = a.chosen_paths()[0].clone();
+    let computed = cozy_theme::patch_dest(&picked, &a.home, false);
+
+    a.on_key(press(KeyCode::Char('e')));
+    clear_input(&mut a);
+    typing(&mut a, &computed);
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.dest_overrides.is_empty(), "{:?}", a.dest_overrides);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_directory_destination_keeps_its_trailing_slash() {
+    let (mut a, root) = on_patches("dest-dir");
+    a.on_key(press(KeyCode::Tab));
+    land_on(&mut a, "dotfiles");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+    clear_input(&mut a);
+    typing(&mut a, "~/.config/mine");
+    a.on_key(press(KeyCode::Enter));
+
+    let picked = a.chosen_paths()[0].clone();
+    assert_eq!(
+        a.dest_overrides.get(&picked).map(String::as_str),
+        Some(".config/mine/"),
+        "the `~` is dropped and a directory keeps its slash"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn esc_leaves_the_destination_alone() {
+    let (mut a, root) = on_patches("dest-cancel");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+    clear_input(&mut a);
+    typing(&mut a, ".config/elsewhere");
+    a.on_key(press(KeyCode::Esc));
+    assert!(a.editing_dest.is_none());
+    assert!(a.dest_overrides.is_empty());
+    assert_eq!(
+        a.screen,
+        Screen::Patches,
+        "esc closes the field, not the page"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn q_is_a_letter_while_typing_a_destination() {
+    let (mut a, root) = on_patches("dest-q");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+    a.on_key(press(KeyCode::Char('q')));
+    assert!(!a.done, "q should be text here, not the quit key");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_typed_destination_reaches_the_generated_loadout() {
+    // The whole point: what the page shows has to be what gets written.
+    let out = temp_dir("dest-render");
+    std::fs::create_dir_all(&out).unwrap();
+    let (mut a, root) = on_patches("dest-render-src");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+    clear_input(&mut a);
+    typing(&mut a, ".config/somewhere/else.md");
+    a.on_key(press(KeyCode::Enter));
+
+    run_generate_to(&a, Path::new("../.."), &out, false).unwrap();
+    let manifest = std::fs::read_to_string(out.join("cozy.toml")).unwrap();
+    assert!(
+        manifest.contains("dest = \".config/somewhere/else.md\""),
+        "the typed destination should be in the manifest:\n{manifest}"
+    );
+    let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_override_survives_to_the_next_run() {
+    let (mut a, root) = on_patches("dest-sticky");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+    clear_input(&mut a);
+    typing(&mut a, ".config/kept.md");
+    a.on_key(press(KeyCode::Enter));
+
+    let saved = a.to_state();
+    assert_eq!(saved.patch_dests.len(), 1);
+    let back = app_with(a.schemes_dir.clone(), saved);
+    assert_eq!(back.dest_overrides, a.dest_overrides);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_destination_editor_is_visible_without_the_preview_column() {
+    // It first lived in the preview pane, which a terminal under 104 columns
+    // drops — so the field and its errors were invisible exactly where the
+    // screen was already tightest.
+    let (mut a, root) = on_patches("dest-narrow");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+
+    for w in [60u16, 80, 90, 120] {
+        let text = flatten(&render_app(&a, w, 24));
+        assert!(
+            text.contains("lands at"),
+            "no field at {w} columns:\n{text}"
+        );
+        assert!(
+            text.contains("relative to the session's home"),
+            "no explanation at {w} columns:\n{text}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+#[ignore = "prints frames to look at rather than asserting"]
+fn show_the_destination_editor() {
+    let (mut a, root) = on_patches("show-dest");
+    std::fs::write(root.join("server.toml"), "port = 1\n").unwrap();
+    a.pickers[0].reload();
+    land_on(&mut a, "server.toml");
+    a.on_key(press(KeyCode::Char(' ')));
+    println!("\n=== chosen, showing where it lands");
+    for line in render_app(&a, 116, 20) {
+        println!("|{}|", line.trim_end());
+    }
+    a.on_key(press(KeyCode::Char('e')));
+    clear_input(&mut a);
+    typing(&mut a, "/etc/nope");
+    a.on_key(press(KeyCode::Enter));
+    println!("\n=== editing, with a refused path");
+    for line in render_app(&a, 116, 20) {
+        println!("|{}|", line.trim_end());
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn e_chooses_the_entry_and_opens_the_editor() {
+    // The reported failure: `e` looked dead, because it only worked on an entry
+    // already chosen with space — and the footer hint was gated the same way,
+    // so the key was not even advertised until after you had done the thing
+    // that made it work.
+    let (mut a, root) = on_patches("e-unchosen");
+    land_on(&mut a, "notes.md");
+    assert!(a.chosen_paths().is_empty(), "nothing chosen yet");
+
+    a.on_key(press(KeyCode::Char('e')));
+    assert!(a.editing_dest.is_some(), "e should open the editor");
+    assert_eq!(
+        a.chosen_paths().len(),
+        1,
+        "saying where a file lands is a way of saying you want it"
+    );
+
+    clear_input(&mut a);
+    typing(&mut a, ".config/straight-in.md");
+    a.on_key(press(KeyCode::Enter));
+    let picked = a.chosen_paths()[0].clone();
+    assert_eq!(
+        a.dest_overrides.get(&picked).map(String::as_str),
+        Some(".config/straight-in.md")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn e_is_advertised_before_anything_is_chosen() {
+    let (mut a, root) = on_patches("e-hint");
+    land_on(&mut a, "notes.md");
+    let footer: String = crate::ui::footer_hints(&a)
+        .into_iter()
+        .map(|s| s.content.to_string())
+        .collect();
+    assert!(footer.contains("where it lands"), "{footer:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn e_does_nothing_on_an_entry_the_picker_cannot_take() {
+    // A directory highlighted in the *file* picker is scenery you walk through;
+    // giving it a destination would answer for a patch that cannot exist.
+    let (mut a, root) = on_patches("e-scenery");
+    land_on(&mut a, "dotfiles");
+    assert_eq!(a.picker().kind, Pick::Files);
+    a.on_key(press(KeyCode::Char('e')));
+    assert!(
+        a.editing_dest.is_none(),
+        "no editor for something unselectable"
+    );
+    assert!(
+        a.chosen_paths().is_empty(),
+        "and nothing chosen behind your back"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn e_on_an_already_chosen_entry_does_not_deselect_it() {
+    let (mut a, root) = on_patches("e-twice");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('e')));
+    assert_eq!(a.chosen_paths().len(), 1, "still chosen");
+    a.on_key(press(KeyCode::Esc));
+    a.on_key(press(KeyCode::Char('e')));
+    assert_eq!(a.chosen_paths().len(), 1, "and again");
     let _ = std::fs::remove_dir_all(&root);
 }

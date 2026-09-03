@@ -262,6 +262,7 @@ fn run_generate_to(app: &App, repo: &Path, out: &Path, install: bool) -> Result<
             .map(|p| p.chosen.iter().cloned().collect())
             .unwrap_or_default(),
         adjust: app.adjust,
+        patch_dests: app.dest_overrides.clone(),
         patch_dirs: app
             .pickers
             .get(1)
@@ -408,6 +409,15 @@ struct App {
     /// loadout's `.tmTheme` and parses the XML back.
     highlighter: std::cell::RefCell<Option<syntax::Highlighter>>,
 
+    /// Destinations typed by hand on the patches page, keyed by source path.
+    /// Empty until someone changes one; everything else takes the computed
+    /// default.
+    dest_overrides: std::collections::BTreeMap<PathBuf, String>,
+    /// `Some(text)` while a destination is being typed, and why the last
+    /// attempt was refused.
+    editing_dest: Option<String>,
+    dest_note: Option<String>,
+
     /// The two pickers on the patches page, and which one has the keys.
     /// Files and directories are separate because a loadout patches them
     /// differently: a file maps to one dest, a directory to a glob.
@@ -503,6 +513,9 @@ impl App {
             always: Vec::new(),
             preview: std::cell::RefCell::new(None),
             highlighter: std::cell::RefCell::new(None),
+            dest_overrides: saved.patch_dests.clone(),
+            editing_dest: None,
+            dest_note: None,
             pickers: Vec::new(),
             picker_focus: 0,
             action_row: 0,
@@ -539,6 +552,7 @@ impl App {
                 .map(|(o, keep)| (o.name.clone(), *keep))
                 .collect(),
             extra: self.extra.clone(),
+            patch_dests: self.dest_overrides.clone(),
             files: self
                 .pickers
                 .first()
@@ -602,6 +616,44 @@ impl App {
             d
         };
         self.resources.restore(self.saved.vcpus, self.saved.ram_mib);
+    }
+
+    /// The path under the patches cursor, if this picker can take it — chosen
+    /// or not.
+    ///
+    /// Distinct from [`Self::current_pick`]: a directory highlighted in the
+    /// *file* picker is scenery you walk through, and giving it a destination
+    /// would be answering for a patch that cannot exist.
+    fn current_target(&self) -> Option<(PathBuf, bool)> {
+        let picker = self.pickers.get(self.picker_focus)?;
+        let entry = picker.current()?;
+        picker
+            .kind
+            .accepts(entry.is_dir)
+            .then(|| (picker.cwd.join(&entry.name), entry.is_dir))
+    }
+
+    /// The path under the patches cursor, if it is one this run has chosen.
+    ///
+    /// What the preview reports on: "where this lands" is a statement about a
+    /// patch that is actually going to happen.
+    fn current_pick(&self) -> Option<(PathBuf, bool)> {
+        let picker = self.pickers.get(self.picker_focus)?;
+        let entry = picker.current()?;
+        let path = picker.cwd.join(&entry.name);
+        picker
+            .chosen
+            .contains(&path)
+            .then_some((path, entry.is_dir))
+    }
+
+    /// Where a chosen path will land — the typed destination if there is one,
+    /// the computed one otherwise.
+    fn dest_of(&self, path: &Path, is_dir: bool) -> String {
+        self.dest_overrides
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| cozy_theme::patch_dest(path, &self.home, is_dir))
     }
 
     /// The preview for the entry under the patches cursor, read at most once
@@ -780,7 +832,8 @@ impl App {
         let typing = (self.screen == Screen::Packages && self.focus == Focus::Input)
             || (self.screen == Screen::Client && self.editing.is_some())
             || (self.screen == Screen::Themes && self.saving.is_some())
-            || (self.screen == Screen::Apply && self.saving_settings.is_some());
+            || (self.screen == Screen::Apply && self.saving_settings.is_some())
+            || (self.screen == Screen::Patches && self.editing_dest.is_some());
         if ctrl_c || (key.code == KeyCode::Char('q') && !typing) {
             self.done = true;
             return;
@@ -884,7 +937,7 @@ impl App {
                 .map(|p| p.chosen.iter().cloned().collect())
                 .unwrap_or_default()
         };
-        let picks = user_patches(&collect(0), &collect(1), &self.home);
+        let picks = user_patches(&collect(0), &collect(1), &self.home, &self.dest_overrides);
         if picks.is_empty() {
             return Vec::new();
         }

@@ -52,6 +52,12 @@ struct Args {
     #[arg(long = "patch-dir")]
     patch_dirs: Vec<PathBuf>,
 
+    /// Where a patched file or directory lands, as `<source>=<dest>`.
+    /// Repeatable. Destinations are always relative to the session's home, so
+    /// a leading `/` or `~/` is dropped rather than meaning something else.
+    #[arg(long = "patch-dest", value_parser = patch_dest_pair)]
+    patch_dests: Vec<(PathBuf, String)>,
+
     /// Install what is in `--out` into minimal's loadouts directory. With a
     /// scheme, renders first; on its own, installs whatever is already built.
     #[arg(long)]
@@ -115,6 +121,21 @@ fn user_schemes() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| cozy_theme::user_schemes_dir(Path::new(&h)))
 }
 
+/// `<source>=<dest>` for `--patch-dest`.
+///
+/// Split on the *first* `=`, because a destination may legitimately contain one
+/// and a source path may not usefully be split anywhere else.
+fn patch_dest_pair(s: &str) -> Result<(PathBuf, String), String> {
+    let (src, dest) = s
+        .split_once('=')
+        .ok_or_else(|| format!("{s:?} is not <source>=<dest>"))?;
+    if src.is_empty() {
+        return Err(format!("{s:?} names no source"));
+    }
+    cozy_theme::check_dest(dest)?;
+    Ok((PathBuf::from(src), dest.to_string()))
+}
+
 /// Percentages are bounded so an out-of-range value is refused at the command
 /// line rather than silently clamped somewhere in the middle of a render.
 fn pct(s: &str) -> Result<i8, String> {
@@ -136,6 +157,7 @@ impl From<&Args> for Options {
             with: a.with.clone(),
             patch_files: a.patch_files.clone(),
             patch_dirs: a.patch_dirs.clone(),
+            patch_dests: a.patch_dests.iter().cloned().collect(),
             adjust: Adjust {
                 contrast: a.contrast,
                 saturation: a.saturation,

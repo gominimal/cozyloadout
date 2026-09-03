@@ -53,6 +53,11 @@ pub struct Settings {
     pub forward: Option<String>,
     pub bell_on_leader: Option<bool>,
 
+    /// Destinations typed by hand, keyed by the source path. Anything absent
+    /// takes the computed default, so this stays empty until someone changes
+    /// one.
+    pub patch_dests: BTreeMap<PathBuf, String>,
+
     /// Whether the file pickers draw Nerd Font icons. `None` means never asked,
     /// which takes the default rather than "off".
     pub icons: Option<bool>,
@@ -212,6 +217,20 @@ impl Settings {
         options.with = self.packages(offered);
         options.patch_files = Self::existing(&self.files);
         options.patch_dirs = Self::existing(&self.dirs);
+        // Only for paths that are still there: an override for a file since
+        // deleted is not an error, it is just no longer about anything.
+        let kept: Vec<PathBuf> = options
+            .patch_files
+            .iter()
+            .chain(&options.patch_dirs)
+            .cloned()
+            .collect();
+        options.patch_dests = self
+            .patch_dests
+            .iter()
+            .filter(|(k, _)| kept.contains(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
     }
 }
 
