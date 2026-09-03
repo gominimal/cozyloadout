@@ -232,6 +232,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "toml",
+ "toml_edit",
  "uuid",
  "yaml-rust2",
 ]

@@ -136,7 +136,7 @@ Its first page asks which fish greeting to install. Five options:
 | Default | `▃🭕🭏🭕🭏 M I N I M A L` | Symbols for Legacy Computing, U+1FB00, Unicode 13 |
 | Geometric shapes | `.◥◣◥◣ M I N I M A L` | Geometric Shapes, U+25A0–U+25FF, Unicode 1.1; the base is a plain `.` |
 | Block elements | `████` over three lines, plus `M I N I M A L` | U+2580–U+259F, Unicode 1.1 |
-| No logo | — | just the `ctrl-w to detach` line |
+| No logo | — | just the `… to detach` line |
 | Nothing at all | — | a silent shell |
 
 **Order is best-looking first, not safest first.** The sharpest mark leads even
@@ -441,6 +441,65 @@ mentions it.
 
 A corrupt or hand-edited file reads as defaults rather than failing. This is a
 convenience, and the worst it should ever cost is the convenience.
+
+### The client and VM pages
+
+Two pages that configure **minimal, not the loadout**. Everything else the
+wizard collects lands in `build/` and is undone by deleting it; these two write
+outside the repo, so both pages say so and the summary marks them.
+
+Nothing in a loadout can set either. `LoadoutFile`
+(`crates/sessions/src/core/loadout.rs`) carries packages, vars, patches and
+lifecycle hooks and nothing else — session keys are *client* config in
+`<config>/minimal/config.toml`, and VM resources are minvmd's. That is why
+these are separate pages rather than more rows in the generated `cozy.toml`.
+
+**The client page** edits `[session-keys]`. `keys.rs` is a port of minimal's
+`crates/sessions/src/keys.rs`: the parser range, the termios-special set, the
+wrapping-ambiguous set, and the shadowing rule. Porting rather than
+approximating is the point — a wizard that accepted a chord minimal rejects
+would write a file that fails to load, and one that rejected a chord minimal
+accepts would lie about what is possible. A plain-glyph leader is *allowed*
+(minimal allows it) and warned about rather than refused.
+
+Two details worth keeping:
+
+- **`ctrl-<x>` while editing is captured as the text `ctrl-x`**, not acted on.
+  The page has to be able to configure the very chord you press to get out of a
+  session.
+- **The file is edited with `toml_edit`, not rewritten.** It is the user's
+  file: it may hold a `[loadouts]` section the wizard knows nothing about and
+  comments explaining why. `toml` would round-trip it through a value tree and
+  drop both. A file that will not parse is left alone and reported, because the
+  alternative is overwriting contents we could not read.
+
+`the_written_shape_is_one_minimal_can_actually_read` transcribes
+`SessionKeysConfig` with `deny_unknown_fields` and deserialises the output, the
+same trick the atuin and lazygit configs are checked with.
+
+**The VM page** models minvmd's own policy: the vcpu ceiling
+(`max_vm_vcpus`, cores minus a 2-core host reserve, floored at the baseline),
+the RAM floor, the arch-conditional default, and the x86_64 MMIO hole — sizes
+inside which are *not offered at all*, since a guest sized there panics at boot
+and there is nothing the user could do about it. Only the RAM ceiling
+(three quarters of host memory) is cozy's own, because minvmd merely warns
+about over-allocation where a picker has to draw a line. The constants are
+copied with their source named and `mirrors_minvmds_published_policy` fails when
+the copy drifts.
+
+Applied by running `minvmd config set`, never by writing minvmd's `config.toml`
+directly: that command validates against host capacity, serialises the
+read-modify-write under the lifecycle lock, and derives its own state
+directory. Reproducing any of that here would be a guess that breaks silently.
+minvmd missing from `PATH` is not an error — the page says the choice will be
+remembered but not applied.
+
+Both are applied by **Generate and install**, not by **Generate**: Generate
+promises nothing outside the repo changes, and both of these are outside it.
+Neither failure is fatal to an install that has already written the loadout;
+they append a line to the report instead. And neither is applied at all when it
+still equals the default, so an untouched wizard writes no config file it did
+not need to.
 
 ### The patches page
 
@@ -962,7 +1021,7 @@ Worth knowing before relying on any of it:
 | Detach leaves the palette on the host terminal | read in `Host::unwind_codes` — it resets SGR, alt screen, cursor, focus reporting, and no OSC colours |
 | Any `on_attach` hook breaks fish's OSC 11 background | **doubtful** — observed once, but the once-per-shell palette bug produces the same symptom and was live at the same time. Re-test |
 | Rust floor of 1.88 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — only 1.97.1 is available here |
-| `ctrl-w` detaches, per the fish greeting | verified — documented in the CLI reference and in minimal's own orientation banner |
+| The greeting's detach chord | verified against minimal's source: `minimald` seeds `MINIMAL_DETACH_HINT` per attach channel as `"{leader} then {detach_key}"` (`crates/minimald/src/session.rs`), defaulting to `ctrl-]` and `d` (`crates/sessions/src/keys.rs`). The template reads the var and falls back to the same `ctrl-] then d` minimal's own banner does. **Mint-scoped**, per `docs/reference/loadouts.md`: a second client attaching with a remapped chord gets a working one, but the greeting still shows the minting channel's |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
 | The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |
 | atuin, lazygit and tealdeer config *schemas* | verified against the upstream source at the versions the MPR pins (atuin 18.19.0, lazygit 0.64.1, tealdeer 1.8.1) — the generated files were deserialised with those crates' derives transcribed and `deny_unknown_fields` on, so every key is one upstream reads |
