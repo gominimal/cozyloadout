@@ -7,7 +7,9 @@ mod greeting;
 mod hostcfg;
 mod keys;
 mod picker;
+mod preview;
 mod resources;
+mod syntax;
 mod theme;
 mod ui;
 
@@ -29,6 +31,7 @@ use cozy_theme::{
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::style::ResetColor;
+use ratatui::style::Color;
 use ratatui::DefaultTerminal;
 use std::fmt::Write as _;
 use std::io;
@@ -381,6 +384,21 @@ struct App {
     /// The VM's share of this machine, probed on the way into the page.
     resources: Resources,
 
+    /// The preview of whatever the patches page has under its cursor, keyed by
+    /// the path it was read from.
+    ///
+    /// A `RefCell` filled during drawing, like `list_rows`: the alternative is
+    /// re-reading it in every key handler that can move a cursor — five of
+    /// them, and the one you forget is a pane showing the wrong file. Keyed by
+    /// path so it re-reads exactly when the answer would differ, rather than
+    /// hitting the disk on all ten frames a second.
+    preview: std::cell::RefCell<Option<(PathBuf, preview::Preview)>>,
+
+    /// The syntax highlighter, rebuilt when the scheme changes. Cached for the
+    /// same reason the preview is, and more so: building one renders the
+    /// loadout's `.tmTheme` and parses the XML back.
+    highlighter: std::cell::RefCell<Option<syntax::Highlighter>>,
+
     /// The two pickers on the patches page, and which one has the keys.
     /// Files and directories are separate because a loadout patches them
     /// differently: a file maps to one dest, a directory to a glob.
@@ -470,6 +488,8 @@ impl App {
             package_top: 0,
             focus: Focus::List,
             always: Vec::new(),
+            preview: std::cell::RefCell::new(None),
+            highlighter: std::cell::RefCell::new(None),
             pickers: Vec::new(),
             picker_focus: 0,
             action_row: 0,
@@ -568,6 +588,44 @@ impl App {
             d
         };
         self.resources.restore(self.saved.vcpus, self.saved.ram_mib);
+    }
+
+    /// The preview for the entry under the patches cursor, read at most once
+    /// per path.
+    ///
+    /// `rows` bounds how much is read, so the pane's height decides the cost.
+    fn preview_of(&self, path: &Path, is_dir: bool, rows: usize) -> preview::Preview {
+        let mut slot = self.preview.borrow_mut();
+        if let Some((cached, value)) = slot.as_ref() {
+            if cached == path {
+                return value.clone();
+            }
+        }
+        let value = preview::Preview::read(path, is_dir, rows);
+        *slot = Some((path.to_path_buf(), value.clone()));
+        value
+    }
+
+    /// Colour `lines` as the selected scheme would.
+    ///
+    /// Falls back to one uncoloured span per line when there is no scheme yet,
+    /// or when the theme cannot be built: highlighting is a nicety, and losing
+    /// it should cost the colour rather than the preview.
+    fn highlight(&self, lines: &[String], name: &str) -> Vec<Vec<(Color, String)>> {
+        let plain = || {
+            lines
+                .iter()
+                .map(|l| vec![(Color::Reset, l.clone())])
+                .collect::<Vec<_>>()
+        };
+        let Some(scheme) = self.scheme() else {
+            return plain();
+        };
+        let mut slot = self.highlighter.borrow_mut();
+        if slot.as_ref().is_none_or(|h| h.slug != scheme.slug) {
+            *slot = syntax::Highlighter::new(&scheme, &self.templates_dir());
+        }
+        slot.as_ref().map_or_else(plain, |h| h.lines(lines, name))
     }
 
     /// The repository's scheme root — `schemes/`, the parent of the vendored

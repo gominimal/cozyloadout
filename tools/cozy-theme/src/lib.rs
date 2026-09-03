@@ -429,6 +429,24 @@ impl Scheme {
         Ok(path)
     }
 
+    /// Render one template from `templates` with this scheme.
+    ///
+    /// The same environment and the same variables `build` uses, so what comes
+    /// back is byte-for-byte what a full render would write. That is the point:
+    /// the wizard lights its preview with the `.tmTheme` this produces, so the
+    /// preview is coloured exactly as `bat` will colour the same file.
+    ///
+    /// # Errors
+    ///
+    /// If the template cannot be read or does not render.
+    pub fn render_template(&self, templates: &Path, rel: &str) -> Result<String> {
+        let path = templates.join(rel);
+        let text =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let env = environment(self);
+        render(&env, &path.display().to_string(), &text, &self.vars(), self)
+    }
+
     /// The scheme's own body-text contrast: base05 on base00.
     pub fn body_contrast(&self) -> f64 {
         let get = |k: &str| {
