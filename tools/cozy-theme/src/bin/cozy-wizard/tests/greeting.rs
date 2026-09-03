@@ -178,9 +178,7 @@ fn the_preview_shows_the_chord_the_client_page_currently_holds() {
     // wrong for exactly the people who bothered to configure it.
     let mut a = on_client();
     a.on_key(press(KeyCode::Char(' ')));
-    for _ in 0..8 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "ctrl-a");
     a.on_key(press(KeyCode::Enter));
     assert_eq!(a.bindings.hint(), "ctrl-a then d");

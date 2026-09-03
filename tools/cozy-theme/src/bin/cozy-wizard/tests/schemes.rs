@@ -48,7 +48,7 @@ fn declining_advances_without_running_git() {
 fn blocked_offers_no_yes_and_runs_nothing() {
     let dir = temp_dir("blocked");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut a = App::with_state(dir.clone(), State::default());
+    let mut a = app_with(dir.clone(), State::default());
     a.on_key(press(KeyCode::Enter));
     assert_eq!(a.fetch_kind, FetchKind::Blocked);
     assert!(
@@ -99,7 +99,7 @@ fn schemes_screen_asks_and_offers_both_answers() {
 fn blocked_screen_explains_itself() {
     let dir = temp_dir("blocked-ui");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut a = App::with_state(dir.clone(), State::default());
+    let mut a = app_with(dir.clone(), State::default());
     a.on_key(press(KeyCode::Enter));
     let text = flatten(&render_app(&a, 100, 24));
     assert!(text.contains("not a git checkout"), "{text}");

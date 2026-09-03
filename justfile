@@ -61,15 +61,20 @@ _resolve scheme:
     # -maxdepth 1 rather than a `-not -path '*/vendor/*'` filter: the vendored
     # directories are themselves under vendor/, so such a filter excludes the
     # very paths being searched.
+    #
+    # Your own directory comes first: a scheme you saved from the wizard wins
+    # over one checked in here, which wins over a vendored one. Most specific
+    # first, the same order `discover` uses.
+    mine="${XDG_CONFIG_HOME:-$HOME/.config}/cozy/schemes"
     hit=""
-    for dir in "{{SCHEMES}}" "{{SCHEMES}}/vendor/base16" "{{SCHEMES}}/vendor/base24"; do
+    for dir in "$mine" "{{SCHEMES}}" "{{SCHEMES}}/vendor/base16" "{{SCHEMES}}/vendor/base24"; do
         [[ -d "$dir" ]] || continue
         hit=$(find "$dir" -maxdepth 1 \( -name "$arg.yaml" -o -name "$arg.yml" \) \
               2>/dev/null | sort | head -1)
         [[ -n "$hit" ]] && break
     done
     if [[ -z "$hit" ]]; then
-        echo "no scheme '$arg' under {{SCHEMES}}/ — try \`just schemes\`" >&2
+        echo "no scheme '$arg' under $mine/ or {{SCHEMES}}/ — try \`just schemes\`" >&2
         exit 1
     fi
     echo "$hit"

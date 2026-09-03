@@ -419,11 +419,31 @@ It is not only the wizard's: `cozy-theme --settings <file>` renders straight
 from one, so a settings file is a complete, portable description of a loadout —
 the thing you commit to a dotfiles repo or hand to a colleague.
 
-The automatic file, `.cozy-wizard.toml`, is written beside the loadout and
-**gitignored** — those answers are one person's, and belong in a checkout rather
-than in the repository. `--settings` points both binaries at another one, which
-is also how the tests avoid touching a real one. A file saved deliberately under
-its own name is a different thing and yours to keep.
+### Where the user's own files go
+
+Nothing the user creates is written into the checkout. Two directories, both
+under `$XDG_CONFIG_HOME/cozy` (`~/.config/cozy` by default):
+
+| | |
+| --- | --- |
+| `~/.config/cozy/settings.toml` | what the wizard remembers between runs |
+| `~/.config/cozy/schemes/*.yaml` | schemes saved from the adjust screen |
+
+`cozy`, not `minimal`: this is the loadout's own tool, and putting files under
+`minimal/` would be taking a namespace that is not ours.
+
+The reason is that a checkout is disposable and these are not. A scheme you
+tuned should survive re-cloning the repo and be there from every checkout, not
+just the one you happened to save it from. `discover` and the justfile's
+`_resolve` both read that directory **first** — most specific wins: yours, then
+the repo's checked-in schemes, then the vendored collection.
+
+A `.cozy-wizard.toml` left in a working directory by an older run is still
+*read* when there is no `~/.config/cozy/settings.toml` yet, so nobody loses
+their answers to the move. It is never written again.
+
+`--settings` points both binaries at a file of your choosing, which is also how
+the tests avoid touching a real one.
 
 `Settings::apply_to` is the one place a file becomes `Options`, so what the
 wizard builds and what the saved file rebuilds cannot drift apart. On the CLI

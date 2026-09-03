@@ -81,7 +81,7 @@ fn a_saved_run_comes_back_selected() {
         .collect();
 
     // A second run, opened with what the first one saved.
-    let mut b = App::with_state(PathBuf::from("../../schemes/vendor"), first);
+    let mut b = app_with(PathBuf::from("../../schemes/vendor"), first);
     assert_eq!(
         b.current_greeting(),
         Greeting::ALL[1],
@@ -113,7 +113,7 @@ fn a_theme_that_no_longer_exists_falls_back_to_the_default() {
         theme: Some("a-scheme-nobody-has".into()),
         ..State::default()
     };
-    let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), saved);
+    let mut a = app_with(PathBuf::from("../../schemes/vendor"), saved);
     a.on_key(press(KeyCode::Enter));
     a.on_key(press(KeyCode::Char('n')));
     a.on_key(press(KeyCode::Enter));
@@ -137,7 +137,7 @@ fn a_deleted_path_does_not_come_back() {
         dirs: vec![dir.join("kept"), dir.join("gone")],
         ..State::default()
     };
-    let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), saved);
+    let mut a = app_with(PathBuf::from("../../schemes/vendor"), saved);
     crate::ui::patches::enter_patches(&mut a);
     let chosen: Vec<&PathBuf> = a.chosen_paths();
     assert_eq!(chosen.len(), 2, "only the two that still exist: {chosen:?}");
@@ -163,9 +163,7 @@ fn the_scheme_fetch_answer_is_never_recorded() {
 fn the_chords_and_the_vm_pick_survive_to_the_next_run() {
     let mut a = on_client();
     a.on_key(press(KeyCode::Char(' ')));
-    for _ in 0..8 {
-        a.on_key(press(KeyCode::Backspace));
-    }
+    clear_input(&mut a);
     typing(&mut a, "ctrl-a");
     a.on_key(press(KeyCode::Enter)); // commit the chord
     a.on_key(press(KeyCode::Enter)); // client -> resources
@@ -175,7 +173,7 @@ fn the_chords_and_the_vm_pick_survive_to_the_next_run() {
     assert_eq!(saved.leader.as_deref(), Some("ctrl-a"));
     assert_eq!(saved.vcpus, Some(a.resources.allocation().vcpus));
 
-    let back = App::with_state(a.schemes_dir.clone(), saved);
+    let back = app_with(a.schemes_dir.clone(), saved);
     assert_eq!(back.bindings.hint(), "ctrl-a then d");
     assert_eq!(
         back.resources.allocation().vcpus,
@@ -194,7 +192,7 @@ fn a_remembered_chord_set_that_no_longer_validates_falls_back_whole() {
         detach: Some("ctrl-a".into()), // shadows the leader
         ..State::default()
     };
-    let a = App::with_state(dir.clone(), saved);
+    let a = app_with(dir.clone(), saved);
     assert!(
         a.bindings.is_default(),
         "an invalid set should not be half-restored: {:?}",
@@ -211,7 +209,7 @@ fn a_remembered_vm_size_this_host_cannot_offer_is_dropped() {
         ram_mib: Some(1_048_576),
         ..State::default()
     };
-    let a = App::with_state(dir.clone(), saved);
+    let a = app_with(dir.clone(), saved);
     assert!(a.resources.is_default(), "both were out of range");
     let _ = std::fs::remove_dir_all(&dir);
 }

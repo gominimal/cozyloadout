@@ -10,13 +10,39 @@ use ratatui::style::Color;
 #[allow(unused_imports)]
 use std::process::Command;
 
+/// Every `App` a test builds, with the paths that reach outside the repository
+/// pointed somewhere disposable.
+///
+/// This exists because the suite once wrote four schemes into the developer's
+/// own `~/.config/cozy/schemes`: the save target moved to the user's directory
+/// and twenty call sites did not. One constructor is one place to get that
+/// right. `no_test_can_write_into_a_real_home` checks it stays right.
+pub fn app_with(schemes: PathBuf, saved: State) -> App {
+    let mut a = App::with_state(schemes, saved);
+    let scratch = std::env::temp_dir().join(format!("cozy-test-home-{}", std::process::id()));
+    a.home.clone_from(&scratch);
+    a.user_schemes = scratch.join("schemes");
+    a
+}
+
 /// A path that cannot exist, so detection is deterministic in tests rather
 /// than depending on whether the repo has been fetched.
 pub fn app() -> App {
-    App::with_state(
+    app_with(
         PathBuf::from("target/does-not-exist-for-tests"),
         State::default(),
     )
+}
+
+/// Empty whatever text field is open.
+///
+/// Counted backspaces are a trap: the suggested value in these prompts is a
+/// path, and a longer default silently leaves a remnant that the typed text is
+/// then appended to. This presses more than any field can hold.
+pub fn clear_input(app: &mut App) {
+    for _ in 0..512 {
+        app.on_key(press(KeyCode::Backspace));
+    }
 }
 
 pub fn press(code: KeyCode) -> KeyEvent {
@@ -73,7 +99,7 @@ pub fn on_schemes() -> App {
 
 /// The theme browser against the real collection in this repo.
 pub fn on_themes() -> App {
-    let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), State::default());
+    let mut a = app_with(PathBuf::from("../../schemes/vendor"), State::default());
     a.on_key(press(KeyCode::Enter));
     a.on_key(press(KeyCode::Char('n')));
     a.on_key(press(KeyCode::Enter));
@@ -123,7 +149,7 @@ pub fn app_after_fetch(tag: &str) -> App {
         .unwrap();
 
     let dest = temp_dir(&format!("{tag}-dest"));
-    let mut a = App::with_state(dest, State::default());
+    let mut a = app_with(dest, State::default());
     a.on_key(press(KeyCode::Enter));
     // Clone from the local origin rather than over the network.
     a.fetch = {
@@ -200,7 +226,7 @@ pub fn on_patches_with_conflict(tag: &str) -> (App, PathBuf) {
 
 /// Walk a run to the end and return what it would write.
 pub fn completed_run(pick_blocks: bool, theme_steps: usize) -> App {
-    let mut a = App::with_state(PathBuf::from("../../schemes/vendor"), State::default());
+    let mut a = app_with(PathBuf::from("../../schemes/vendor"), State::default());
     if pick_blocks {
         a.on_key(press(KeyCode::Down));
     }

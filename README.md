@@ -88,7 +88,10 @@ It ends with a summary, a tick for whether to install (on by default, `space`
 toggles), and four choices: generate, save these settings to a file, save and
 exit, or abort. `esc` goes back a screen from anywhere, and your answers are
 remembered in a gitignored `.cozy-wizard.toml` so the next run starts where you
-left off.
+left off, at `~/.config/cozy/settings.toml`.
+
+Nothing you create lands in the checkout: saved schemes and remembered answers
+both live under `~/.config/cozy/`, so they survive re-cloning the repo.
 
 ### Settings files
 
@@ -102,8 +105,7 @@ cozy-theme --settings mine.toml              # render exactly what it records
 cozy-theme --settings mine.toml --greeting none   # …with one answer changed
 ```
 
-It's worth committing to a dotfiles repo; the automatic one isn't, which is why
-it's gitignored.
+It's worth committing to a dotfiles repo.
 
 The last two screens configure **minimal itself, not the loadout** — they write
 `~/.config/minimal/config.toml` and run `minvmd config set`, and they apply to
@@ -165,7 +167,7 @@ An adjusted scheme is written under its own name — `gruvbox-dark-medium-224a` 
 
 Adjustments belong to the scheme you made them against: moving to a different scheme in the list clears them, and they're remembered between runs along with the scheme itself.
 
-To keep one, press `s` (or pass `--save-as "My Theme"`). It writes `schemes/my-theme.yaml` with the adjustments baked in — a scheme of its own, so `just theme my-theme` picks it up and the knobs go back to zero.
+To keep one, press `s` (or pass `--save-as "My Theme"`). It writes `~/.config/cozy/schemes/my-theme.yaml` with the adjustments baked in — a scheme of its own, so `just theme my-theme` picks it up from any checkout and the knobs go back to zero.
 
 ## Choosing a scheme
 

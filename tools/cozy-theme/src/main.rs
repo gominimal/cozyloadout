@@ -94,7 +94,7 @@ struct Args {
     #[arg(long)]
     save_as: Option<String>,
 
-    /// Where `--save-as` writes. Defaults to the directory the scheme came from.
+    /// Where `--save-as` writes. Defaults to `~/.config/cozy/schemes`.
     #[arg(long)]
     schemes_dir: Option<PathBuf>,
 
@@ -108,6 +108,11 @@ struct Args {
     /// Where to resolve `--settings`' scheme name from.
     #[arg(long, default_value = "schemes")]
     schemes: PathBuf,
+}
+
+/// The user's own scheme directory, when `HOME` says where that is.
+fn user_schemes() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| cozy_theme::user_schemes_dir(Path::new(&h)))
 }
 
 /// Percentages are bounded so an out-of-range value is refused at the command
@@ -226,7 +231,7 @@ fn layer_settings(args: &Args, options: &mut Options) -> Result<()> {
             .theme
             .clone()
             .ok_or_else(|| eyre!("{} names no theme", path.display()))?;
-        options.scheme = cozy_theme::discover(&args.schemes)
+        options.scheme = cozy_theme::discover(&args.schemes, user_schemes().as_deref())
             .into_iter()
             .find(|e| e.name == name)
             .map(|e| e.path)
@@ -258,12 +263,12 @@ fn main() -> Result<()> {
             loaded.name.clone(),
             loaded.author.clone()
         );
-        let dir = args.schemes_dir.clone().unwrap_or_else(|| {
-            scheme
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
-        });
+        // The user's own directory, not the one the source scheme came from —
+        // which for a checked-in scheme is this repository. A scheme you tuned
+        // should survive re-cloning it.
+        let Some(dir) = args.schemes_dir.clone().or_else(user_schemes) else {
+            bail!("HOME is not set; pass --schemes-dir to say where to save");
+        };
         let saved = loaded
             .adjusted(options.adjust)
             .save_as(&dir, name, Some(&from))?;
