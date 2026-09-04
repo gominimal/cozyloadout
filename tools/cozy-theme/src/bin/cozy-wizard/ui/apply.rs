@@ -3,7 +3,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::prelude::*;
 
-/// Two pickers side by side: files on the left, directories on the right.
+/// The summary of every choice, and what can be done with it.
 ///
 /// Separate rather than one browser with a mode, because a loadout patches the
 /// two differently — a file maps to a single `dest`, a directory to a glob —
@@ -19,8 +19,8 @@ pub fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
             Span::styled(v, Style::default().fg(t.fg)),
         ])
     };
-    let files = app.pickers.first().map_or(0, |p| p.chosen.len());
-    let dirs = app.pickers.get(1).map_or(0, |p| p.chosen.len());
+    let files = app.picker.as_ref().map_or(0, |p| p.chosen_of(false).len());
+    let dirs = app.picker.as_ref().map_or(0, |p| p.chosen_of(true).len());
     let extras = app.extra_packages();
     let displaced = app.displaced_configs();
     Paragraph::new(Text::from(vec![

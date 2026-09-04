@@ -1,41 +1,19 @@
-//! A browsable filesystem picker, used twice on the patches screen: once for
-//! files and once for directories.
+//! A browsable filesystem picker, used once on the patches screen.
 //!
 //! Navigation and selection only — no drawing. That keeps the interesting
-//! behaviour (what a directory listing contains, what is selectable, what
-//! happens at the filesystem root) testable against real temporary
-//! directories rather than through a rendered frame.
+//! behaviour (what a directory listing contains, what happens at the filesystem
+//! root) testable against real temporary directories rather than through a
+//! rendered frame.
+//!
+//! It used to be *two* pickers side by side, one taking files and one taking
+//! directories. They listed the same entries and differed only in which rows
+//! had a checkbox, so the second pane showed the same information again with
+//! most of it greyed out. One list that takes either is the same capability in
+//! half the screen, and the file/directory distinction survives where it
+//! matters — in [`Picker::chosen`], which remembers what each pick was.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-
-/// What a picker is for. Both kinds show directories — you have to walk
-/// through them either way — but only one kind of entry can be chosen.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Pick {
-    Files,
-    Dirs,
-}
-
-impl Pick {
-    pub fn title(self) -> &'static str {
-        match self {
-            Pick::Files => " Files ",
-            Pick::Dirs => " Directories ",
-        }
-    }
-
-    /// Whether an entry of this kind can be selected, as opposed to merely
-    /// walked into. Public because the drawing code needs the same answer to
-    /// decide what to show a checkbox against — two copies of this rule would
-    /// be one too many.
-    pub fn accepts(self, is_dir: bool) -> bool {
-        match self {
-            Pick::Files => !is_dir,
-            Pick::Dirs => is_dir,
-        }
-    }
-}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
@@ -44,14 +22,18 @@ pub struct Entry {
 }
 
 pub struct Picker {
-    pub kind: Pick,
     pub cwd: PathBuf,
     pub entries: Vec<Entry>,
     pub row: usize,
     pub top: usize,
-    /// Absolute paths, sorted and de-duplicated by `BTreeSet` so the same file
-    /// chosen twice from two directions counts once.
-    pub chosen: BTreeSet<PathBuf>,
+    /// Absolute paths to whether each is a directory, sorted and de-duplicated
+    /// by `BTreeMap` so the same path chosen twice from two directions counts
+    /// once.
+    ///
+    /// The flag is stored rather than re-checked because it decides the shape
+    /// of the patch — a directory becomes a `**/*` glob with a trailing-slash
+    /// dest — and a path that has since been deleted must still be describable.
+    pub chosen: BTreeMap<PathBuf, bool>,
     /// Set when a directory could not be listed. Shown in place of the
     /// listing: a permission error should say so, not look like an empty
     /// folder.
@@ -59,20 +41,27 @@ pub struct Picker {
 }
 
 impl Picker {
-    pub fn new(kind: Pick, start: &Path) -> Self {
+    pub fn new(start: &Path) -> Self {
         let mut p = Self {
-            kind,
             cwd: start.to_path_buf(),
             entries: Vec::new(),
             row: 0,
             top: 0,
-            chosen: BTreeSet::new(),
+            chosen: BTreeMap::new(),
             error: None,
         };
         p.reload();
         p
     }
 
+    /// The chosen paths of one kind, in sorted order.
+    pub fn chosen_of(&self, want_dir: bool) -> Vec<PathBuf> {
+        self.chosen
+            .iter()
+            .filter(|(_, is_dir)| **is_dir == want_dir)
+            .map(|(p, _)| p.clone())
+            .collect()
+    }
     /// Read `cwd`. Directories first, then files, each alphabetically —
     /// the order a file manager uses, and the one that puts what you are
     /// likely to walk into at the top.
@@ -157,25 +146,26 @@ impl Picker {
         }
     }
 
-    /// Select or deselect the highlighted entry, if this picker accepts that
-    /// kind. Returns whether anything changed, so the caller can tell the
-    /// difference between "toggled off" and "not selectable".
+    /// Select or deselect the highlighted entry. Returns whether anything
+    /// changed, so a caller can tell "toggled off" from "there was nothing
+    /// under the cursor".
+    ///
+    /// Everything in the listing is selectable now: a file becomes a file
+    /// patch and a directory becomes a directory patch, which is a difference
+    /// in what gets written rather than in what you are allowed to point at.
     pub fn toggle(&mut self) -> bool {
         let Some(entry) = self.current() else {
             return false;
         };
-        if !self.kind.accepts(entry.is_dir) {
-            return false;
-        }
-        let path = self.cwd.join(&entry.name);
-        if !self.chosen.remove(&path) {
-            self.chosen.insert(path);
+        let (path, is_dir) = (self.cwd.join(&entry.name), entry.is_dir);
+        if self.chosen.remove(&path).is_none() {
+            self.chosen.insert(path, is_dir);
         }
         true
     }
 
     pub fn is_chosen(&self, entry: &Entry) -> bool {
-        self.chosen.contains(&self.cwd.join(&entry.name))
+        self.chosen.contains_key(&self.cwd.join(&entry.name))
     }
 }
 
@@ -199,7 +189,7 @@ mod tests {
     #[test]
     fn lists_directories_first_then_files_alphabetically() {
         let root = tree("order");
-        let p = Picker::new(Pick::Files, &root);
+        let p = Picker::new(&root);
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
@@ -213,7 +203,7 @@ mod tests {
         // Patching in dotfiles is the entire use case; a picker that hid
         // `.config` would be useless for it.
         let root = tree("hidden");
-        let p = Picker::new(Pick::Dirs, &root);
+        let p = Picker::new(&root);
         assert!(
             p.entries.iter().any(|e| e.name == ".config"),
             "{:?}",
@@ -223,30 +213,29 @@ mod tests {
     }
 
     #[test]
-    fn a_file_picker_only_takes_files_and_a_dir_picker_only_takes_dirs() {
+    fn either_kind_can_be_chosen_and_remembers_which_it_was() {
+        // The whole point of one list: a directory is as patchable as a file,
+        // and what it *is* decides the shape of the patch rather than which
+        // pane you were standing in.
         let root = tree("kinds");
-        let mut files = Picker::new(Pick::Files, &root);
-        // Row 0 is `.config`, a directory.
-        assert!(!files.toggle(), "a file picker must not take a directory");
-        assert!(files.chosen.is_empty());
-        while files.current().unwrap().is_dir {
-            files.move_cursor(1, 10);
-        }
-        assert!(files.toggle(), "and must take a file");
-        assert_eq!(files.chosen.len(), 1);
+        let mut p = Picker::new(&root);
+        assert!(p.current().unwrap().is_dir, "row 0 is `.config`");
+        assert!(p.toggle(), "a directory is selectable");
 
-        let mut dirs = Picker::new(Pick::Dirs, &root);
-        assert!(dirs.toggle(), "a dir picker must take a directory");
-        while !dirs.current().unwrap().is_dir {
-            dirs.move_cursor(1, 10);
+        while p.current().unwrap().is_dir {
+            p.move_cursor(1, 10);
         }
+        assert!(p.toggle(), "and so is a file");
+        assert_eq!(p.chosen.len(), 2);
+        assert_eq!(p.chosen_of(true).len(), 1, "one directory");
+        assert_eq!(p.chosen_of(false).len(), 1, "one file");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn toggling_twice_deselects() {
         let root = tree("toggle");
-        let mut p = Picker::new(Pick::Dirs, &root);
+        let mut p = Picker::new(&root);
         assert!(p.toggle());
         assert_eq!(p.chosen.len(), 1);
         assert!(p.toggle());
@@ -257,7 +246,7 @@ mod tests {
     #[test]
     fn descending_and_ascending_keeps_your_place() {
         let root = tree("walk");
-        let mut p = Picker::new(Pick::Files, &root);
+        let mut p = Picker::new(&root);
         while p.current().unwrap().name != "alpha" {
             p.move_cursor(1, 10);
         }
@@ -278,7 +267,7 @@ mod tests {
     #[test]
     fn descending_into_a_file_does_nothing() {
         let root = tree("descend-file");
-        let mut p = Picker::new(Pick::Files, &root);
+        let mut p = Picker::new(&root);
         while p.current().unwrap().is_dir {
             p.move_cursor(1, 10);
         }
@@ -290,7 +279,7 @@ mod tests {
 
     #[test]
     fn the_filesystem_root_has_no_parent_to_climb_to() {
-        let mut p = Picker::new(Pick::Dirs, Path::new("/"));
+        let mut p = Picker::new(Path::new("/"));
         p.ascend();
         assert_eq!(p.cwd, Path::new("/"), "ascending from / must not wander");
     }
@@ -299,7 +288,7 @@ mod tests {
     fn an_unreadable_directory_reports_itself() {
         // An empty listing and a permission error look identical on screen
         // unless the error is kept.
-        let mut p = Picker::new(Pick::Files, Path::new("/definitely/not/here"));
+        let mut p = Picker::new(Path::new("/definitely/not/here"));
         assert!(p.entries.is_empty());
         assert!(p.error.is_some(), "a failed listing should explain itself");
         p.reload();
@@ -309,7 +298,7 @@ mod tests {
     #[test]
     fn selections_survive_navigating_away() {
         let root = tree("survive");
-        let mut p = Picker::new(Pick::Dirs, &root);
+        let mut p = Picker::new(&root);
         p.toggle();
         let chosen = p.chosen.clone();
         while p.current().unwrap().name != "alpha" {

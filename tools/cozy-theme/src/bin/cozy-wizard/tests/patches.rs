@@ -2,8 +2,6 @@
 
 #[allow(unused_imports)]
 use super::util::*;
-#[allow(unused_imports)]
-use crate::picker::Pick;
 #[allow(clippy::wildcard_imports)]
 use crate::*;
 #[allow(unused_imports)]
@@ -12,40 +10,26 @@ use ratatui::style::{Color, Modifier};
 use std::process::Command;
 
 #[test]
-fn tab_swaps_between_the_two_pickers() {
-    let (mut a, root) = on_patches("tab");
-    assert_eq!(a.picker().kind, Pick::Files);
-    a.on_key(press(KeyCode::Tab));
-    assert_eq!(
-        a.picker().kind,
-        Pick::Dirs,
-        "tab should reach the directory picker"
-    );
-    a.on_key(press(KeyCode::Tab));
-    assert_eq!(a.picker().kind, Pick::Files, "and wrap back round");
-    std::fs::remove_dir_all(&root).unwrap();
-}
+fn one_list_takes_either_kind() {
+    // There used to be two panes, one for files and one for directories, and
+    // `tab` between them. They listed the same entries and differed only in
+    // which rows had a checkbox — the same information twice, most of it greyed
+    // out. One list is the same capability in half the screen.
+    let (mut a, root) = on_patches("one-list");
+    land_on(&mut a, "dotfiles");
+    a.on_key(press(KeyCode::Char(' ')));
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
 
-#[test]
-fn each_picker_only_takes_its_own_kind() {
-    let (mut a, root) = on_patches("kinds");
-    // Row 0 is the `dotfiles` directory in both.
-    a.on_key(press(KeyCode::Char(' ')));
-    assert!(
-        a.chosen_paths().is_empty(),
-        "the file picker must not take a directory"
-    );
-    a.on_key(press(KeyCode::Tab));
-    a.on_key(press(KeyCode::Char(' ')));
     assert_eq!(
-        a.chosen_paths()
-            .iter()
-            .map(|p| p.as_path())
-            .collect::<Vec<_>>(),
-        vec![root.join("dotfiles").as_path()],
-        "the directory picker must take it"
+        a.chosen_paths().len(),
+        2,
+        "a folder and a file, in one list"
     );
-    std::fs::remove_dir_all(&root).unwrap();
+    let p = a.picker();
+    assert_eq!(p.chosen_of(true), vec![root.join("dotfiles")]);
+    assert_eq!(p.chosen_of(false), vec![root.join("notes.md")]);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -146,9 +130,10 @@ fn a_long_list_of_picks_cannot_push_the_warning_off_the_screen() {
     a.on_key(press(KeyCode::Char(' ')));
     // Enough paths to wrap the chosen line well past one row.
     for i in 0..6 {
-        a.pickers[0]
-            .chosen
-            .insert(home.join(format!(".config/a-fairly-long-config-name-{i}.toml")));
+        a.picker_mut().chosen.insert(
+            home.join(format!(".config/a-fairly-long-config-name-{i}.toml")),
+            false,
+        );
     }
 
     let text = flatten(&render_app(&a, 90, 26));
@@ -222,8 +207,7 @@ fn with_previewable(tag: &str) -> (App, PathBuf) {
     std::fs::write(root.join("notes.txt"), "first\nsecond\nthird\n").unwrap();
     std::fs::write(root.join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
     std::fs::write(root.join("hollow"), "").unwrap();
-    a.pickers[0].reload();
-    a.pickers[1].reload();
+    a.picker_mut().reload();
     (a, root)
 }
 
@@ -337,23 +321,25 @@ fn the_preview_is_read_once_per_path_not_once_per_frame() {
 }
 
 #[test]
-fn the_pane_is_dropped_before_the_pickers_are() {
-    // A ladder: both pickers and a preview, then both pickers, then only the
-    // focused one. The listing is what you cannot do without.
+fn the_preview_is_dropped_before_the_listing_is() {
+    // The listing is what you cannot do without, so the preview is what a
+    // narrow terminal loses.
     let (mut a, root) = with_previewable("preview-narrow");
     land_on(&mut a, "notes.txt");
-    assert!(flatten(&render_app(&a, 120, 24)).contains("Preview"));
-
-    let mid = flatten(&render_app(&a, 90, 24));
-    assert!(!mid.contains("Preview"), "no room for three panes:\n{mid}");
-    assert!(
-        mid.contains("Files") && mid.contains("Directories"),
-        "{mid}"
-    );
+    let wide = flatten(&render_app(&a, 120, 24));
+    assert!(wide.contains("Preview"), "{wide}");
+    assert!(wide.contains("Files and folders"), "{wide}");
 
     let narrow = flatten(&render_app(&a, 60, 24));
-    assert!(!narrow.contains("Directories"), "{narrow}");
-    assert!(narrow.contains("Files"), "{narrow}");
+    assert!(
+        !narrow.contains("Preview"),
+        "no room for two panes:\n{narrow}"
+    );
+    assert!(
+        narrow.contains("Files and folders"),
+        "but the listing stays:\n{narrow}"
+    );
+    assert!(narrow.contains("notes.txt"), "{narrow}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -402,7 +388,7 @@ fn a_previewed_file_is_actually_syntax_coloured() {
         "# a comment\nport = 8080\nname = \"cozy\"\n",
     )
     .unwrap();
-    a.pickers[0].reload();
+    a.picker_mut().reload();
     land_on(&mut a, "server.toml");
 
     let comment = text_colours(&a, 120, 24, "# a comment");
@@ -425,7 +411,7 @@ fn the_colours_come_from_the_chosen_scheme() {
     // what `bat` will show, not an approximation with fixed colours.
     let (mut a, root) = on_patches("scheme-colours");
     std::fs::write(root.join("a.toml"), "x = \"hello\"\n").unwrap();
-    a.pickers[0].reload();
+    a.picker_mut().reload();
     land_on(&mut a, "a.toml");
     let before = text_colours(&a, 120, 24, "x = ");
 
@@ -449,7 +435,7 @@ fn an_unhighlightable_file_still_reads() {
     // rather than the terminal's default.
     let (mut a, root) = on_patches("no-grammar");
     std::fs::write(root.join("mystery.zzzz"), "just some words\n").unwrap();
-    a.pickers[0].reload();
+    a.picker_mut().reload();
     land_on(&mut a, "mystery.zzzz");
     let text = flatten(&render_app(&a, 120, 24));
     assert!(text.contains("just some words"), "{text}");
@@ -470,13 +456,13 @@ fn show_the_preview_pane() {
         "# how the thing is configured\n[server]\nport = 8080\nname = \"cozy\"\ndebug = true\n",
     )
     .unwrap();
-    a.pickers[0].reload();
+    a.picker_mut().reload();
     std::fs::write(
         root.join("notes.txt"),
         "# a config\n[server]\nport = 8080\nname = \"cozy\"\ndebug = true\n",
     )
     .unwrap();
-    a.pickers[0].reload();
+    a.picker_mut().reload();
     land_on(&mut a, "server.toml");
     println!("\n=== a file");
     for line in render_app(&a, 120, 22) {
@@ -745,7 +731,7 @@ fn the_destination_editor_is_visible_without_the_preview_column() {
 fn show_the_destination_editor() {
     let (mut a, root) = on_patches("show-dest");
     std::fs::write(root.join("server.toml"), "port = 1\n").unwrap();
-    a.pickers[0].reload();
+    a.picker_mut().reload();
     land_on(&mut a, "server.toml");
     a.on_key(press(KeyCode::Char(' ')));
     println!("\n=== chosen, showing where it lands");
@@ -805,20 +791,23 @@ fn e_is_advertised_before_anything_is_chosen() {
 }
 
 #[test]
-fn e_does_nothing_on_an_entry_the_picker_cannot_take() {
-    // A directory highlighted in the *file* picker is scenery you walk through;
-    // giving it a destination would answer for a patch that cannot exist.
-    let (mut a, root) = on_patches("e-scenery");
+fn e_works_on_a_folder_too() {
+    // With one list there is no such thing as an entry the picker cannot take:
+    // a folder becomes a glob patch, which is a difference in what gets written
+    // rather than in what you may point at.
+    let (mut a, root) = on_patches("e-folder");
     land_on(&mut a, "dotfiles");
-    assert_eq!(a.picker().kind, Pick::Files);
     a.on_key(press(KeyCode::Char('e')));
-    assert!(
-        a.editing_dest.is_none(),
-        "no editor for something unselectable"
-    );
-    assert!(
-        a.chosen_paths().is_empty(),
-        "and nothing chosen behind your back"
+    assert!(a.editing_dest.is_some(), "a folder is patchable too");
+    assert_eq!(a.chosen_paths().len(), 1, "and choosing it is the point");
+
+    clear_input(&mut a);
+    typing(&mut a, ".config/mine");
+    a.on_key(press(KeyCode::Enter));
+    assert_eq!(
+        a.picker().chosen_of(true),
+        vec![root.join("dotfiles")],
+        "still remembered as a directory"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -833,5 +822,54 @@ fn e_on_an_already_chosen_entry_does_not_deselect_it() {
     a.on_key(press(KeyCode::Esc));
     a.on_key(press(KeyCode::Char('e')));
     assert_eq!(a.chosen_paths().len(), 1, "and again");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn what_each_pick_was_survives_into_the_manifest() {
+    // One list means the file/directory distinction is carried by the pick
+    // rather than by which pane it was made in — so this is the property the
+    // combination could have quietly broken.
+    let out = temp_dir("one-list-render");
+    std::fs::create_dir_all(&out).unwrap();
+    let (mut a, root) = on_patches("one-list-render-src");
+    land_on(&mut a, "dotfiles");
+    a.on_key(press(KeyCode::Char(' ')));
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+
+    run_generate_to(&a, Path::new("../.."), &out, false).unwrap();
+    let manifest = std::fs::read_to_string(out.join("cozy.toml")).unwrap();
+    assert!(
+        manifest.contains("dotfiles/**/*"),
+        "a folder becomes a glob:\n{manifest}"
+    );
+    assert!(
+        manifest.contains("notes.md\"") && !manifest.contains("notes.md/**/*"),
+        "and a file does not:\n{manifest}"
+    );
+    let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_two_kinds_still_round_trip_through_the_settings_file() {
+    // The settings schema keeps `files` and `dirs` apart, because that is the
+    // shape a loadout wants; the picker holds the flag per path. Restoring has
+    // to put each one back on the right side.
+    let (mut a, root) = on_patches("one-list-sticky");
+    land_on(&mut a, "dotfiles");
+    a.on_key(press(KeyCode::Char(' ')));
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+
+    let saved = a.to_state();
+    assert_eq!(saved.dirs, vec![root.join("dotfiles")]);
+    assert_eq!(saved.files, vec![root.join("notes.md")]);
+
+    let mut back = app_with(a.schemes_dir.clone(), saved);
+    crate::ui::patches::enter_patches(&mut back);
+    assert_eq!(back.picker().chosen_of(true), vec![root.join("dotfiles")]);
+    assert_eq!(back.picker().chosen_of(false), vec![root.join("notes.md")]);
     let _ = std::fs::remove_dir_all(&root);
 }

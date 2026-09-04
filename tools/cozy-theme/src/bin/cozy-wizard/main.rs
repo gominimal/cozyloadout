@@ -257,16 +257,16 @@ fn run_generate_to(app: &App, repo: &Path, out: &Path, install: bool) -> Result<
             }
         },
         patch_files: app
-            .pickers
-            .first()
-            .map(|p| p.chosen.iter().cloned().collect())
+            .picker
+            .as_ref()
+            .map(|p| p.chosen_of(false))
             .unwrap_or_default(),
         adjust: app.adjust,
         patch_dests: app.dest_overrides.clone(),
         patch_dirs: app
-            .pickers
-            .get(1)
-            .map(|p| p.chosen.iter().cloned().collect())
+            .picker
+            .as_ref()
+            .map(|p| p.chosen_of(true))
             .unwrap_or_default(),
         ..Options::default()
     };
@@ -418,11 +418,10 @@ struct App {
     editing_dest: Option<String>,
     dest_note: Option<String>,
 
-    /// The two pickers on the patches page, and which one has the keys.
-    /// Files and directories are separate because a loadout patches them
-    /// differently: a file maps to one dest, a directory to a glob.
-    pickers: Vec<Picker>,
-    picker_focus: usize,
+    /// The filesystem picker on the patches page. One list taking either kind
+    /// — what a pick *is* decides the shape of the patch, not which pane you
+    /// were standing in.
+    picker: Option<Picker>,
 
     /// What the last completed run chose. Consulted as each page opens rather
     /// than all at once, because the scheme list and the package list are only
@@ -516,8 +515,7 @@ impl App {
             dest_overrides: saved.patch_dests.clone(),
             editing_dest: None,
             dest_note: None,
-            pickers: Vec::new(),
-            picker_focus: 0,
+            picker: None,
             action_row: 0,
             // On by default: installing is what running the wizard is for, and
             // an untouched run should produce a usable session.
@@ -554,14 +552,14 @@ impl App {
             extra: self.extra.clone(),
             patch_dests: self.dest_overrides.clone(),
             files: self
-                .pickers
-                .first()
-                .map(|p| p.chosen.iter().cloned().collect())
+                .picker
+                .as_ref()
+                .map(|p| p.chosen_of(false))
                 .unwrap_or_default(),
             dirs: self
-                .pickers
-                .get(1)
-                .map(|p| p.chosen.iter().cloned().collect())
+                .picker
+                .as_ref()
+                .map(|p| p.chosen_of(true))
                 .unwrap_or_default(),
             contrast: Some(self.adjust.contrast),
             saturation: Some(self.adjust.saturation),
@@ -625,12 +623,9 @@ impl App {
     /// *file* picker is scenery you walk through, and giving it a destination
     /// would be answering for a patch that cannot exist.
     fn current_target(&self) -> Option<(PathBuf, bool)> {
-        let picker = self.pickers.get(self.picker_focus)?;
+        let picker = self.picker.as_ref()?;
         let entry = picker.current()?;
-        picker
-            .kind
-            .accepts(entry.is_dir)
-            .then(|| (picker.cwd.join(&entry.name), entry.is_dir))
+        Some((picker.cwd.join(&entry.name), entry.is_dir))
     }
 
     /// The path under the patches cursor, if it is one this run has chosen.
@@ -638,12 +633,12 @@ impl App {
     /// What the preview reports on: "where this lands" is a statement about a
     /// patch that is actually going to happen.
     fn current_pick(&self) -> Option<(PathBuf, bool)> {
-        let picker = self.pickers.get(self.picker_focus)?;
+        let picker = self.picker.as_ref()?;
         let entry = picker.current()?;
         let path = picker.cwd.join(&entry.name);
         picker
             .chosen
-            .contains(&path)
+            .contains_key(&path)
             .then_some((path, entry.is_dir))
     }
 
@@ -917,10 +912,18 @@ impl App {
     }
 
     fn picker(&self) -> &Picker {
-        &self.pickers[self.picker_focus]
+        self.picker
+            .as_ref()
+            .expect("the patches page loads its picker on entry")
     }
 
-    /// Everything chosen across both pickers, files first.
+    fn picker_mut(&mut self) -> &mut Picker {
+        self.picker
+            .as_mut()
+            .expect("the patches page loads its picker on entry")
+    }
+
+    /// Everything chosen, in sorted order.
     /// The loadout's own config files that the user's picks would displace.
     ///
     /// Not an error — the user asked for theirs specifically, so theirs wins —
@@ -931,13 +934,18 @@ impl App {
         let Some(scheme) = self.scheme() else {
             return Vec::new();
         };
-        let collect = |i: usize| -> Vec<PathBuf> {
-            self.pickers
-                .get(i)
-                .map(|p| p.chosen.iter().cloned().collect())
+        let collect = |want_dir: bool| -> Vec<PathBuf> {
+            self.picker
+                .as_ref()
+                .map(|p| p.chosen_of(want_dir))
                 .unwrap_or_default()
         };
-        let picks = user_patches(&collect(0), &collect(1), &self.home, &self.dest_overrides);
+        let picks = user_patches(
+            &collect(false),
+            &collect(true),
+            &self.home,
+            &self.dest_overrides,
+        );
         if picks.is_empty() {
             return Vec::new();
         }
@@ -959,7 +967,10 @@ impl App {
     }
 
     fn chosen_paths(&self) -> Vec<&PathBuf> {
-        self.pickers.iter().flat_map(|p| p.chosen.iter()).collect()
+        self.picker
+            .as_ref()
+            .map(|p| p.chosen.keys().collect())
+            .unwrap_or_default()
     }
 
     fn action(&self) -> Action {

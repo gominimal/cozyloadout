@@ -697,11 +697,23 @@ finishing the run, so the automatic file records it too.
 
 ### The patches page
 
-Two pickers side by side, files on the left and directories on the right, for
-patching your own dotfiles into the session. They are separate rather than one
-browser with a mode because a loadout patches the two differently — a file maps
-to a single `dest`, a directory to a glob — and because seeing both sets of
-choices at once is the point.
+One filesystem picker, for patching your own dotfiles into the session, with a
+preview of whatever is under the cursor beside it.
+
+It used to be **two** pickers side by side, files on the left and directories on
+the right, on the reasoning that a loadout patches the two differently — a file
+maps to a single `dest`, a directory to a glob. That reasoning was about the
+*output*, not the input: the two panes listed the same entries and differed only
+in which rows had a checkbox, so the second pane showed the same information
+again with most of it greyed out, and `tab` existed only to move between two
+copies of one listing.
+
+The distinction survives where it actually matters. `Picker::chosen` is a
+`BTreeMap<PathBuf, bool>` rather than a set, so each pick remembers whether it
+was a directory — which is what decides the `**/*` glob and the trailing-slash
+dest. The flag is stored rather than re-checked on disk because a path deleted
+since it was chosen must still be describable.
+`what_each_pick_was_survives_into_the_manifest` is the test that says so.
 
 Key choices worth keeping:
 
@@ -711,15 +723,13 @@ Key choices worth keeping:
   where finishing is a different key.
 - **Hidden entries are shown.** Patching in dotfiles is the entire use case, so
   a picker that hid `.config` would be useless.
-- **Directories appear in the file picker but cannot be chosen**, and get no
-  empty checkbox — you walk through them, you do not select them. `Pick::accepts`
-  is the single source of that rule; the drawing code asks it rather than
-  keeping a second copy.
+- **Everything in the listing has a checkbox.** A directory is as patchable as
+  a file; the difference is in what gets written, not in what you may point at.
 - **A failed listing keeps its error.** An unreadable directory and an empty one
   look identical on screen otherwise.
 
-Both pickers start at `$HOME`. Selections survive walking away and coming back,
-and the summary line under them names every path with `~` for the home prefix.
+The picker starts at `$HOME`. Selections survive walking away and coming back,
+and the summary line under it names every path with `~` for the home prefix.
 
 #### Icons
 

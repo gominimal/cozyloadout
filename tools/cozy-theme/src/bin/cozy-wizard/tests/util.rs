@@ -1,8 +1,6 @@
 //! Fixtures the screen tests share: the page-walk chain that puts an `App`
 //! on a given screen, and the helpers that render one to text.
 
-#[allow(unused_imports)]
-use crate::picker::Pick;
 #[allow(clippy::wildcard_imports)]
 use crate::*;
 #[allow(unused_imports)]
@@ -189,7 +187,7 @@ pub fn typing(app: &mut App, text: &str) {
     }
 }
 
-/// The patches page, with both pickers rooted at a private tree rather
+/// The patches page, with the picker rooted at a private tree rather
 /// than the real $HOME, so the tests do not depend on this machine.
 pub fn on_patches(tag: &str) -> (App, PathBuf) {
     let root = temp_dir(&format!("patches-{tag}"));
@@ -198,10 +196,7 @@ pub fn on_patches(tag: &str) -> (App, PathBuf) {
     std::fs::write(root.join("notes.md"), "n").unwrap();
     let mut a = on_packages();
     crate::ui::patches::enter_patches(&mut a);
-    a.pickers = vec![
-        Picker::new(Pick::Files, &root),
-        Picker::new(Pick::Dirs, &root),
-    ];
+    a.picker = Some(Picker::new(&root));
     assert_eq!(a.screen, Screen::Patches);
     (a, root)
 }
@@ -217,10 +212,7 @@ pub fn on_patches_with_conflict(tag: &str) -> (App, PathBuf) {
     // Destinations are computed against this, not against the real home.
     a.home.clone_from(&home);
     crate::ui::patches::enter_patches(&mut a);
-    a.pickers = vec![
-        Picker::new(Pick::Files, &home.join(".config")),
-        Picker::new(Pick::Dirs, &home.join(".config")),
-    ];
+    a.picker = Some(Picker::new(&home.join(".config")));
     (a, home)
 }
 
