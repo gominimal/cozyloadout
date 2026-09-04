@@ -10,6 +10,7 @@ mod icons;
 mod keys;
 mod picker;
 mod preview;
+mod registry;
 mod resources;
 mod syntax;
 mod theme;
@@ -213,6 +214,31 @@ impl Action {
     }
 }
 
+/// What the wizard is already doing about a package the registry search found.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PackageState {
+    /// In `base` or `cozy` — installed whatever anyone chooses.
+    Always,
+    /// Ticked in the optional list, or already typed into the field.
+    Added,
+    /// In the optional list, switched off.
+    Declined,
+    /// Not something this page knows about.
+    New,
+}
+
+impl PackageState {
+    /// What to show beside the package in the search results.
+    fn note(self) -> &'static str {
+        match self {
+            PackageState::Always => "installed anyway",
+            PackageState::Added => "already added",
+            PackageState::Declined => "turned off above",
+            PackageState::New => "",
+        }
+    }
+}
+
 /// How an action turned out, for the line under the list.
 enum Applied {
     Idle,
@@ -378,6 +404,25 @@ struct App {
     /// Package names installed regardless of any choice on this page — used
     /// only to tell the user a typed name is already covered.
     always: Vec<String>,
+
+    /// The Minimal registry, read from the index `min` keeps on disk. Loaded
+    /// once on the way into the packages page.
+    registry: registry::Registry,
+    /// The row highlighted in the registry search results.
+    registry_row: usize,
+    /// A fetch of minimal.dev's bundle, in flight. The local index answers
+    /// immediately; this replaces it when it lands, because it is current and
+    /// carries categories and advisories the local one has no idea about.
+    registry_fetch: Option<std::sync::mpsc::Receiver<Result<registry::Registry, String>>>,
+    /// Why the last fetch did not happen, if it did not. Not an error worth
+    /// stopping for — there is a working registry either way.
+    registry_note: Option<String>,
+    /// Whether to reach minimal.dev at all.
+    ///
+    /// Off in tests. Without it the suite makes a real request per fixture that
+    /// opens the packages page — slow, flaky, and pointed at somebody's actual
+    /// web server. `no_test_reaches_the_network` holds it off.
+    fetch_registry: bool,
     /// The six scheme adjustments, the knob under the cursor, and whether the
     /// themes page has handed the arrow keys to them.
     adjust: Adjust,
@@ -525,6 +570,11 @@ impl App {
             package_top: 0,
             focus: Focus::List,
             always: Vec::new(),
+            registry: registry::Registry::default(),
+            registry_row: 0,
+            registry_fetch: None,
+            registry_note: None,
+            fetch_registry: true,
             preview: std::cell::RefCell::new(None),
             highlighter: std::cell::RefCell::new(None),
             dest_overrides: saved.patch_dests.clone(),
@@ -734,6 +784,74 @@ impl App {
         self.load_selected();
     }
 
+    /// Take the fetched bundle if it has arrived.
+    ///
+    /// Polled from the event loop's tick rather than waited on: the page is
+    /// usable the moment it opens, and the better registry arrives when it
+    /// arrives.
+    fn poll_registry(&mut self) {
+        let Some(rx) = &self.registry_fetch else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(fetched)) => {
+                self.registry = fetched;
+                self.registry_fetch = None;
+                self.registry_note = None;
+            }
+            Ok(Err(why)) => {
+                self.registry_fetch = None;
+                // Only worth saying when there is nothing else to fall back on.
+                self.registry_note = (!self.registry.is_available()).then_some(why);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.registry_fetch = None,
+        }
+    }
+
+    /// What the wizard is already doing about a package, for the registry
+    /// search to report.
+    ///
+    /// The bug this replaces looked only at the free-text field and the
+    /// always-installed set, and so said nothing about the optional list on the
+    /// very same page: `bottom` (in `cozy`, hence always) was reported and
+    /// `atuin` (optional, ticked on) was not.
+    fn package_state(&self, name: &str) -> PackageState {
+        if self.always.iter().any(|a| a == name) {
+            return PackageState::Always;
+        }
+        if self.chosen_packages().contains(&name) {
+            return PackageState::Added;
+        }
+        // In the list above but switched off. Worth its own answer: adding it
+        // as free text here would install it while the list still shows it
+        // unticked, which reads as a contradiction.
+        if self.packages.iter().any(|p| p.name == name) {
+            return PackageState::Declined;
+        }
+        PackageState::New
+    }
+
+    /// Typed package names the registry does not have.
+    ///
+    /// Empty when there is no index: a name cannot be checked without one, and
+    /// "not in the registry" would then be a claim rather than a finding.
+    fn unknown_extras(&self) -> Vec<&str> {
+        if !self.registry.is_available() {
+            return Vec::new();
+        }
+        self.extra_packages()
+            .into_iter()
+            .filter(|name| !self.registry.knows(name))
+            .collect()
+    }
+
+    /// The registry search results for what is currently typed.
+    fn registry_hits(&self) -> Vec<&registry::Package> {
+        self.registry
+            .search(self.searching.as_deref().unwrap_or(""))
+    }
+
     /// The repository's scheme root — `schemes/`, the parent of the vendored
     /// collection this was pointed at.
     fn repo_schemes(&self) -> PathBuf {
@@ -876,8 +994,10 @@ impl App {
             || (self.screen == Screen::Patches && self.editing_dest.is_some())
             // `/` puts both list screens into a text field, where `q` is a
             // letter rather than the quit key.
-            || (matches!(self.screen, Screen::Themes | Screen::Patches)
-                && self.searching.is_some());
+            || (matches!(
+                self.screen,
+                Screen::Themes | Screen::Patches | Screen::Packages
+            ) && self.searching.is_some());
         if ctrl_c || (key.code == KeyCode::Char('q') && !typing) {
             self.done = true;
             return;
@@ -1122,6 +1242,7 @@ impl App {
 
     /// Advance the spinner and collect the fetch result if it has landed.
     fn tick(&mut self) {
+        self.poll_registry();
         let Fetch::Running(frame, rx) = &mut self.fetch else {
             return;
         };

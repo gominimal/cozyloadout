@@ -38,6 +38,35 @@ pub fn draw_packages(frame: &mut Frame, inner: Rect, app: &App) {
     .areas(inner);
     frame.render_widget(intro, intro_area);
 
+    if app.searching.is_some() {
+        draw_registry_search(frame, list_area, app, &t);
+        draw_extra_input(frame, input_area, app, &t);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                match (&app.registry.source, &app.registry_note) {
+                    (None, Some(why)) => format!("Could not reach the registry: {why}"),
+                    (None, None) => "Looking for a package registry…".to_string(),
+                    (Some(crate::registry::Source::Site), _) => {
+                        format!("{} packages from minimal.dev.", app.registry.len())
+                    }
+                    (Some(crate::registry::Source::LocalIndex(_)), _) => format!(
+                        "{} packages from this machine's index{}",
+                        app.registry.len(),
+                        if app.registry_fetch.is_some() {
+                            " — checking minimal.dev…"
+                        } else {
+                            "."
+                        }
+                    ),
+                },
+                Style::default().fg(t.comment),
+            ))
+            .wrap(Wrap { trim: true }),
+            detail_area,
+        );
+        return;
+    }
+
     if app.packages.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::styled(
@@ -97,9 +126,10 @@ pub fn draw_extra_input(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
     // what someone typed is the worst version of this widget.
     let parsed = app.extra_packages();
     let redundant = app.redundant_extras();
+    let unknown = app.unknown_extras();
     let line = if app.extra.trim().is_empty() {
         Line::styled(
-            "Space-separated names from the Minimal registry, e.g. emacs vim tmux.",
+            "Space-separated names, or press / to search the registry.",
             Style::default().fg(t.comment),
         )
     } else if parsed.is_empty() {
@@ -107,6 +137,20 @@ pub fn draw_extra_input(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
             "Nothing usable yet — names are lowercase, digits, - _ . +",
             Style::default().fg(t.orange),
         )
+    } else if !unknown.is_empty() {
+        // Not an error — a name the local index has never heard of may still be
+        // real, and the index can be stale or absent. But a typo here is
+        // otherwise only discovered when the session fails to build.
+        Line::from(vec![
+            Span::styled(
+                format!("adding {}", parsed.join(" ")),
+                Style::default().fg(t.green),
+            ),
+            Span::styled(
+                format!("  ·  not in the registry: {}", unknown.join(" ")),
+                Style::default().fg(t.orange),
+            ),
+        ])
     } else if redundant.is_empty() {
         Line::styled(
             format!("adding {}", parsed.join(" ")),
@@ -219,6 +263,10 @@ pub fn draw_package_detail(frame: &mut Frame, area: Rect, app: &App, t: &Theme) 
 // --- keys -----------------------------------------------------------------
 
 pub fn on_key_packages(app: &mut App, key: KeyEvent) {
+    if app.searching.is_some() {
+        on_key_registry(app, key);
+        return;
+    }
     if app.focus == Focus::Input {
         on_key_input(app, key);
         return;
@@ -242,6 +290,10 @@ pub fn on_key_packages(app: &mut App, key: KeyEvent) {
         KeyCode::Char('a') => app.wanted.iter_mut().for_each(|w| *w = true),
         KeyCode::Char('n') => app.wanted.iter_mut().for_each(|w| *w = false),
         KeyCode::Tab | KeyCode::Char('i') => app.focus = Focus::Input,
+        KeyCode::Char('/') => {
+            app.searching = Some(String::new());
+            app.registry_row = 0;
+        }
         KeyCode::Enter => super::patches::enter_patches(app),
         _ => {}
     }
@@ -289,6 +341,17 @@ pub fn enter_packages(app: &mut App, templates: &Path) {
         app.packages = p.optional;
     }
     app.extra.clone_from(&app.saved.extra);
+    // The local index answers immediately — read once, since it is a megabyte of
+    // JSON and does not change while the wizard runs — and minimal.dev's bundle
+    // replaces it when it arrives. The site is current and carries categories
+    // and advisories; the local index works on a train.
+    if !app.registry.is_available() && app.registry_fetch.is_none() {
+        app.registry =
+            crate::registry::Registry::load(&crate::registry::Registry::cache_dir(&app.home));
+        if app.fetch_registry {
+            app.registry_fetch = Some(crate::registry::Registry::spawn_fetch());
+        }
+    }
     app.package_row = 0;
     app.package_top = 0;
     app.screen = Screen::Packages;
@@ -298,6 +361,14 @@ pub fn enter_packages(app: &mut App, templates: &Path) {
 
 /// The keys this screen answers to, for the footer.
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.searching.is_some() {
+        return vec![
+            ("type", "to search"),
+            ("↑/↓", "move"),
+            ("enter", "add it"),
+            ("esc", "cancel"),
+        ];
+    }
     if app.focus == Focus::Input {
         return vec![("type", "package names"), ("enter/esc", "back to the list")];
     }
@@ -305,8 +376,168 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         ("↑/↓", "move"),
         ("space", "toggle"),
         ("a/n", "all/none"),
+        ("/", "search the registry"),
         ("i", "add by name"),
         ("esc", "back"),
         ("enter", "done"),
     ]
+}
+
+/// Searching the Minimal registry.
+///
+/// `enter` adds the highlighted package to the free-text field rather than
+/// toggling anything: the list above is the loadout's own curated set, and a
+/// registry package is an addition to it, not a member of it.
+fn on_key_registry(app: &mut App, key: KeyEvent) {
+    let Some(mut query) = app.searching.clone() else {
+        return;
+    };
+    let rows = app.list_rows();
+    match key.code {
+        KeyCode::Esc => app.searching = None,
+        KeyCode::Up => app.registry_row = app.registry_row.saturating_sub(1),
+        KeyCode::Down => {
+            let last = app.registry_hits().len().saturating_sub(1);
+            app.registry_row = (app.registry_row + 1).min(last);
+        }
+        KeyCode::PageUp => app.registry_row = app.registry_row.saturating_sub(rows),
+        KeyCode::PageDown => {
+            let last = app.registry_hits().len().saturating_sub(1);
+            app.registry_row = (app.registry_row + rows).min(last);
+        }
+        KeyCode::Enter => {
+            if let Some(name) = app
+                .registry_hits()
+                .get(app.registry_row)
+                .map(|p| p.name.clone())
+            {
+                // Appended, never replacing: adding a second package should not
+                // undo the first.
+                if !app.extra_packages().contains(&name.as_str()) {
+                    if !app.extra.is_empty() && !app.extra.ends_with(' ') {
+                        app.extra.push(' ');
+                    }
+                    app.extra.push_str(&name);
+                }
+            }
+            app.searching = None;
+        }
+        KeyCode::Backspace => {
+            query.pop();
+            app.registry_row = 0;
+            app.searching = Some(query);
+        }
+        KeyCode::Char(c) => {
+            query.push(c);
+            app.registry_row = 0;
+            app.searching = Some(query);
+        }
+        _ => {}
+    }
+}
+
+/// The registry search: what is typed, and what matches it.
+fn draw_registry_search(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    let [field, results] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area);
+
+    let query = app.searching.clone().unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  search  ", Style::default().fg(t.comment)),
+            Span::styled(
+                format!("{query}_"),
+                Style::default().fg(t.green).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        field,
+    );
+
+    let hits = app.registry_hits();
+    if hits.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                if app.registry.is_available() {
+                    format!("  Nothing in the registry matches {query:?}.")
+                } else {
+                    "  No package index on this machine. Minimal writes one when it \
+                     resolves packages for a session; until then you can still type \
+                     names by hand."
+                        .to_string()
+                },
+                Style::default().fg(t.orange),
+            ))
+            .wrap(Wrap { trim: true }),
+            results,
+        );
+        return;
+    }
+
+    let rows = results.height as usize;
+    // Keep the highlighted row on screen without a scroll offset of its own:
+    // the results reset to the top on every keystroke, so the window only ever
+    // has to follow the cursor down.
+    let top = app.registry_row.saturating_sub(rows.saturating_sub(1));
+    let items: Vec<ListItem> = hits
+        .iter()
+        .enumerate()
+        .skip(top)
+        .take(rows)
+        .map(|(i, p)| {
+            let selected = i == app.registry_row;
+            let style = if selected {
+                Style::default()
+                    .fg(t.bg)
+                    .bg(t.blue)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.fg)
+            };
+            let state = app.package_state(&p.name);
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("  {:<24}", truncate(&p.name, 24)), style),
+                Span::styled(
+                    format!("{:<12}", truncate(&p.version, 12)),
+                    Style::default().fg(t.comment),
+                ),
+                Span::styled(
+                    // Whichever the source has: the local index publishes
+                    // licences and no categories, minimal.dev the reverse.
+                    format!(
+                        "{:<22}",
+                        truncate(
+                            &if p.license.is_empty() {
+                                p.categories.join(", ")
+                            } else {
+                                p.license.clone()
+                            },
+                            22
+                        )
+                    ),
+                    Style::default().fg(t.comment),
+                ),
+                Span::styled(
+                    if p.advisories > 0 {
+                        format!(
+                            "{} advisor{}  ",
+                            p.advisories,
+                            if p.advisories == 1 { "y" } else { "ies" }
+                        )
+                    } else {
+                        String::new()
+                    },
+                    Style::default().fg(t.orange).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    state.note(),
+                    Style::default().fg(if state == PackageState::Declined {
+                        t.orange
+                    } else {
+                        t.green
+                    }),
+                ),
+            ]))
+        })
+        .collect();
+    frame.render_widget(List::new(items), results);
 }

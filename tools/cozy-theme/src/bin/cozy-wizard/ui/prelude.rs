@@ -15,8 +15,8 @@ pub(crate) use crate::resources::{self, Resources, Step};
 pub(crate) use crate::theme::{rgb, Theme, SAMPLE_CODE};
 pub(crate) use crate::{
     fetch::spawn_fetch, hostcfg::client_config_path, Action, App, Applied, Fetch, FetchKind, Focus,
-    Screen, BOX_PADDING_X, BOX_PADDING_Y, DETAIL_ROWS, INPUT_ROWS, INTRO_ROWS, SCHEMES_INTRO_ROWS,
-    THEME_INTRO_ROWS,
+    PackageState, Screen, BOX_PADDING_X, BOX_PADDING_Y, DETAIL_ROWS, INPUT_ROWS, INTRO_ROWS,
+    SCHEMES_INTRO_ROWS, THEME_INTRO_ROWS,
 };
 pub(crate) use cozy_theme::Settings as State;
 

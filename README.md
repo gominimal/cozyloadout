@@ -79,7 +79,7 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 | **Greeting** | five greetings previewed in your own font: three versions of the Minimal mark drawn from different Unicode blocks, the detach line on its own, or nothing at all — and whether to draw Nerd Font icons in the file lists, shown rather than described |
 | **Schemes** | offers to download or update the upstream scheme collection |
 | **Themes** | every scheme on disk, with the whole interface re-painting in each one as you scroll, next to a preview of a prompt, highlighted code and a diff — `/` filters, `a` opens six adjustments |
-| **Packages** | which optional packages to install, with a description and licence for each, plus a field for any others you want |
+| **Packages** | which optional packages to install, with a description and licence for each — `/` searches the Minimal registry by name, showing categories and any security advisories, and anything you type by hand is checked against it |
 | **Patches** | one picker for your own dotfiles — files and folders alike, `/` to filter — with a preview of whatever is under the cursor: a file's contents, syntax-highlighted in the scheme you picked, or what copying a folder in would actually bring |
 | **Detach** | the leader and detach chords, checked against the rules minimal enforces |
 | **Resources** | how many cores and how much memory the microVM gets, within minvmd's own limits |

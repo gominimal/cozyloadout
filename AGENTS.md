@@ -753,6 +753,114 @@ Two failures worth not repeating, both found by a reader rather than by a test:
   checks every advertised hint survives from sixty columns up. A key that is not
   on screen may as well not be bound.
 
+### Searching the package registry
+
+`/` on the packages page searches the Minimal registry; `enter` appends the
+highlighted package to the free-text field. The list above it is the loadout's
+own curated set, and a registry package is an addition to it rather than a
+member of it — which is why adding one goes to the field instead of toggling a
+row.
+
+**Two sources, and the wizard uses whichever it has.** The local index answers
+the instant the page opens; minimal.dev's bundle replaces it when it arrives.
+
+| | offline | licences | categories | advisories | needs |
+| --- | --- | --- | --- | --- | --- |
+| local index | yes | yes | no | no | a session to have been resolved here |
+| minimal.dev | no | no | yes | yes | the network |
+
+Neither is a superset, so `Package` fields being empty means *this source did
+not say*, never *there is none*. The site is preferred when both are available:
+it is current, and an advisory count is worth knowing before installing
+something — `openssl` shows eleven — which the local index cannot tell you at
+all.
+
+**The site has no public API.** `/pkgs/search.json` and friends are 404s. It is
+Astro-rendered and bakes the whole dataset into a
+`<script type="application/json" id="pkgs-bundle">`, so one GET of the search
+page is the entire registry. Located **by id**, never by position: matching the
+first `application/json` on the page would silently start reading something else
+the day another one is added. Fetched with `curl` in a background thread rather
+than through an HTTP client — a TLS stack is a large dependency for one GET, and
+this repository already shells out to `git` and `minvmd` for the same reason.
+
+A failed fetch is not worth stopping for, and is not even mentioned when the
+local index answered. It is only reported when there is nothing else.
+
+**Tests never reach the network.** `App::fetch_registry` is off in the shared
+test constructor, and `no_test_reaches_the_network` holds it off — the suite
+made a real request per packages-page fixture for one commit, which is slow,
+flaky, and aimed at somebody's actual web server.
+
+**The local index lives** under `<cache>/minimal/lc/`.
+
+**There is no user-facing command that refreshes that index on its own**, which
+is worth knowing before writing any advice on screen about it. The layer cache
+is written by `minimald` as it resolves a package graph, so starting a session
+is what produces one (`crates/mctx/src/lib.rs`, `graph_from_all_packages`).
+`min update` also writes it, but it is a *project* operation and fails with
+`minimal.toml: not found` outside a project — checked by running it in an empty
+directory, after an earlier draft of this screen told people to run it. There is
+no `min search` either, in the released CLI or in minimal's source, despite its
+README mentioning one.
+
+**Two layouts, both read.** minimal namespaces entries under `v<N>`
+(`CACHE_FORMAT_VERSION` in `crates/graph/src/loader.rs`) so entries written by
+one build are never handed to another build's deserializer. That landed in
+`1776f7f1`; entries written before it sit flat in `lc/`. Reading only the top
+level works on a machine whose cache predates the change and finds **nothing at
+all** once a current daemon writes a new entry — which is one session away on
+any up-to-date install. The walk goes one level down and no further: this is
+somebody's cache directory, not a tree to explore.
+
+The neighbouring `idx/` is **not** this — it belongs to `rcache`, the remote
+cache for *build artifacts*, and holds no package metadata. minimal.dev has a search page but no documented API, and
+a wizard that needed the network to tell you whether `ripgrep` exists is a
+wizard that stops working on a train. The index is ~1 MB of JSON per target;
+`registry.rs` deserialises only `name`, `license_spdx` and `upstream_version`
+out of it, with every field optional so a schema change upstream costs the field
+rather than the whole index. 503 packages load in 7 ms, once, on the way into
+the page.
+
+Three decisions worth keeping:
+
+- **Every index is merged, not just the newest.** They are per target, and a
+  package that exists only for one architecture still exists. A false "not in
+  the registry" is the annoying failure here.
+- **A build with no `attrs` is still a package.** `base` has none; dropping it
+  would make the registry claim a package does not exist because its metadata
+  is thin.
+- **"Not in the registry" and "no registry to check against" are different
+  answers, and only the first one warns.** Someone who has never run `min` has
+  no index; warning about every name they typed would be a claim rather than a
+  finding. `Registry::knows` returns `true` when unavailable, and
+  `nothing_is_flagged_when_there_is_no_index_to_check_against` holds that.
+
+Each result says what the wizard is already doing about it — `App::package_state`
+and its four answers:
+
+| | |
+| --- | --- |
+| `installed anyway` | in `base` or `cozy`; no choice involved |
+| `already added` | ticked in the optional list, or already typed into the field |
+| `turned off above` | in the optional list, switched off |
+| *(nothing)* | not something this page knows about |
+
+That check originally consulted only the free-text field and the
+always-installed set, and so said nothing about **the optional list on the very
+same page**: `bottom` (in `cozy`) was reported and `atuin` (optional, ticked on
+by default) was not. `an_optional_package_already_ticked_shows_as_added` is the
+regression test.
+
+`turned off above` earned its own answer while fixing that. Saying nothing there
+would read as "not going in" while the row above shows it unticked — and adding
+it from the search as free text would install it anyway, which is a
+contradiction the reader would have to resolve themselves.
+
+A name the registry does not have is **flagged, never refused**. The index can
+be stale, and a name it has not heard of may be real — but a typo is otherwise
+only discovered when the session fails to build.
+
 ### The patches page
 
 One filesystem picker, for patching your own dotfiles into the session, with a

@@ -271,6 +271,7 @@ dependencies = [
  "ratatui",
  "roxmltree",
  "serde",
+ "serde_json",
  "syntect",
  "toml",
  "toml_edit",
