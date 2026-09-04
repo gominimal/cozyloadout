@@ -80,7 +80,7 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 | **Schemes** | offers to download or update the upstream scheme collection |
 | **Themes** | every scheme on disk, with the whole interface re-painting in each one as you scroll, next to a preview of a prompt, highlighted code and a diff — `/` filters, `a` opens six adjustments |
 | **Packages** | which optional packages to install, with a description and licence for each — `/` searches the Minimal registry by name, showing categories and any security advisories, and anything you type by hand is checked against it |
-| **Patches** | one picker for your own dotfiles — files and folders alike, `/` to filter — with a preview of whatever is under the cursor: a file's contents, syntax-highlighted in the scheme you picked, or what copying a folder in would actually bring |
+| **Patches** | one picker for your own dotfiles — files and folders alike, `/` to filter — with a preview of whatever is under the cursor: a file's contents syntax-highlighted in the scheme you picked, an image drawn in the pane, ANSI art in its own colours, what is inside an archive, where a symlink points, or what copying a folder in would actually bring |
 | **Detach** | the leader and detach chords, checked against the rules minimal enforces |
 | **Resources** | how many cores and how much memory the microVM gets, within minvmd's own limits |
 

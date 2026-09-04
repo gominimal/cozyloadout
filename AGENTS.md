@@ -946,8 +946,21 @@ a home directory:
   it did not finish counting. Measured on a real home: 1642 files across 358
   directories, capped, in 37 ms.
 - **Non-text is reported, not rendered.** A NUL byte or invalid UTF-8 means
-  "binary, 4 KiB" — dumping control characters into the pane would corrupt the
-  frame around it, not merely look wrong. Symlinks are not followed, so a loop
+  "binary, 4 KiB".
+- **Text is sanitised before it is drawn**, which is a separate problem from
+  the one above and was found the hard way. A file can be perfectly good UTF-8
+  with no NUL byte and still be full of **escape sequences** — ANSI art, a
+  captured terminal session, a coloured log. Those reach the cell buffer as
+  ordinary characters and the terminal then *executes* them: the reported
+  symptom was a preview overflowing into the file listing and corrupting it.
+  `Preview::sanitise` drops CSI and OSC sequences whole — leaving
+  `[38;2;255;0;0m` behind as visible text is its own kind of wrong — and every
+  other control character with them. On the files that prompted this, the widest
+  line went from 2432 bytes to 86 characters; nearly all of it was colour codes.
+  (Those particular files are now recognised as art and drawn in colour instead;
+  see below. Sanitising is what everything else falls back to.)
+  Long lines and wide glyphs turned out **not** to be a second bug: ratatui
+  clips at the pane edge, and there are tests saying so. Symlinks are not followed, so a loop
   cannot turn the walk into a hang.
 - **It is read once per path, not once per frame.** Drawing happens on every
   keystroke and on a ten-a-second tick. The cache is a `RefCell` keyed by path,
@@ -957,6 +970,99 @@ a home directory:
 
 The pane is the first thing dropped as the terminal narrows: preview, then both
 pickers, then only the focused one. The listing is what you cannot do without.
+
+#### Symlinks, ANSI art and archives
+
+Three more kinds, each because a real home directory is full of them and
+describing one as "binary, 4 KiB" is a wrong answer rather than a missing one.
+
+- **Symlinks show where they point, and warn when it matters.** `Picker::reload`
+  calls `symlink_metadata` and `read_link`, so `Entry::link` carries the target
+  and `is_dir` still describes what is at the end of it. The target is truncated
+  **from the left** — `truncate_start`, not `truncate` — because the tail of a
+  path is what identifies it and the first forty characters of a nix store path
+  say nothing.
+
+  A linked *directory* also gets an orange two-line warning, and that is the
+  reason the kind exists at all: minimal's patch walker is `walkdir` with
+  `follow_links(false)`, so patching in a symlinked folder copies **nothing**
+  unless `follow_symlinks` is set on the patch. A dotfile tree is very often a
+  symlink farm — this home has 36 linked files and one linked directory under
+  `~/.config` — and without the warning the failure shows up as an empty session,
+  far from the choice that caused it.
+
+- **ANSI art is drawn in its own colours.** Text containing `ESC[` goes through
+  `colourise`, an SGR parser covering the resets, reverse, the eight basic and
+  eight bright colours, `38;5;n`/`48;5;n` from the xterm cube and greyscale ramp,
+  and `38;2;r;g;b` truecolour. It becomes `Preview::Ansi`, a grid of
+  `preview::Span`s the pane paints directly.
+
+  **Not relit in the scheme**, unlike every other previewed file: this one *is* a
+  picture, and repainting it in the theme would be repainting the subject.
+  Detection is by result, not by extension — the file has to actually produce a
+  coloured span — so a log with a stray escape falls back to sanitised text
+  rather than being called art.
+
+- **Archives list what is inside.** `.zip`, `.tar`, `.tar.gz` and `.tgz`, read
+  through `zip` and `tar`/`flate2`, giving a member count, the uncompressed
+  total and as much of the member list as the pane has rows for. Bounded like
+  everything else, and a truncated read says "at least" rather than a number it
+  did not finish counting. A corrupt or unreadable archive falls back to
+  `Preview::Binary`, which is what it was before this existed.
+
+  `is_archive` matches lowercased **whole-name suffixes**, not `Path::extension`:
+  `.tar.gz` is two extensions and `extension()` only ever sees `gz`.
+
+**Video thumbnails are the one kind deliberately left out.** The cheap version is
+real — shell out to `ffmpeg -ss ... -frames:v 1` and hand the frame to the
+existing `images` pipeline, no new Rust dependency — but it needs a binary that
+is not installed here and is not a dependency of this loadout, the decode is far
+too slow for the draw path so it would need the background-thread treatment the
+registry fetch gets, and the fallback when `ffmpeg` is missing is the "binary,
+4 KiB" line videos already get. Three moving parts to sometimes improve one line
+of text.
+
+#### Image previews
+
+An image under the cursor is drawn rather than described, as coloured
+half-blocks — each cell carries two pixels, a foreground block over a
+background, so the effective resolution is the pane's width by twice its height.
+
+**Half-blocks, deliberately, not the kitty graphics protocol.** Kitty renders
+better and is the obvious choice on paper, but it bypasses the cell buffer: it
+cannot be asserted against a `TestBackend` the way every other pane here is, it
+has to be probed for at runtime by writing an escape sequence and reading the
+reply, and it does not survive a multiplexer. Half-blocks are ordinary cells —
+they work in every terminal, under zellij and tmux, and
+`the_image_is_actually_drawn_in_the_pane` reads the red and blue halves of a
+test swatch straight back out of the buffer. That test is the whole argument.
+
+`Picker::halfblocks()`, never `from_query_stdio()`: querying the terminal cannot
+be done from inside a drawing pass, and the answer is one this deliberately does
+not want.
+
+Three things keep it cheap:
+
+- **The model holds no pixels.** `Preview::Image` carries width, height and
+  size — read from the header by `image::image_dimensions`, not by decoding —
+  so moving the cursor over a directory of photographs costs nothing. A cache of
+  `DynamicImage`s keyed by cursor position is a good way to hold a hundred
+  megabytes by accident.
+- **The decode is keyed by path *and* area.** Decoding per frame would put a
+  JPEG decoder in the draw loop; keying on the path alone would keep drawing an
+  image fitted to the wrong size after a resize.
+- **Only what the decoder was built for** — png, jpeg, gif. Offering to preview
+  a format `image` was not compiled with is a promise this cannot keep, so
+  anything else falls through to being described.
+
+A mislabelled `.png` is ordinary rather than a fault: it falls through to
+whatever it actually is — text shown as text, binary described — and never
+claims dimensions it does not have.
+
+**`ratatui-image` is pinned to 9.** Versions 10 and 11 are built against
+ratatui 0.30's `ratatui-core` split and drag a *second* ratatui into the graph
+alongside our 0.29, which fails to compile on mismatched `Size` types. Moving
+past 9 means upgrading ratatui first.
 
 #### Syntax highlighting
 
@@ -1531,7 +1637,7 @@ Worth knowing before relying on any of it:
 | Re-attach carries no OSC palette | read in `minimald::session_host` — the attach flush is a `vt100` screen dump |
 | Detach leaves the palette on the host terminal | read in `Host::unwind_codes` — it resets SGR, alt screen, cursor, focus reporting, and no OSC colours |
 | Any `on_attach` hook breaks fish's OSC 11 background | **doubtful** — observed once, but the once-per-shell palette bug produces the same symptom and was live at the same time. Re-test |
-| Rust floor of 1.88 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — no rustup on the machine this was written on. **`plist` declares exactly 1.88**, so the floor is now pinned by a dependency rather than sitting comfortably above one; syntect and bincode declare no `rust-version` at all, so the CI job is the only thing that knows |
+| Rust floor of 1.88 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — no rustup on the machine this was written on. **`plist` and `image` both declare exactly 1.88**, so the floor is now pinned by a dependency rather than sitting comfortably above one; syntect and bincode declare no `rust-version` at all, so the CI job is the only thing that knows |
 | The greeting's detach chord | verified against minimal's source: `minimald` seeds `MINIMAL_DETACH_HINT` per attach channel as `"{leader} then {detach_key}"` (`crates/minimald/src/session.rs`), defaulting to `ctrl-]` and `d` (`crates/sessions/src/keys.rs`). The template reads the var and falls back to the same `ctrl-] then d` minimal's own banner does. **Mint-scoped**, per `docs/reference/loadouts.md`: a second client attaching with a remapped chord gets a working one, but the greeting still shows the minting channel's |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
 | The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |

@@ -978,3 +978,389 @@ fn selections_survive_the_filter_hiding_them() {
     assert_eq!(a.chosen_paths().len(), 1);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// -- image previews --------------------------------------------------------
+
+/// A patches tree with a real image in it: half red, half blue, so the drawn
+/// cells can be checked against what the file actually contains.
+fn with_image(tag: &str) -> (App, PathBuf) {
+    let (mut a, root) = on_patches(tag);
+    let img = image::RgbImage::from_fn(16, 16, |x, _| {
+        if x < 8 {
+            image::Rgb([255, 0, 0])
+        } else {
+            image::Rgb([0, 0, 255])
+        }
+    });
+    img.save(root.join("swatch.png")).unwrap();
+    std::fs::write(root.join("lying.png"), "not a png at all").unwrap();
+    a.picker_mut().reload();
+    (a, root)
+}
+
+#[test]
+fn an_image_reports_its_dimensions_rather_than_its_bytes() {
+    let (mut a, root) = with_image("dims");
+    land_on(&mut a, "swatch.png");
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains("16×16"), "{text}");
+    assert!(
+        !text.contains("binary"),
+        "an image is not just bytes:\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_image_is_actually_drawn_in_the_pane() {
+    // Half-blocks are ordinary coloured cells, which is the whole reason for
+    // choosing them over the kitty protocol: the picture can be read back out
+    // of the buffer, so this is a real assertion rather than a hope.
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    let (mut a, root) = with_image("drawn");
+    land_on(&mut a, "swatch.png");
+    let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &a)).unwrap();
+    let buf = term.backend().buffer().clone();
+
+    let mut reds = 0;
+    let mut blues = 0;
+    for y in 0..24 {
+        for x in 0..120 {
+            let c = &buf[(x, y)];
+            for colour in [c.fg, c.bg] {
+                if let Color::Rgb(r, g, b) = colour {
+                    if r > 200 && g < 60 && b < 60 {
+                        reds += 1;
+                    } else if b > 200 && r < 60 && g < 60 {
+                        blues += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        reds > 0 && blues > 0,
+        "expected both halves drawn: {reds} red, {blues} blue"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_file_that_only_claims_to_be_an_image_is_not_treated_as_one() {
+    // A mislabelled `.png` is ordinary, not a fault. It falls through to
+    // whatever it actually is — text is shown as text, which is more use than
+    // calling it binary — and never claims dimensions it does not have.
+    let (mut a, root) = with_image("lying");
+    land_on(&mut a, "lying.png");
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(
+        text.contains("not a png at all"),
+        "text is shown as text:\n{text}"
+    );
+    assert!(!text.contains("×"), "and claims no dimensions:\n{text}");
+
+    // Binary content with the same lie falls back to being described. A new
+    // name, not new content under the old one: the preview cache is keyed by
+    // path, so rewriting the file would return the cached read.
+    std::fs::write(root.join("blob.png"), [0u8, 1, 2, 3, 4]).unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "blob.png");
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains("binary"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_image_is_decoded_once_per_path_and_size() {
+    // A JPEG decoder in the draw loop would be felt on every keystroke and on
+    // the ten-a-second tick.
+    let (mut a, root) = with_image("cache");
+    land_on(&mut a, "swatch.png");
+    let _ = render_app(&a, 120, 24);
+
+    // Change the file behind the wizard's back; the cached decode should hold.
+    let green = image::RgbImage::from_pixel(16, 16, image::Rgb([0, 255, 0]));
+    green.save(root.join("swatch.png")).unwrap();
+    let before = a.image.borrow().is_some();
+    let _ = render_app(&a, 120, 24);
+    assert!(before, "something was cached");
+
+    // A different size re-decodes, because an image fitted to the old area
+    // would be drawn at the wrong scale.
+    let _ = render_app(&a, 90, 20);
+    let (_, area, _) = a.image.borrow().clone().unwrap();
+    assert!(area.width > 0, "refitted to the new area");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn images_carry_their_own_icon_and_colour() {
+    let (mut a, root) = with_image("icon");
+    land_on(&mut a, "swatch.png");
+    assert_eq!(
+        crate::icons::kind_of("swatch.png", false),
+        crate::icons::Kind::Media
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+#[ignore = "prints a frame to look at rather than asserting"]
+fn show_an_image_preview() {
+    let (mut a, root) = on_patches("show-image");
+    // A gradient, so the half-block rendering is legible in a plain dump.
+    let img = image::RgbImage::from_fn(1920, 1080, |x, y| {
+        image::Rgb([
+            u8::try_from(x / 8).unwrap_or(255),
+            u8::try_from(y / 5).unwrap_or(255),
+            128,
+        ])
+    });
+    img.save(root.join("wallpaper.png")).unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "wallpaper.png");
+    for line in render_app(&a, 100, 20) {
+        println!("|{}|", line.trim_end());
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn ansi_art_does_not_get_its_escape_sequences_drawn() {
+    // Reported: the .txt files in ~/Pictures/loadouts overflowed into the file
+    // list and corrupted it. They are ANSI art — valid UTF-8, no NUL byte, so
+    // they passed the "is this text" check — and their raw ESC bytes went into
+    // the cell buffer for the terminal to execute.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut a, root) = on_patches("ansi");
+    std::fs::write(
+        root.join("art.txt"),
+        "\u{1b}[38;2;255;0;0mred\u{1b}[0m plain\n\u{1b}[1mbold\u{1b}[0m\n",
+    )
+    .unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "art.txt");
+
+    let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &a)).unwrap();
+    let buf = term.backend().buffer().clone();
+    for y in 0..24 {
+        for x in 0..120 {
+            let sym = buf[(x, y)].symbol();
+            assert!(
+                !sym.contains('\u{1b}'),
+                "an escape byte reached the buffer at {x},{y}"
+            );
+            assert!(
+                !sym.chars().any(char::is_control),
+                "a control character reached the buffer at {x},{y}: {sym:?}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_preview_never_draws_outside_its_own_pane() {
+    // The other half of the report: those files have lines up to 2432
+    // characters. Nothing a preview contains may reach the listing beside it.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut a, root) = on_patches("overflow");
+    std::fs::write(
+        root.join("wide.txt"),
+        format!("{}\n{}\n", "X".repeat(2432), "Y".repeat(2432)),
+    )
+    .unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "wide.txt");
+
+    let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &a)).unwrap();
+    let buf = term.backend().buffer().clone();
+    // The listing is the left column; nothing from the file belongs in it.
+    for y in 0..24 {
+        for x in 0..50 {
+            let sym = buf[(x, y)].symbol();
+            assert!(
+                sym != "X" && sym != "Y",
+                "preview text reached the listing at {x},{y}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn wide_characters_do_not_push_a_line_past_the_pane() {
+    // Clipping counted `chars`, and a CJK glyph is one char in two cells — so a
+    // line of them measured half its real width.
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut a, root) = on_patches("wide-chars");
+    std::fs::write(root.join("cjk.txt"), format!("{}\n", "漢".repeat(400))).unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "cjk.txt");
+
+    let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &a)).unwrap();
+    let buf = term.backend().buffer().clone();
+    for y in 0..24 {
+        for x in 0..50 {
+            assert_ne!(
+                buf[(x, y)].symbol(),
+                "漢",
+                "a wide glyph reached the listing at {x},{y}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+#[ignore = "reads a real file on this machine"]
+fn show_ansi_art_preview() {
+    let src = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        .join("Pictures/loadouts/tinkerer_sm.txt");
+    if !src.is_file() {
+        println!("no {} here", src.display());
+        return;
+    }
+    let (mut a, root) = on_patches("show-ansi");
+    std::fs::copy(&src, root.join("tinkerer.txt")).unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "tinkerer.txt");
+    for line in render_app(&a, 110, 22) {
+        println!("|{}|", line.trim_end());
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// -- symlinks --------------------------------------------------------------
+
+#[test]
+fn a_symlink_says_where_it_points() {
+    // A dotfile tree is very often a symlink farm — Home Manager, stow,
+    // chezmoi — and the preview said nothing about it.
+    let (mut a, root) = on_patches("link");
+    let target = root.join("dotfiles/config.toml");
+    std::os::unix::fs::symlink(&target, root.join("linked.toml")).unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "linked.toml");
+
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains("config.toml"), "the target is named:\n{text}");
+    assert!(
+        !text.contains("does not walk"),
+        "a linked file is fine:\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_linked_folder_warns_that_the_walker_will_not_go_through_it() {
+    // The one that matters: minimal's patch walker is `follow_links(false)` by
+    // default, so patching a linked folder in copies nothing.
+    let (mut a, root) = on_patches("link-dir");
+    std::os::unix::fs::symlink(root.join("dotfiles"), root.join("linkdir")).unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "linkdir");
+
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains("linked folder"), "{text}");
+    assert!(
+        text.contains("follow_symlinks"),
+        "and names the setting:\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_plain_file_says_nothing_about_links() {
+    let (mut a, root) = on_patches("no-link");
+    land_on(&mut a, "notes.md");
+    assert!(a.picker().current().unwrap().link.is_none());
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(!text.contains("linked folder"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_broken_link_is_still_reported_rather_than_vanishing() {
+    let (mut a, root) = on_patches("broken-link");
+    std::os::unix::fs::symlink(root.join("gone"), root.join("dangling")).unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "dangling");
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains("/gone"), "the target is still named:\n{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn ansi_art_is_drawn_in_its_own_colours() {
+    // Its own, not the scheme's: the file *is* a picture, and repainting it in
+    // the theme would be repainting the subject.
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    let (mut a, root) = on_patches("art-colour");
+    std::fs::write(
+        root.join("art.txt"),
+        "\u{1b}[38;2;255;0;0mRRRR\u{1b}[38;2;0;0;255mBBBB\u{1b}[0m\n",
+    )
+    .unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "art.txt");
+
+    let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &a)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let mut seen = Vec::new();
+    for y in 0..24 {
+        for x in 0..120 {
+            let c = &buf[(x, y)];
+            if matches!(c.symbol(), "R" | "B") {
+                seen.push((c.symbol().to_string(), c.fg));
+            }
+        }
+    }
+    assert!(
+        seen.iter()
+            .any(|(s, f)| s == "R" && *f == Color::Rgb(255, 0, 0)),
+        "the red run kept its colour: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|(s, f)| s == "B" && *f == Color::Rgb(0, 0, 255)),
+        "and the blue one: {seen:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_archive_shows_what_it_would_bring() {
+    let (mut a, root) = on_patches("zip-pane");
+    let file = std::fs::File::create(root.join("bundle.zip")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+    zip.start_file("themes/dark.toml", opts).unwrap();
+    std::io::Write::write_all(&mut zip, b"x = 1").unwrap();
+    zip.finish().unwrap();
+    a.picker_mut().reload();
+    land_on(&mut a, "bundle.zip");
+
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(text.contains("1 file"), "{text}");
+    assert!(text.contains("themes/dark.toml"), "and a sample:\n{text}");
+    assert!(!text.contains("binary"), "not just its size:\n{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}

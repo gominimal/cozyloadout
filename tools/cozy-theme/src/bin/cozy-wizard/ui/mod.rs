@@ -125,6 +125,21 @@ pub fn truncate(s: &str, width: usize) -> String {
 
 /// `~` for the home directory, because absolute paths are mostly prefix and
 /// the summary line has no room to spare.
+/// Cut a string from the *left*, keeping its tail.
+///
+/// For a path, the end is the part that identifies it — `…/store/abc/starship.toml`
+/// says what a link points at; the first forty characters of a nix store path
+/// say nothing at all.
+pub fn truncate_start(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len <= width {
+        return s.to_string();
+    }
+    let keep = width.saturating_sub(1);
+    let tail: String = s.chars().skip(len - keep).collect();
+    format!("…{tail}")
+}
+
 pub fn shorten_home(path: &Path, home: &Path) -> String {
     let full = path.display().to_string();
     let home = home.display().to_string();

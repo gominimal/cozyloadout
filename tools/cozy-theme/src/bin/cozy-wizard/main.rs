@@ -7,6 +7,7 @@ mod fuzzy;
 mod greeting;
 mod hostcfg;
 mod icons;
+mod images;
 mod keys;
 mod picker;
 mod preview;
@@ -461,6 +462,14 @@ struct App {
     /// hitting the disk on all ten frames a second.
     preview: std::cell::RefCell<Option<(PathBuf, preview::Preview)>>,
 
+    /// The decoded image under the patches cursor, keyed by the path *and* the
+    /// area it was fitted to.
+    ///
+    /// Both parts matter: decoding on every frame would put a JPEG decoder in
+    /// the draw loop, and keying on the path alone would keep drawing an image
+    /// fitted to the wrong size after the terminal is resized.
+    image: std::cell::RefCell<Option<(PathBuf, ratatui::layout::Rect, images::Drawable)>>,
+
     /// The syntax highlighter, rebuilt when the scheme changes. Cached for the
     /// same reason the preview is, and more so: building one renders the
     /// loadout's `.tmTheme` and parses the XML back.
@@ -576,6 +585,7 @@ impl App {
             registry_note: None,
             fetch_registry: true,
             preview: std::cell::RefCell::new(None),
+            image: std::cell::RefCell::new(None),
             highlighter: std::cell::RefCell::new(None),
             dest_overrides: saved.patch_dests.clone(),
             editing_dest: None,
@@ -730,6 +740,29 @@ impl App {
         let value = preview::Preview::read(path, is_dir, rows);
         *slot = Some((path.to_path_buf(), value.clone()));
         value
+    }
+
+    /// Run `f` with the drawable image for `path` at `area`, decoding it at most
+    /// once per path and size.
+    ///
+    /// A closure rather than a returned handle because the value lives inside a
+    /// `RefCell`: handing out a reference would keep the borrow alive across
+    /// the caller's own use of `self`, which is exactly where a second borrow
+    /// panics.
+    fn with_image<R>(
+        &self,
+        path: &Path,
+        area: ratatui::layout::Rect,
+        f: impl FnOnce(Option<&images::Drawable>) -> R,
+    ) -> R {
+        let mut slot = self.image.borrow_mut();
+        let stale = slot
+            .as_ref()
+            .is_none_or(|(p, a, _)| p != path || *a != area);
+        if stale {
+            *slot = images::protocol_for(path, area).map(|d| (path.to_path_buf(), area, d));
+        }
+        f(slot.as_ref().map(|(_, _, d)| d))
     }
 
     /// Colour `lines` as the selected scheme would.
