@@ -316,6 +316,58 @@ fn show_the_knobs() {
 }
 
 #[test]
+fn every_key_a_screen_binds_is_in_its_footer() {
+    // `/` was bound on both list screens and advertised on neither — the hint
+    // went into the wrong branch on one and was silently dropped by a stale
+    // edit on the other, so the feature existed and nobody could find it.
+    let mut a = on_themes();
+    let footer = |a: &App| -> String {
+        crate::ui::footer_hints(a)
+            .into_iter()
+            .map(|s| s.content.to_string())
+            .collect()
+    };
+
+    // Themes, in both of its non-search states.
+    assert!(footer(&a).contains("/ filter"), "{}", footer(&a));
+    a.adjust = cozy_theme::Adjust {
+        contrast: 10,
+        ..cozy_theme::Adjust::default()
+    };
+    assert!(
+        footer(&a).contains("/ filter"),
+        "the adjusted branch too: {}",
+        footer(&a)
+    );
+
+    crate::ui::patches::enter_patches(&mut a);
+    assert!(footer(&a).contains("/ filter"), "{}", footer(&a));
+}
+
+#[test]
+fn the_footer_wraps_rather_than_losing_a_key_off_the_end() {
+    // It was one centred row, which clips: at eighty columns the patches page
+    // lost `enter done`, and a key that is not on screen may as well not be
+    // bound.
+    let mut a = on_themes();
+    crate::ui::patches::enter_patches(&mut a);
+    for w in [60u16, 70, 80, 100, 120] {
+        let text = flatten(&render_app(&a, w, 24));
+        for (key, what) in crate::ui::footer_hints(&a)
+            .chunks(2)
+            .filter_map(|c| Some((c.first()?, c.get(1)?)))
+        {
+            let hint = format!("{}{}", key.content, what.content);
+            let hint = hint.trim();
+            assert!(
+                text.contains(hint),
+                "{hint:?} is missing from the footer at {w} columns:\n{text}"
+            );
+        }
+    }
+}
+
+#[test]
 fn every_screen_still_advertises_its_own_keys() {
     // The footer moved out of one big match into the screen modules; this is
     // what says none of them was dropped or truncated on the way.
@@ -758,6 +810,168 @@ fn no_test_can_write_into_a_real_home() {
                 &app.user_schemes, real,
                 "{name} would save into a real home directory"
             );
+        }
+    }
+}
+
+// -- the / filter ----------------------------------------------------------
+
+#[test]
+fn slash_opens_a_filter_that_narrows_the_list() {
+    let mut a = on_themes();
+    let all = a.schemes.len();
+    assert!(all > 50, "the real collection, so this is worth having");
+
+    a.on_key(press(KeyCode::Char('/')));
+    assert!(a.searching.is_some());
+    typing(&mut a, "gruv");
+    assert!(a.schemes.len() < all, "the list should narrow");
+    assert!(
+        a.schemes.iter().all(|s| s.name.contains("gruv")),
+        "{:?}",
+        a.schemes.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(
+        text.contains("/gruv"),
+        "the query should be visible:\n{text}"
+    );
+}
+
+#[test]
+fn letters_need_not_be_adjacent() {
+    let mut a = on_themes();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "gvbxdrk");
+    assert!(
+        a.schemes.iter().any(|s| s.name.starts_with("gruvbox-dark")),
+        "fuzzy, not substring: {:?}",
+        a.schemes.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn enter_keeps_the_filter_and_stays_on_the_page() {
+    // Finishing a search means "this is the list I want", not "move on" — a
+    // second enter is what advances.
+    let mut a = on_themes();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "gruv");
+    let narrowed = a.schemes.len();
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.searching.is_none(), "the field closes");
+    assert_eq!(a.screen, Screen::Themes, "but the page does not");
+    assert_eq!(a.schemes.len(), narrowed, "and the filter stands");
+
+    a.on_key(press(KeyCode::Enter));
+    assert_eq!(a.screen, Screen::Packages, "a second enter moves on");
+}
+
+#[test]
+fn esc_clears_the_filter_rather_than_hiding_it() {
+    // A filter you cannot see is a list that looks like it has lost most of
+    // its schemes.
+    let mut a = on_themes();
+    let all = a.schemes.len();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "gruv");
+    a.on_key(press(KeyCode::Esc));
+    assert!(a.searching.is_none());
+    assert_eq!(a.schemes.len(), all, "everything is back");
+    assert_eq!(
+        a.screen,
+        Screen::Themes,
+        "esc closed the field, not the page"
+    );
+}
+
+#[test]
+fn arrows_still_move_while_filtering() {
+    let mut a = on_themes();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "gruv");
+    let first = a.schemes[a.theme_row].name.clone();
+    a.on_key(press(KeyCode::Down));
+    assert_ne!(a.schemes[a.theme_row].name, first, "still navigable");
+    assert!(a.searching.is_some(), "and the field is still open");
+}
+
+#[test]
+fn the_preview_follows_the_filtered_selection() {
+    // The whole point: narrow, then look at what you found.
+    let mut a = on_themes();
+    let before = frame_bg(&a, 110, 30);
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "gruvbox-light");
+    assert!(!a.schemes.is_empty());
+    assert_ne!(
+        frame_bg(&a, 110, 30),
+        before,
+        "the scheme should have changed"
+    );
+}
+
+#[test]
+fn a_filter_that_matches_nothing_is_survivable() {
+    let mut a = on_themes();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "zzzznotascheme");
+    assert!(a.schemes.is_empty());
+    let _ = render_app(&a, 110, 30);
+    a.on_key(press(KeyCode::Down));
+    a.on_key(press(KeyCode::Esc));
+    assert!(!a.schemes.is_empty(), "and clearing brings it all back");
+}
+
+#[test]
+fn q_is_a_letter_while_filtering() {
+    let mut a = on_themes();
+    a.on_key(press(KeyCode::Char('/')));
+    a.on_key(press(KeyCode::Char('q')));
+    assert!(!a.done, "q should be text here, not the quit key");
+    assert_eq!(a.searching.as_deref(), Some("q"));
+}
+
+#[test]
+fn reopening_the_filter_resumes_rather_than_restarting() {
+    let mut a = on_themes();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "gruv");
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Char('/')));
+    assert_eq!(a.searching.as_deref(), Some("gruv"), "editable, not blank");
+}
+
+#[test]
+#[ignore = "prints frames to look at rather than asserting"]
+fn show_the_filter() {
+    let mut a = on_themes();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "gruvbox");
+    for line in render_app(&a, 100, 18) {
+        println!("|{}|", line.trim_end());
+    }
+}
+
+#[test]
+#[ignore = "prints footers to look at"]
+fn show_footers() {
+    let mut a = on_themes();
+    for w in [80u16, 100, 120] {
+        let rows = render_app(&a, w, 24);
+        for r in rows.iter().rev().take(3).rev() {
+            if !r.trim().is_empty() {
+                println!("themes  {w:>3}: |{}|", r.trim_end());
+            }
+        }
+    }
+    crate::ui::patches::enter_patches(&mut a);
+    for w in [80u16, 100, 120] {
+        let rows = render_app(&a, w, 24);
+        for r in rows.iter().rev().take(3).rev() {
+            if !r.trim().is_empty() && !r.contains('╯') {
+                println!("patches {w:>3}: |{}|", r.trim_end());
+            }
         }
     }
 }

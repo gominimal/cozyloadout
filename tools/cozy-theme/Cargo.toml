@@ -43,6 +43,14 @@ rust-version = "1.88"
 clap = { version = "4.6.6", features = ["derive"] }
 color-eyre = "0.6.5"
 fs-err = "3.3.1"
+# The `/` filter on the theme and patches screens. Skim's Sublime-style
+# scorer: a subsequence match is easy, but the *ranking* is the part that
+# decides whether the filter feels right, and that is worth not hand-rolling.
+#
+# MIT. `nucleo-matcher` is the better-known one and is MPL-2.0, which
+# deny.toml's allowlist deliberately excludes — that would be the first
+# copyleft in the tree, and it is not a decision to make in passing.
+fuzzy-matcher = "0.3.7"
 minijinja = "2.24.0"
 ratatui = "0.29.0"
 roxmltree = "0.21.1"

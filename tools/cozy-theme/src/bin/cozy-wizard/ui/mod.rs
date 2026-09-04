@@ -21,8 +21,14 @@ pub mod vm;
 use prelude::*;
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    // The footer takes as many rows as its hints need. It used to be one row
+    // and centred, which clipped instead of wrapping — an eighty-column
+    // terminal on the patches page lost `enter done` off the end, and a key
+    // that is not on screen may as well not be bound.
+    let spans = footer_hints(app);
+    let needed = footer_rows(&spans, frame.area().width);
     let [body, footer] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
+        Layout::vertical([Constraint::Min(0), Constraint::Length(needed)]).areas(frame.area());
 
     let outer = Block::default()
         .borders(Borders::ALL)
@@ -43,9 +49,26 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Apply => apply::draw_apply(frame, inner, app),
     }
     frame.render_widget(
-        Paragraph::new(Line::from(footer_hints(app))).alignment(Alignment::Center),
+        Paragraph::new(Line::from(spans))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
         footer,
     );
+}
+
+/// How many rows the hints need at this width.
+///
+/// Capped at three: past that the terminal is too small for the wizard anyway,
+/// and eating the body to explain the keys would be the wrong trade.
+fn footer_rows(spans: &[Span<'static>], width: u16) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+    let cells: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let width = usize::from(width);
+    u16::try_from(cells.div_ceil(width))
+        .unwrap_or(1)
+        .clamp(1, 3)
 }
 
 /// The key hints along the bottom, from whichever screen is up.

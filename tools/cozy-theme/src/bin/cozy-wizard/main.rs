@@ -3,6 +3,7 @@
 //! Run it with `just wizard`. See AGENTS.md for the build pipeline.
 
 mod fetch;
+mod fuzzy;
 mod greeting;
 mod hostcfg;
 mod icons;
@@ -342,7 +343,18 @@ struct App {
 
     /// Every scheme on disk. Names only — parsing all of them at startup would
     /// read hundreds of files for a list that shows twenty.
+    ///
+    /// `schemes` is `all_schemes` filtered by the `/` query; the full list is
+    /// kept so clearing the filter costs nothing.
+    all_schemes: Vec<SchemeEntry>,
     schemes: Vec<SchemeEntry>,
+    /// `Some(text)` while the `/` filter is open. Closing it keeps the filter;
+    /// clearing it is a separate act, so `esc` out of a search does not throw
+    /// away the narrowing you just did.
+    searching: Option<String>,
+    /// The filter currently applied, kept when the field closes so the list
+    /// stays narrowed and reopening `/` resumes where it left off.
+    search_query: String,
     theme_row: usize,
     /// First visible row, so the list scrolls rather than jumping.
     theme_top: usize,
@@ -499,7 +511,10 @@ impl App {
             fetch_kind,
             fetch_yes: fetch_kind != FetchKind::Blocked,
             fetch: Fetch::Idle,
+            all_schemes: Vec::new(),
             schemes: Vec::new(),
+            searching: None,
+            search_query: String::new(),
             theme_row: 0,
             theme_top: 0,
             loaded: None,
@@ -689,6 +704,36 @@ impl App {
         slot.as_ref().map_or_else(plain, |h| h.lines(lines, name))
     }
 
+    /// The text the `/` field opens with — whatever filter is already applied,
+    /// so reopening it lets you edit rather than start again.
+    fn searching_text(&self) -> String {
+        if self.schemes.len() == self.all_schemes.len() {
+            String::new()
+        } else {
+            self.search_query.clone()
+        }
+    }
+
+    /// Re-derive the visible scheme list from the full one and the query,
+    /// keeping the cursor on the same *scheme* where it survives the filter.
+    ///
+    /// Following the scheme rather than the row index is what makes typing feel
+    /// like narrowing around what you were looking at, rather than being dumped
+    /// back at the top on every keystroke.
+    fn filter_schemes(&mut self, query: &str) {
+        self.search_query = query.to_string();
+        let under_cursor = self.schemes.get(self.theme_row).map(|s| s.name.clone());
+        self.schemes = fuzzy::filter(&self.all_schemes, query, |s| s.name.as_str())
+            .into_iter()
+            .map(|i| self.all_schemes[i].clone())
+            .collect();
+        self.theme_row = under_cursor
+            .and_then(|name| self.schemes.iter().position(|s| s.name == name))
+            .unwrap_or(0);
+        self.theme_top = self.theme_top.min(self.theme_row);
+        self.load_selected();
+    }
+
     /// The repository's scheme root — `schemes/`, the parent of the vendored
     /// collection this was pointed at.
     fn repo_schemes(&self) -> PathBuf {
@@ -828,7 +873,11 @@ impl App {
             || (self.screen == Screen::Client && self.editing.is_some())
             || (self.screen == Screen::Themes && self.saving.is_some())
             || (self.screen == Screen::Apply && self.saving_settings.is_some())
-            || (self.screen == Screen::Patches && self.editing_dest.is_some());
+            || (self.screen == Screen::Patches && self.editing_dest.is_some())
+            // `/` puts both list screens into a text field, where `q` is a
+            // letter rather than the quit key.
+            || (matches!(self.screen, Screen::Themes | Screen::Patches)
+                && self.searching.is_some());
         if ctrl_c || (key.code == KeyCode::Char('q') && !typing) {
             self.done = true;
             return;

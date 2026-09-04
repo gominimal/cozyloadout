@@ -89,8 +89,19 @@ pub fn draw_picker(
         // The path is on the bottom border: it is context you glance at, and
         // it costs no rows there.
         .title_bottom(Span::styled(
-            format!(" {} ", shorten_home(&p.cwd, home)),
-            Style::default().fg(t.comment),
+            // The filter takes the bottom border while it is on: it is what
+            // explains why the listing is short, which matters more than the
+            // path you already walked to.
+            if p.query.is_empty() {
+                format!(" {} ", shorten_home(&p.cwd, home))
+            } else {
+                format!(" /{} ", p.query)
+            },
+            Style::default().fg(if p.query.is_empty() {
+                t.comment
+            } else {
+                t.blue
+            }),
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -169,6 +180,10 @@ pub fn draw_picker(
 // --- keys -----------------------------------------------------------------
 
 pub fn on_key_patches(app: &mut App, key: KeyEvent) {
+    if app.searching.is_some() {
+        on_key_search(app, key);
+        return;
+    }
     if app.editing_dest.is_some() {
         on_key_dest(app, key);
         return;
@@ -193,6 +208,7 @@ pub fn on_key_patches(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') => {
             app.picker_mut().toggle();
         }
+        KeyCode::Char('/') => app.searching = Some(app.picker().query.clone()),
         // Choosing it first if it is not chosen already: saying where a file
         // should land is an unambiguous way of saying you want it. Requiring
         // space beforehand made this key look dead, because pressing it on a
@@ -239,6 +255,14 @@ pub fn enter_patches(app: &mut App) {
 
 /// The keys this screen answers to, for the footer.
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.searching.is_some() {
+        return vec![
+            ("type", "to filter"),
+            ("↑/↓", "move"),
+            ("enter", "keep it"),
+            ("esc", "clear"),
+        ];
+    }
     if app.editing_dest.is_some() {
         return vec![
             ("type", "a path under ~"),
@@ -246,7 +270,12 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("esc", "cancel"),
         ];
     }
-    let mut keys = vec![("↑/↓", "move"), ("←/→", "in/out"), ("space", "choose")];
+    let mut keys = vec![
+        ("↑/↓", "move"),
+        ("←/→", "in/out"),
+        ("space", "choose"),
+        ("/", "filter"),
+    ];
     // Offered whenever it would do something — which is any entry this picker
     // can take, not only one already chosen.
     if app.current_target().is_some() {
@@ -546,4 +575,37 @@ fn draw_summary_strip(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
         summary,
     );
+}
+
+/// The `/` filter's keys, over the listing.
+///
+/// The same shape the theme browser uses: arrows keep working, `enter` closes
+/// the field and keeps the filter, `esc` clears it. Space types a space here
+/// rather than choosing — a filter you cannot put a space in is a filter that
+/// cannot match half the filenames in a home directory.
+fn on_key_search(app: &mut App, key: KeyEvent) {
+    let Some(mut query) = app.searching.clone() else {
+        return;
+    };
+    let page = app.list_rows();
+    match key.code {
+        KeyCode::Esc => {
+            app.searching = None;
+            app.picker_mut().set_query(String::new());
+        }
+        KeyCode::Enter => app.searching = None,
+        KeyCode::Backspace => {
+            query.pop();
+            app.picker_mut().set_query(query.clone());
+            app.searching = Some(query);
+        }
+        KeyCode::Char(c) => {
+            query.push(c);
+            app.picker_mut().set_query(query.clone());
+            app.searching = Some(query);
+        }
+        KeyCode::Up => app.picker_mut().move_cursor(-1, page),
+        KeyCode::Down => app.picker_mut().move_cursor(1, page),
+        _ => {}
+    }
 }
