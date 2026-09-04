@@ -11,7 +11,6 @@ pub fn draw_packages(frame: &mut Frame, inner: Rect, app: &App) {
     // Still wearing the scheme picked on the previous page — the choice is
     // meant to persist through the rest of the wizard, not just be previewed.
     let t = app.theme();
-    frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
 
     let intro = Paragraph::new(Text::from(vec![
         Line::styled(

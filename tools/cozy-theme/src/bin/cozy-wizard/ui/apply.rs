@@ -111,7 +111,6 @@ pub fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
 /// The summary and the four things that can be done with it.
 pub fn draw_apply(frame: &mut Frame, inner: Rect, app: &App) {
     let t = app.theme();
-    frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
 
     let [intro_area, summary_area, tick_area, list_area, status_area] = Layout::vertical([
         Constraint::Length(2),

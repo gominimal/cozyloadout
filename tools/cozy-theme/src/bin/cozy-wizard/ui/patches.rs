@@ -8,7 +8,6 @@ use crate::picker::Entry;
 
 pub fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
     let t = app.theme();
-    frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
 
     let intro = Paragraph::new(Text::from(vec![
         Line::styled(

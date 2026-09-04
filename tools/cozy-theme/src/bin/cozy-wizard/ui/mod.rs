@@ -30,11 +30,30 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let [body, footer] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(needed)]).areas(frame.area());
 
+    // The chrome is themed like everything else. It used to be drawn with no
+    // style at all, which is invisible on a scheme close to the terminal's own
+    // colours and obvious on one that is not: the interior repainted as you
+    // scrolled and the frame around it stayed put.
+    let t = app.theme();
+    // The whole frame, not the body inside the border: four screens used to
+    // paint their own background onto `inner`, which left the border row and
+    // the footer in the terminal's colours and the other four screens with no
+    // background at all. One paint here is also one place to get it right.
+    // `Theme::fallback`'s `bg` is `Color::Reset`, so this is a no-op until a
+    // scheme is loaded.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(t.bg).fg(t.fg)),
+        frame.area(),
+    );
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.selection))
         .padding(Padding::horizontal(BOX_PADDING_X))
-        .title(" cozy wizard ");
+        .title(Span::styled(
+            " cozy wizard ",
+            Style::default().fg(t.comment),
+        ));
     let inner = outer.inner(body);
     frame.render_widget(outer, body);
 
@@ -51,7 +70,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(
         Paragraph::new(Line::from(spans))
             .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true }),
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(t.comment)),
         footer,
     );
 }
@@ -92,11 +112,15 @@ pub fn footer_hints(app: &App) -> Vec<Span<'static>> {
             Screen::Apply => apply::hints(app),
         }
     };
+    let t = app.theme();
     pairs
         .into_iter()
         .flat_map(|(k, what)| {
             [
-                Span::styled(k, Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    k,
+                    Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(format!(" {what}  ")),
             ]
         })

@@ -12,7 +12,6 @@ pub fn draw_themes(frame: &mut Frame, inner: Rect, app: &App) {
     // Paint the whole area in the scheme's background first. Widgets below
     // only set foregrounds, so without this the preview would sit on the
     // terminal's own background and the scheme would look wrong.
-    frame.render_widget(Block::default().style(Style::default().bg(t.bg)), inner);
 
     let [intro_area, columns] =
         Layout::vertical([Constraint::Length(THEME_INTRO_ROWS), Constraint::Min(0)]).areas(inner);
@@ -463,6 +462,31 @@ pub fn on_key_themes(app: &mut App, key: KeyEvent) {
 /// after the fetch, so a scheme collection downloaded a moment ago is in
 /// the list.
 pub fn enter_themes(app: &mut App) {
+    // A remembered scheme that is no longer on disk drops its adjustments with
+    // it. They were tuned against a palette this checkout does not have, and
+    // silently re-applying them to whatever sorts first would be worse than
+    // starting clean.
+    //
+    // This happens *here* rather than in `select_theme`, which startup also
+    // calls: at startup the collection may not have been fetched yet, so a
+    // remembered upstream scheme is legitimately missing and will be found a
+    // moment later. Dropping the adjustments then would lose them to a fetch
+    // the user is about to run.
+    if !select_theme(app) {
+        app.adjust = Adjust::default();
+    }
+    app.screen = Screen::Themes;
+}
+
+/// Discover the collection and land on the scheme this run should start from,
+/// without moving to the theme browser. Answers whether the wanted scheme was
+/// actually found.
+///
+/// Split out of `enter_themes` so the wizard can do it *at startup*: a sticky
+/// theme was only picked up when the user reached the theme page, so the first
+/// three screens of a resumed run were drawn in the fallback palette and then
+/// the whole interface changed colour underneath them.
+pub fn select_theme(app: &mut App) -> bool {
     // The schemes directory is `<root>/vendor`, so its parent is what
     // `discover` walks.
     let root = app
@@ -487,17 +511,10 @@ pub fn enter_themes(app: &mut App) {
     app.schemes.clone_from(&app.all_schemes);
     app.searching = None;
     let found = want.and_then(|name| app.schemes.iter().position(|s| s.name == name));
-    // A remembered scheme that is no longer on disk drops its adjustments with
-    // it. They were tuned against a palette this checkout does not have, and
-    // silently re-applying them to whatever sorts first would be worse than
-    // starting clean.
-    if found.is_none() {
-        app.adjust = Adjust::default();
-    }
     app.theme_row = found.unwrap_or(0);
     app.theme_top = app.theme_row;
     app.load_selected();
-    app.screen = Screen::Themes;
+    found.is_some()
 }
 
 /// The knobs' keys. Up and down pick one, left and right move it — the same
