@@ -19,6 +19,9 @@ pub fn app_with(schemes: PathBuf, saved: State) -> App {
     let mut a = App::with_state(schemes, saved);
     let scratch = std::env::temp_dir().join(format!("cozy-test-home-{}", std::process::id()));
     a.home.clone_from(&scratch);
+    // Never reach minimal.dev from a test: a real request per fixture is slow,
+    // flaky, and aimed at somebody's actual web server.
+    a.fetch_registry = false;
     a.user_schemes = scratch.join("schemes");
     a
 }

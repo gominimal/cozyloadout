@@ -252,3 +252,428 @@ fn esc_steps_back_to_the_themes() {
     assert_eq!(a.screen, Screen::Themes);
     assert!(!a.done);
 }
+
+// -- searching the registry ------------------------------------------------
+
+/// A packages page with a known registry behind it, so the assertions do not
+/// depend on what `min` happens to have cached on this machine.
+fn with_registry(tag: &str) -> (App, PathBuf) {
+    let root = temp_dir(&format!("registry-{tag}"));
+    std::fs::create_dir_all(root.join("lc")).unwrap();
+    std::fs::write(
+        root.join("lc/index"),
+        r#"{"builds": [
+            [0, {"name": "ripgrep", "attrs": {
+                  "license_spdx": {"String": ["Unlicense", null]},
+                  "upstream_version": {"String": ["15.2.0", null]}}}],
+            [0, {"name": "emacs", "attrs": {
+                  "license_spdx": {"String": ["GPL-3.0-or-later", null]},
+                  "upstream_version": {"String": ["30.1", null]}}}],
+            [0, {"name": "tmux", "attrs": null}]
+        ]}"#,
+    )
+    .unwrap();
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::load(&root);
+    assert!(a.registry.is_available());
+    (a, root)
+}
+
+#[test]
+fn slash_searches_the_registry() {
+    let (mut a, root) = with_registry("search");
+    a.on_key(press(KeyCode::Char('/')));
+    assert!(a.searching.is_some());
+    typing(&mut a, "rip");
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("ripgrep"), "{text}");
+    assert!(text.contains("15.2.0"), "with its version:\n{text}");
+    assert!(text.contains("Unlicense"), "and its licence:\n{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_search_is_fuzzy() {
+    let (mut a, root) = with_registry("fuzzy");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "rpgrp");
+    assert_eq!(a.registry_hits()[0].name, "ripgrep");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn enter_adds_the_highlighted_package_to_the_list() {
+    let (mut a, root) = with_registry("add");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "emacs");
+    a.on_key(press(KeyCode::Enter));
+    assert!(a.searching.is_none(), "the search closes");
+    assert!(a.extra_packages().contains(&"emacs"), "{:?}", a.extra);
+    assert!(a.chosen_packages().contains(&"emacs"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn adding_a_second_package_keeps_the_first() {
+    let (mut a, root) = with_registry("add-two");
+    for name in ["emacs", "tmux"] {
+        a.on_key(press(KeyCode::Char('/')));
+        typing(&mut a, name);
+        a.on_key(press(KeyCode::Enter));
+    }
+    let extras = a.extra_packages();
+    assert!(
+        extras.contains(&"emacs") && extras.contains(&"tmux"),
+        "{extras:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn adding_the_same_package_twice_does_not_duplicate_it() {
+    let (mut a, root) = with_registry("add-dup");
+    for _ in 0..2 {
+        a.on_key(press(KeyCode::Char('/')));
+        typing(&mut a, "emacs");
+        a.on_key(press(KeyCode::Enter));
+    }
+    assert_eq!(a.extra_packages(), vec!["emacs"], "{:?}", a.extra);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_name_the_registry_does_not_have_is_flagged_not_refused() {
+    // Still the user's call — the index can be stale, and a name it has never
+    // heard of may be real. But a typo is otherwise only discovered when the
+    // session fails to build.
+    let (mut a, root) = with_registry("unknown");
+    a.on_key(press(KeyCode::Char('i')));
+    typing(&mut a, "emacs ripgrepp");
+    assert_eq!(a.unknown_extras(), vec!["ripgrepp"]);
+    assert!(
+        a.extra_packages().contains(&"ripgrepp"),
+        "flagged, not dropped: {:?}",
+        a.extra_packages()
+    );
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("not in the registry"), "{text}");
+    assert!(text.contains("ripgrepp"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn nothing_is_flagged_when_there_is_no_index_to_check_against() {
+    // "Not in the registry" without a registry would be a claim rather than a
+    // finding, and would warn about every name someone typed.
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::load(Path::new("/definitely/not/here"));
+    a.on_key(press(KeyCode::Char('i')));
+    typing(&mut a, "emacs obviousnonsense");
+    assert!(a.unknown_extras().is_empty());
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(!text.contains("not in the registry"), "{text}");
+}
+
+#[test]
+fn the_search_says_so_when_there_is_no_index() {
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::load(Path::new("/definitely/not/here"));
+    a.on_key(press(KeyCode::Char('/')));
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(
+        text.contains("resolves"),
+        "it should say where an index comes from:\n{text}"
+    );
+}
+
+#[test]
+fn a_search_matching_nothing_says_so() {
+    let (mut a, root) = with_registry("nomatch");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "zzznope");
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("Nothing in the registry matches"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn esc_leaves_the_search_without_adding_anything() {
+    let (mut a, root) = with_registry("cancel");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "emacs");
+    a.on_key(press(KeyCode::Esc));
+    assert!(a.searching.is_none());
+    assert!(a.extra_packages().is_empty());
+    assert_eq!(
+        a.screen,
+        Screen::Packages,
+        "esc closed the search, not the page"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn q_is_a_letter_while_searching_the_registry() {
+    let (mut a, root) = with_registry("q-key");
+    a.on_key(press(KeyCode::Char('/')));
+    a.on_key(press(KeyCode::Char('q')));
+    assert!(!a.done, "q should be text here, not the quit key");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_package_already_on_the_list_is_marked_as_such() {
+    let (mut a, root) = with_registry("already");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "emacs");
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "emacs");
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("already added"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+#[ignore = "prints frames to look at rather than asserting"]
+fn show_the_registry_search() {
+    let (mut a, root) = with_registry("show");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "m");
+    println!("\n=== searching");
+    for line in render_app(&a, 100, 22) {
+        println!("|{}|", line.trim_end());
+    }
+    a.on_key(press(KeyCode::Esc));
+    a.on_key(press(KeyCode::Char('i')));
+    typing(&mut a, "emacs ripgrepp");
+    println!("\n=== a name the registry does not have");
+    for line in render_app(&a, 100, 22) {
+        if line.contains('›') || line.contains("registry") || line.contains("adding") {
+            println!("|{}|", line.trim_end());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn no_test_reaches_the_network() {
+    // Every App a test builds must leave the site fetch off. A real request per
+    // fixture would be slow, flaky, and pointed at somebody's actual web
+    // server — and the suite did exactly that for one commit.
+    for (name, a) in [
+        ("app", app()),
+        ("on_packages", on_packages()),
+        ("on_apply", on_apply()),
+    ] {
+        assert!(!a.fetch_registry, "{name} would reach minimal.dev");
+        assert!(a.registry_fetch.is_none(), "{name} has a fetch in flight");
+    }
+}
+
+#[test]
+fn the_site_bundle_replaces_the_local_index_when_it_lands() {
+    // The local index answers immediately; the site is current and carries
+    // categories and advisories, so it wins when it arrives.
+    let (mut a, root) = with_registry("swap");
+    assert!(matches!(
+        a.registry.source,
+        Some(crate::registry::Source::LocalIndex(_))
+    ));
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    a.registry_fetch = Some(rx);
+    tx.send(Ok(crate::registry::Registry::from_bundle(
+        r#"<script type="application/json" id="pkgs-bundle">
+            {"packages":[{"name":"openssl","categories":["library"],
+                          "version":"3.6.3","activeAdvisoryCount":11}]}
+            </script>"#,
+    )
+    .unwrap()))
+        .unwrap();
+    a.tick();
+
+    assert_eq!(a.registry.source, Some(crate::registry::Source::Site));
+    assert!(a.registry.knows("openssl"));
+    assert!(a.registry_fetch.is_none(), "the fetch is done with");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn advisories_are_shown_in_the_search() {
+    // The one thing worth knowing before installing something that the local
+    // index cannot tell you.
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::from_bundle(
+        r#"<script type="application/json" id="pkgs-bundle">
+            {"packages":[{"name":"openssl","categories":["library"],
+                          "version":"3.6.3","activeAdvisoryCount":11}]}
+            </script>"#,
+    )
+    .unwrap();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "openssl");
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("11 advisories"), "{text}");
+    assert!(text.contains("library"), "and its category:\n{text}");
+    assert!(
+        text.contains("minimal.dev"),
+        "and where it came from:\n{text}"
+    );
+}
+
+#[test]
+fn a_failed_fetch_leaves_the_local_index_alone() {
+    // There is a working registry either way; a network failure is not worth
+    // stopping for, or even mentioning when something else answered.
+    let (mut a, root) = with_registry("fetch-fails");
+    let (tx, rx) = std::sync::mpsc::channel();
+    a.registry_fetch = Some(rx);
+    tx.send(Err("could not resolve host".to_string())).unwrap();
+    a.tick();
+
+    assert!(a.registry.knows("ripgrep"), "the local index still answers");
+    assert!(a.registry_note.is_none(), "and nothing is complained about");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_failed_fetch_with_no_local_index_says_why() {
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::default();
+    let (tx, rx) = std::sync::mpsc::channel();
+    a.registry_fetch = Some(rx);
+    tx.send(Err("could not resolve host".to_string())).unwrap();
+    a.tick();
+    assert_eq!(a.registry_note.as_deref(), Some("could not resolve host"));
+
+    a.on_key(press(KeyCode::Char('/')));
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("could not resolve host"), "{text}");
+}
+
+#[test]
+fn an_optional_package_already_ticked_shows_as_added() {
+    // Reported: `bottom` showed as added and `atuin` did not. `bottom` is in
+    // the `cozy` group, so it is in `always`; `atuin` is *optional* and ticked
+    // on by default — and the check never looked at the list on this very page.
+    let mut a = on_packages();
+    assert!(
+        a.packages.iter().any(|p| p.name == "atuin"),
+        "atuin is one of the optional packages"
+    );
+    assert!(a.chosen_packages().contains(&"atuin"), "and on by default");
+
+    a.registry = crate::registry::Registry::from_bundle(
+        r#"<script type="application/json" id="pkgs-bundle">
+            {"packages":[{"name":"atuin","version":"18.9.0"},
+                         {"name":"bottom","version":"0.10.2"}]}
+            </script>"#,
+    )
+    .unwrap();
+
+    for name in ["atuin", "bottom"] {
+        a.searching = Some(name.to_string());
+        a.registry_row = 0;
+        let text = flatten(&render_app(&a, 110, 30));
+        assert!(
+            text.contains("already added") || text.contains("installed anyway"),
+            "{name} is going in and the search does not say so:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn the_search_distinguishes_all_four_states() {
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::from_bundle(
+        r#"<script type="application/json" id="pkgs-bundle">
+            {"packages":[{"name":"bottom"},{"name":"atuin"},
+                         {"name":"glow"},{"name":"cowsay"}]}
+            </script>"#,
+    )
+    .unwrap();
+
+    // Turn one of the optional packages off so the fourth state is reachable.
+    while a.packages[a.package_row].name != "glow" {
+        a.on_key(press(KeyCode::Down));
+    }
+    a.on_key(press(KeyCode::Char(' ')));
+    assert!(!a.chosen_packages().contains(&"glow"));
+
+    for (name, want) in [
+        ("bottom", "installed anyway"),
+        ("atuin", "already added"),
+        ("glow", "turned off above"),
+        ("cowsay", ""),
+    ] {
+        assert_eq!(a.package_state(name).note(), want, "{name}");
+    }
+
+    // And a package turned off says so on screen rather than nothing, which
+    // would read as "not going in" when the row above says otherwise.
+    a.searching = Some("glow".to_string());
+    a.registry_row = 0;
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("turned off above"), "{text}");
+}
+
+#[test]
+fn a_package_typed_by_hand_shows_as_added_too() {
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::from_bundle(
+        r#"<script type="application/json" id="pkgs-bundle">
+            {"packages":[{"name":"cowsay"}]}
+            </script>"#,
+    )
+    .unwrap();
+    assert_eq!(a.package_state("cowsay"), crate::PackageState::New);
+
+    a.on_key(press(KeyCode::Char('i')));
+    typing(&mut a, "cowsay");
+    a.on_key(press(KeyCode::Esc));
+    assert_eq!(a.package_state("cowsay").note(), "already added");
+}
+
+#[test]
+fn adding_from_the_search_immediately_reads_back_as_added() {
+    // The loop the report was really about: add it, search again, see it.
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::from_bundle(
+        r#"<script type="application/json" id="pkgs-bundle">
+            {"packages":[{"name":"cowsay"}]}
+            </script>"#,
+    )
+    .unwrap();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "cowsay");
+    a.on_key(press(KeyCode::Enter));
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "cowsay");
+    let text = flatten(&render_app(&a, 110, 30));
+    assert!(text.contains("already added"), "{text}");
+}
+
+#[test]
+#[ignore = "prints a frame to look at rather than asserting"]
+fn show_the_states() {
+    let mut a = on_packages();
+    a.registry = crate::registry::Registry::from_bundle(
+        r#"<script type="application/json" id="pkgs-bundle">
+            {"packages":[{"name":"bottom","version":"0.10.2","categories":["tool"]},
+                         {"name":"atuin","version":"18.9.0","categories":["tool"]},
+                         {"name":"glow","version":"3.0.0","categories":["tool"]},
+                         {"name":"openssl","version":"3.6.3","categories":["library"],
+                          "activeAdvisoryCount":11}]}
+            </script>"#,
+    )
+    .unwrap();
+    while a.packages[a.package_row].name != "glow" {
+        a.on_key(press(KeyCode::Down));
+    }
+    a.on_key(press(KeyCode::Char(' ')));
+    a.searching = Some(String::new());
+    for line in render_app(&a, 100, 20) {
+        println!("|{}|", line.trim_end());
+    }
+}

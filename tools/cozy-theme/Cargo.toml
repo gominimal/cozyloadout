@@ -55,6 +55,9 @@ minijinja = "2.24.0"
 ratatui = "0.29.0"
 roxmltree = "0.21.1"
 serde = { version = "1", features = ["derive"] }
+# Reading the package index `min` already caches on disk. Already in the tree
+# via cargo-deny's own dependencies; direct here because the wizard parses it.
+serde_json = "1"
 # Syntax highlighting for the patches preview. Narrow feature set on purpose:
 # the parser and the plist loader, a pure-Rust regex engine, and none of
 # syntect's own syntaxes or themes. The colours come from the .tmTheme this repo
