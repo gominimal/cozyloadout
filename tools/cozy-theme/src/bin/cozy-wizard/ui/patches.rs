@@ -1,5 +1,5 @@
-//! The patches screen: two filesystem pickers, and the warning about
-//! configs the user's own picks displace.
+//! The patches screen: one filesystem picker, a preview of what is under the
+//! cursor, and the warning about configs the user's own picks displace.
 
 #[allow(clippy::wildcard_imports)]
 use super::prelude::*;
@@ -17,8 +17,8 @@ pub fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
         Line::raw(""),
         Line::styled(
             "Anything chosen here is copied into the session alongside the loadout's \
-             own config. Arrows walk the tree, space chooses, tab swaps between files \
-             and directories.",
+             own config. Arrows walk the tree, space chooses a file or a whole \
+             folder, e says where it lands.",
             Style::default().fg(t.fg),
         ),
     ]))
@@ -48,43 +48,14 @@ pub fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
     .areas(inner);
     frame.render_widget(intro, intro_area);
 
-    // A ladder, widest first: both pickers plus a preview, then both pickers,
-    // then only the focused one. Stacking would halve an already short listing,
-    // so a narrow terminal drops panes rather than shrinking them.
+    // Side by side while there is room. The listing is what you cannot do
+    // without, so the preview is what a narrow terminal loses.
     if body.width >= PREVIEW_MIN_WIDTH {
-        let [left, right, pane] = Layout::horizontal([
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-            Constraint::Percentage(40),
-        ])
-        .areas(body);
-        for (i, area) in [left, right].into_iter().enumerate() {
-            draw_picker(
-                frame,
-                area,
-                &app.pickers[i],
-                i == app.picker_focus,
-                &app.home,
-                app.icons,
-                &t,
-            );
-        }
-        draw_preview_pane(frame, pane, app, &t);
-    } else if body.width >= 72 {
-        let [left, right] =
-            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        let [list, pane] =
+            Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
                 .areas(body);
-        for (i, area) in [left, right].into_iter().enumerate() {
-            draw_picker(
-                frame,
-                area,
-                &app.pickers[i],
-                i == app.picker_focus,
-                &app.home,
-                app.icons,
-                &t,
-            );
-        }
+        draw_picker(frame, list, app.picker(), true, &app.home, app.icons, &t);
+        draw_preview_pane(frame, pane, app, &t);
     } else {
         draw_picker(frame, body, app.picker(), true, &app.home, app.icons, &t);
     }
@@ -108,7 +79,7 @@ pub fn draw_picker(
         .border_style(Style::default().fg(accent))
         .padding(Padding::horizontal(1))
         .title(Span::styled(
-            p.kind.title(),
+            " Files and folders ",
             if focused {
                 Style::default().fg(accent).add_modifier(Modifier::BOLD)
             } else {
@@ -148,17 +119,11 @@ pub fn draw_picker(
         .skip(p.top)
         .take(rows)
         .map(|(i, e)| {
-            let selectable = p.kind.accepts(e.is_dir);
             let chosen = p.is_chosen(e);
-            let mark = if chosen {
-                "[x] "
-            } else if selectable {
-                "[ ] "
-            } else {
-                // A directory in the file picker is scenery you walk through,
-                // not something space can take; no empty box to imply otherwise.
-                "    "
-            };
+            // Everything in the listing has a box now: a directory is as
+            // patchable as a file, it just becomes a glob instead of a single
+            // dest.
+            let mark = if chosen { "[x] " } else { "[ ] " };
             let name = if e.is_dir {
                 format!("{}/", e.name)
             } else {
@@ -171,10 +136,8 @@ pub fn draw_picker(
                     .add_modifier(Modifier::BOLD)
             } else if chosen {
                 Style::default().fg(t.green)
-            } else if selectable {
-                Style::default().fg(t.fg)
             } else {
-                Style::default().fg(t.comment)
+                Style::default().fg(t.fg)
             };
             let kind = icons::kind_of(&e.name, e.is_dir);
             // The icon sits between the checkbox and the name, where `eza` puts
@@ -211,28 +174,24 @@ pub fn on_key_patches(app: &mut App, key: KeyEvent) {
         return;
     }
     let page = app.list_rows();
-    let focus = app.picker_focus;
     match key.code {
         KeyCode::Esc => app.screen = Screen::Packages,
-        // Tab rather than left/right: those walk the tree, which is the
-        // more frequent action and wants the arrow keys.
-        KeyCode::Tab | KeyCode::BackTab => {
-            app.picker_focus = (focus + 1) % app.pickers.len();
-        }
-        KeyCode::Up | KeyCode::Char('k') => app.pickers[focus].move_cursor(-1, page),
-        KeyCode::Down | KeyCode::Char('j') => app.pickers[focus].move_cursor(1, page),
+        KeyCode::Up | KeyCode::Char('k') => app.picker_mut().move_cursor(-1, page),
+        KeyCode::Down | KeyCode::Char('j') => app.picker_mut().move_cursor(1, page),
         KeyCode::PageUp => {
-            app.pickers[focus].move_cursor(-(isize::try_from(page).unwrap_or(10)), page);
+            app.picker_mut()
+                .move_cursor(-(isize::try_from(page).unwrap_or(10)), page);
         }
         KeyCode::PageDown => {
-            app.pickers[focus].move_cursor(isize::try_from(page).unwrap_or(10), page);
+            app.picker_mut()
+                .move_cursor(isize::try_from(page).unwrap_or(10), page);
         }
-        KeyCode::Right | KeyCode::Char('l') => app.pickers[focus].descend(),
+        KeyCode::Right | KeyCode::Char('l') => app.picker_mut().descend(),
         KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
-            app.pickers[focus].ascend();
+            app.picker_mut().ascend();
         }
         KeyCode::Char(' ') => {
-            app.pickers[focus].toggle();
+            app.picker_mut().toggle();
         }
         // Choosing it first if it is not chosen already: saying where a file
         // should land is an unambiguous way of saying you want it. Requiring
@@ -240,8 +199,8 @@ pub fn on_key_patches(app: &mut App, key: KeyEvent) {
         // highlighted entry is the obvious thing to try.
         KeyCode::Char('e') => {
             if let Some((path, is_dir)) = app.current_target() {
-                if !app.pickers[focus].chosen.contains(&path) {
-                    app.pickers[focus].toggle();
+                if !app.picker().chosen.contains_key(&path) {
+                    app.picker_mut().toggle();
                 }
                 app.editing_dest = Some(app.dest_of(&path, is_dir));
                 app.dest_note = None;
@@ -255,20 +214,24 @@ pub fn on_key_patches(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Move to the patches page, starting both pickers at $HOME — where the
+/// Move to the patches page, starting the picker at $HOME — where the
 /// dotfiles a loadout patches in actually live.
 pub fn enter_patches(app: &mut App) {
-    if app.pickers.is_empty() {
+    if app.picker.is_none() {
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-        let mut files = Picker::new(Pick::Files, &home);
-        let mut dirs = Picker::new(Pick::Dirs, &home);
-        // Anything the user has since deleted is simply not restored: it
-        // is gone, which is not an error, so the page opens without it.
-        files.chosen = State::existing(&app.saved.files).into_iter().collect();
-        dirs.chosen = State::existing(&app.saved.dirs).into_iter().collect();
-        app.pickers = vec![files, dirs];
+        let mut picker = Picker::new(&home);
+        // Anything the user has since deleted is simply not restored: it is
+        // gone, which is not an error, so the page opens without it. The
+        // remembered lists stay separate because that is the shape a loadout
+        // wants them in; the picker holds the flag per path.
+        for path in State::existing(&app.saved.files) {
+            picker.chosen.insert(path, false);
+        }
+        for path in State::existing(&app.saved.dirs) {
+            picker.chosen.insert(path, true);
+        }
+        app.picker = Some(picker);
     }
-    app.picker_focus = 0;
     app.screen = Screen::Patches;
 }
 
@@ -283,12 +246,7 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("esc", "cancel"),
         ];
     }
-    let mut keys = vec![
-        ("↑/↓", "move"),
-        ("←/→", "in/out"),
-        ("space", "choose"),
-        ("tab", "files/dirs"),
-    ];
+    let mut keys = vec![("↑/↓", "move"), ("←/→", "in/out"), ("space", "choose")];
     // Offered whenever it would do something — which is any entry this picker
     // can take, not only one already chosen.
     if app.current_target().is_some() {
@@ -299,9 +257,10 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     keys
 }
 
-/// Below this the preview pane costs more than it gives: three columns in
-/// ninety cells leaves each too narrow to read a path in.
-const PREVIEW_MIN_WIDTH: u16 = 104;
+/// Below this the preview pane costs more than it gives, leaving both columns
+/// too narrow to read a path in. Lower than it was: with one listing instead of
+/// two, the preview fits in a much smaller terminal.
+const PREVIEW_MIN_WIDTH: u16 = 84;
 
 /// What the entry under the cursor holds — file contents, or what patching a
 /// directory in would actually copy.

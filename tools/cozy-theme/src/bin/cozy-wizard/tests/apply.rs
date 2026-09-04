@@ -2,8 +2,6 @@
 
 #[allow(unused_imports)]
 use super::util::*;
-#[allow(unused_imports)]
-use crate::picker::Pick;
 #[allow(clippy::wildcard_imports)]
 use crate::*;
 #[allow(unused_imports)]
@@ -356,8 +354,8 @@ fn dump_frames() {
 
     let mut q = on_packages();
     crate::ui::patches::enter_patches(&mut q);
-    q.pickers[0].move_cursor(2, 10);
-    q.pickers[0].toggle();
+    q.picker_mut().move_cursor(2, 10);
+    q.picker_mut().toggle();
     for (w, h) in [(100u16, 30u16), (70, 22)] {
         println!("\n=== patches {w}x{h} ===");
         for row in render_app(&q, w, h) {

@@ -2,8 +2,6 @@
 
 #[allow(unused_imports)]
 use super::util::*;
-#[allow(unused_imports)]
-use crate::picker::Pick;
 #[allow(clippy::wildcard_imports)]
 use crate::*;
 #[allow(unused_imports)]

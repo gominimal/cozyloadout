@@ -2,8 +2,6 @@
 
 #[allow(unused_imports)]
 use super::util::*;
-#[allow(unused_imports)]
-use crate::picker::Pick;
 #[allow(clippy::wildcard_imports)]
 use crate::*;
 #[allow(unused_imports)]
@@ -331,7 +329,13 @@ fn every_screen_still_advertises_its_own_keys() {
             Screen::Packages,
             &["move", "toggle", "all/none", "add by name", "done"],
         ),
-        (Screen::Patches, &["in/out", "choose", "files/dirs", "done"]),
+        // Only the unconditional keys: `e` appears when there is something
+        // under the cursor, which this fixture has no picker for.
+        // `e_is_advertised_before_anything_is_chosen` covers that one.
+        (
+            Screen::Patches,
+            &["move", "in/out", "choose", "back", "done"],
+        ),
         (Screen::Client, &["move", "change", "reset", "back", "done"]),
         (
             Screen::Resources,
