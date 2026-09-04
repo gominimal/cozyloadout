@@ -242,6 +242,53 @@ bat themes assign.
 background equals the *selected scheme's* base00 — not merely that it changed,
 so repainting in some other scheme's colours still fails.
 
+**A remembered scheme is loaded during `App::with_state`, not on entry to the
+theme page.** `enter_themes` was the only caller of `load_selected`, so a
+resumed run drew its greeting and scheme-source screens in the fallback palette
+and then changed colour underneath the user the moment they reached the browser.
+`select_theme` is the discovery-and-load half, split out so startup can call it;
+`enter_themes` is that plus the screen change.
+
+The **adjustment reset stays in `enter_themes`** and did not move with it, which
+is the part worth not undoing: at startup the collection may not have been
+fetched yet, so a remembered upstream scheme is legitimately missing and will be
+found a minute later. Dropping its adjustments then would lose them to a fetch
+the user is about to run. `a_remembered_scheme_that_is_gone_takes_its_adjustments_with_it`
+caught exactly that when the reset was briefly inside `select_theme`.
+
+Startup only does this **when something is remembered**. With no sticky theme
+there is nothing to prefer, and walking the collection to land on whatever sorts
+first would be a directory walk to answer a question nobody asked —
+`no_sticky_theme_means_no_scheme_is_guessed_at_startup`.
+
+**Every named colour lives in `Theme::fallback` and nowhere else.** That is the
+invariant, and it was not held: the chrome drawn by `ui::draw` — the frame and
+the key hints — carried no style at all, and the greeting and scheme-source
+pages painted with raw `Color::Cyan`/`DarkGray`/`Green` constants. Both are
+invisible against a scheme close to the terminal's own colours and obvious
+against one that is not, and walking *back* from the theme browser landed on a
+page that looked like a different program.
+
+`every_screen_paints_in_the_loaded_scheme` holds it now, and holds it the strong
+way: it walks all eight screens plus the three overlays and asserts that **every
+cell in the buffer** is `Color::Rgb` or `Color::Reset`. A scheme's colours are
+always `Rgb`, so any named colour surviving in a rendered frame is by
+construction a hardcoded one. Checking a single representative cell would have
+passed on half of what was actually broken.
+
+**The background is painted once, over the whole frame**, in `ui::draw`. It used
+to be four `Block::default().style(bg)` calls in four screen modules, each onto
+the area *inside* the border — so the border row and the footer showed the
+terminal through on every screen, and the other four screens had no background
+at all. The same test asserts the background on exactly those two rows, because
+they are the ones the old arrangement could not reach. `Theme::fallback`'s `bg`
+is `Color::Reset`, so the single paint is a no-op until a scheme is loaded.
+
+`Reset` stays allowed for one reason: the greeting mark is drawn in the
+terminal's own foreground on purpose (see above — the user is judging their
+font, not the palette). The box around the mark *is* the scheme's. The frame is
+chrome; the mark is the subject.
+
 Its fourth page is the optional-package checklist. Space toggles a row, `a`/`n`
 select all or none, and the panel under the list shows the highlighted
 package's description **and SPDX licence**. The licence is there because one of

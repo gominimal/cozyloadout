@@ -606,6 +606,15 @@ impl App {
         // depends on anything discovered later (unlike the scheme list), and
         // the summary reads them even if the user never opens either page.
         app.restore_host_settings();
+        // A remembered scheme is loaded *now*, not when the theme page is first
+        // opened, so a resumed run is in its own colours from the first frame.
+        // Guarded rather than unconditional: with nothing remembered there is
+        // no scheme to prefer, and walking the collection to land on whatever
+        // sorts first would be a directory walk to answer a question nobody
+        // asked.
+        if app.saved.theme.is_some() {
+            let _ = crate::ui::themes::select_theme(&mut app);
+        }
         app
     }
 

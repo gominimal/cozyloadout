@@ -211,3 +211,63 @@ fn a_remembered_vm_size_this_host_cannot_offer_is_dropped() {
     assert!(a.resources.is_default(), "both were out of range");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A remembered scheme has to be in force on the *first* frame, not from
+/// whenever the theme page is first opened.
+///
+/// Reported as "seems to only pick up the theme after you open the theme page
+/// even if one was loaded by stickyness": `enter_themes` was the only thing
+/// that ever called `load_selected`, so a resumed run drew its first three
+/// screens in the fallback palette and then changed colour underneath the user.
+#[test]
+fn a_sticky_theme_is_in_force_before_the_theme_page() {
+    let vendor = PathBuf::from("../../schemes/vendor");
+    let name = {
+        let all = cozy_theme::discover(vendor.parent().unwrap(), None);
+        all.iter()
+            .find(|s| s.name.contains("gruvbox"))
+            .or_else(|| all.first())
+            .expect("the repo ships schemes")
+            .name
+            .clone()
+    };
+
+    let a = app_with(
+        vendor,
+        State {
+            theme: Some(name.clone()),
+            ..State::default()
+        },
+    );
+    assert_eq!(a.screen, Screen::Greeting, "still on the first page");
+    assert!(a.scheme().is_some(), "a scheme should already be loaded");
+    assert_eq!(
+        a.schemes.get(a.theme_row).map(|e| e.name.clone()),
+        Some(name),
+        "and it should be the remembered one, not whatever sorts first"
+    );
+
+    // And the greeting screen is actually painted in it, rather than merely
+    // having it available.
+    let bg = a.theme().bg;
+    assert!(
+        matches!(bg, Color::Rgb(..)),
+        "the loaded scheme should give a real background, got {bg:?}"
+    );
+    assert_eq!(
+        frame_bg(&a, 90, 30),
+        bg,
+        "the greeting page is not painted in it"
+    );
+}
+
+/// Without anything remembered there is nothing to prefer, so startup does not
+/// walk the collection to land on whatever happens to sort first.
+#[test]
+fn no_sticky_theme_means_no_scheme_is_guessed_at_startup() {
+    let a = app_with(PathBuf::from("../../schemes/vendor"), State::default());
+    assert!(
+        a.scheme().is_none(),
+        "startup should not pick a scheme nobody asked for"
+    );
+}

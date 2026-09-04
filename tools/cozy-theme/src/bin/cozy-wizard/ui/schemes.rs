@@ -27,27 +27,26 @@ pub fn draw_schemes(frame: &mut Frame, inner: Rect, app: &App) {
     .areas(inner);
     frame.render_widget(intro_paragraph(heading, detail), intro_area);
 
-    let dim = Style::default().fg(Color::DarkGray);
+    let t = app.theme();
+    let dim = Style::default().fg(t.comment);
     let status = match &app.fetch {
         Fetch::Idle if app.fetch_kind == FetchKind::Blocked => vec![Line::styled(
             "Nothing will be downloaded. Press enter to continue.",
             dim,
         )],
-        Fetch::Idle => vec![choice_line(app.fetch_yes)],
+        Fetch::Idle => vec![choice_line(app.fetch_yes, &t)],
         Fetch::Running(frame_no, _) => {
             const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
             let tick = SPINNER[(*frame_no as usize / 2) % SPINNER.len()];
             vec![Line::styled(
                 format!("{tick} running git…"),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(t.cyan),
             )]
         }
         Fetch::Done(output) => {
             let mut lines = vec![Line::styled(
                 "Done.",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(t.green).add_modifier(Modifier::BOLD),
             )];
             lines.extend(
                 output
@@ -56,16 +55,13 @@ pub fn draw_schemes(frame: &mut Frame, inner: Rect, app: &App) {
                     .map(|l| Line::styled(l.to_string(), dim)),
             );
             lines.push(Line::raw(""));
-            lines.push(Line::styled(
-                CONTINUE_HINT,
-                Style::default().fg(Color::Cyan),
-            ));
+            lines.push(Line::styled(CONTINUE_HINT, Style::default().fg(t.cyan)));
             lines
         }
         Fetch::Failed(why) => {
             let mut lines = vec![Line::styled(
                 "git failed.",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default().fg(t.red).add_modifier(Modifier::BOLD),
             )];
             lines.extend(
                 why.lines()
@@ -77,7 +73,7 @@ pub fn draw_schemes(frame: &mut Frame, inner: Rect, app: &App) {
             // the way forward is the same key.
             lines.push(Line::styled(
                 "Press enter to continue without it.",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(t.yellow),
             ));
             lines
         }
@@ -94,11 +90,11 @@ pub fn draw_schemes(frame: &mut Frame, inner: Rect, app: &App) {
 pub const CONTINUE_HINT: &str = "Press enter to continue.";
 
 /// The yes/no row, with the active choice picked out.
-pub fn choice_line(yes: bool) -> Line<'static> {
+pub fn choice_line(yes: bool, t: &Theme) -> Line<'static> {
     let on = Style::default()
-        .fg(Color::Cyan)
+        .fg(t.cyan)
         .add_modifier(Modifier::BOLD | Modifier::REVERSED);
-    let off = Style::default().fg(Color::DarkGray);
+    let off = Style::default().fg(t.comment);
     Line::from(vec![
         Span::styled("  Yes  ", if yes { on } else { off }),
         Span::raw("   "),

@@ -5,6 +5,7 @@ use super::intro_paragraph;
 use super::prelude::*;
 
 pub fn draw_greeting(frame: &mut Frame, inner: Rect, app: &App) {
+    let t = app.theme();
     let intro = intro_paragraph(
         "Welcome to the minimal cozy loadout wizard.",
         "Pick a greeting — the preview is what fish prints. Boxes mean this \
@@ -31,15 +32,15 @@ pub fn draw_greeting(frame: &mut Frame, inner: Rect, app: &App) {
             let selected = i == app.greeting_row;
             let style = if selected {
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .fg(t.bg)
+                    .bg(t.cyan)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("  {:<18}", g.label()), style),
-                Span::styled(g.note(), Style::default().fg(Color::DarkGray)),
+                Span::styled(g.note(), Style::default().fg(t.comment)),
             ]))
         })
         .collect();
@@ -53,26 +54,18 @@ pub fn draw_greeting(frame: &mut Frame, inner: Rect, app: &App) {
             Span::styled(
                 if app.icons { "  [x] " } else { "  [ ] " },
                 Style::default()
-                    .fg(if app.icons {
-                        Color::Green
-                    } else {
-                        Color::DarkGray
-                    })
+                    .fg(if app.icons { t.green } else { t.comment })
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "icons in the file lists  ",
-                Style::default().fg(if app.icons {
-                    Color::Reset
-                } else {
-                    Color::DarkGray
-                }),
+                Style::default().fg(if app.icons { t.fg } else { t.comment }),
             ),
             Span::styled(
                 icons::sample().iter().collect::<String>(),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(t.cyan),
             ),
-            Span::styled("   space toggles", Style::default().fg(Color::DarkGray)),
+            Span::styled("   space toggles", Style::default().fg(t.comment)),
         ])),
         icon_area,
     );
@@ -82,22 +75,31 @@ pub fn draw_greeting(frame: &mut Frame, inner: Rect, app: &App) {
         preview_area,
         app.current_greeting(),
         &app.bindings.hint(),
+        &t,
     );
 }
 
 /// The selected greeting as fish will print it.
 ///
-/// Unstyled on purpose: this is the user judging their own font, so it renders
-/// in the terminal's own foreground rather than in colours chosen here.
-pub fn draw_greeting_preview(frame: &mut Frame, area: Rect, greeting: Greeting, detach: &str) {
+/// **The mark itself is unstyled on purpose**: this is the user judging their
+/// own font, so it renders in the terminal's own foreground rather than in
+/// colours chosen here. The box around it is the scheme's, like every other box
+/// in the wizard — the frame is chrome, the mark is the thing being judged.
+pub fn draw_greeting_preview(
+    frame: &mut Frame,
+    area: Rect,
+    greeting: Greeting,
+    detach: &str,
+    t: &Theme,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(t.selection))
         .padding(Padding::symmetric(BOX_PADDING_X, BOX_PADDING_Y))
         .title(Span::styled(
             " what fish will print ",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(t.comment),
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -109,13 +111,13 @@ pub fn draw_greeting_preview(frame: &mut Frame, area: Rect, greeting: Greeting, 
         }
         lines.push(Line::from(vec![
             Span::raw("Welcome to minimal! "),
-            Span::styled(detach.to_string(), Style::default().fg(Color::Cyan)),
+            Span::styled(detach.to_string(), Style::default().fg(t.cyan)),
             Span::raw(" to detach"),
         ]));
     } else {
         lines.push(Line::styled(
             "(a silent shell)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(t.comment),
         ));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
