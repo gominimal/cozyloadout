@@ -23,7 +23,15 @@ pub struct Entry {
 
 pub struct Picker {
     pub cwd: PathBuf,
+    /// Everything in `cwd`. `entries` is this filtered by `query`; the full
+    /// list is kept so clearing the filter costs nothing and does not re-read
+    /// the directory.
+    all: Vec<Entry>,
+    /// What the listing currently shows.
     pub entries: Vec<Entry>,
+    /// The `/` filter. Empty means no filter, which is not the same as a filter
+    /// that happens to match everything — see `fuzzy::filter`.
+    pub query: String,
     pub row: usize,
     pub top: usize,
     /// Absolute paths to whether each is a directory, sorted and de-duplicated
@@ -44,7 +52,9 @@ impl Picker {
     pub fn new(start: &Path) -> Self {
         let mut p = Self {
             cwd: start.to_path_buf(),
+            all: Vec::new(),
             entries: Vec::new(),
+            query: String::new(),
             row: 0,
             top: 0,
             chosen: BTreeMap::new(),
@@ -72,7 +82,7 @@ impl Picker {
         self.row = 0;
         self.top = 0;
         self.error = None;
-        self.entries.clear();
+        self.all.clear();
 
         let read = match std::fs::read_dir(&self.cwd) {
             Ok(r) => r,
@@ -89,10 +99,35 @@ impl Picker {
             // should still be walkable, and a broken one should not error the
             // whole listing.
             let is_dir = entry.path().is_dir();
-            self.entries.push(Entry { name, is_dir });
+            self.all.push(Entry { name, is_dir });
         }
-        self.entries
+        self.all
             .sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+        self.apply_filter();
+    }
+
+    /// Set the `/` filter and re-derive what the listing shows.
+    pub fn set_query(&mut self, query: String) {
+        self.query = query;
+        self.apply_filter();
+    }
+
+    /// Rebuild `entries` from `all` and the query, keeping the cursor on the
+    /// same *entry* where it survives the filter.
+    ///
+    /// Following the entry rather than the row index is the difference between
+    /// a filter that narrows around what you were looking at and one that
+    /// dumps you back at the top on every keystroke.
+    fn apply_filter(&mut self) {
+        let under_cursor = self.entries.get(self.row).map(|e| e.name.clone());
+        self.entries = crate::fuzzy::filter(&self.all, &self.query, |e| e.name.as_str())
+            .into_iter()
+            .map(|i| self.all[i].clone())
+            .collect();
+        self.row = under_cursor
+            .and_then(|name| self.entries.iter().position(|e| e.name == name))
+            .unwrap_or(0);
+        self.top = self.top.min(self.row);
     }
 
     pub fn current(&self) -> Option<&Entry> {
@@ -120,6 +155,10 @@ impl Picker {
         if let Some(entry) = self.current() {
             if entry.is_dir {
                 self.cwd = self.cwd.join(&entry.name);
+                // A filter is about the listing it was typed against. Carrying
+                // it into a new directory hides most of wherever you just
+                // arrived, which reads as an empty folder rather than a filter.
+                self.query.clear();
                 self.reload();
             }
         }
@@ -138,6 +177,7 @@ impl Picker {
             .and_then(|n| n.to_str())
             .map(str::to_string);
         self.cwd = parent;
+        self.query.clear();
         self.reload();
         if let Some(name) = leaving {
             if let Some(i) = self.entries.iter().position(|e| e.name == name) {

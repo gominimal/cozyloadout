@@ -873,3 +873,108 @@ fn the_two_kinds_still_round_trip_through_the_settings_file() {
     assert_eq!(back.picker().chosen_of(false), vec![root.join("notes.md")]);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// -- the / filter ----------------------------------------------------------
+
+#[test]
+fn slash_narrows_the_listing() {
+    let (mut a, root) = with_previewable("filter");
+    let all = a.picker().entries.len();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "notes");
+    assert!(a.picker().entries.len() < all);
+    assert!(
+        a.picker().entries.iter().all(|e| e.name.contains("notes")),
+        "{:?}",
+        a.picker().entries
+    );
+    let text = flatten(&render_app(&a, 120, 24));
+    assert!(
+        text.contains("/notes"),
+        "the query should be visible:\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn space_types_a_space_rather_than_choosing() {
+    // A filter you cannot put a space in cannot match half the filenames in a
+    // home directory.
+    let (mut a, root) = on_patches("filter-space");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "a b");
+    assert_eq!(a.searching.as_deref(), Some("a b"));
+    assert!(
+        a.chosen_paths().is_empty(),
+        "and must not have chosen anything"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn choosing_still_works_through_a_filter() {
+    // The point of filtering here: narrow to the file you want, then take it.
+    let (mut a, root) = with_previewable("filter-choose");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "blob");
+    a.on_key(press(KeyCode::Enter)); // close the field, keep the filter
+    assert_eq!(a.picker().entries.len(), 1);
+    a.on_key(press(KeyCode::Char(' ')));
+    assert_eq!(a.chosen_paths(), vec![&root.join("blob.bin")]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_filter_does_not_survive_walking_into_a_folder() {
+    // `reload` re-reads the directory and re-applies the filter, which would
+    // otherwise hide most of wherever you just arrived.
+    let (mut a, root) = on_patches("filter-walk");
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "dot");
+    a.on_key(press(KeyCode::Enter));
+    assert_eq!(a.picker().entries.len(), 1, "narrowed to `dotfiles`");
+
+    a.on_key(press(KeyCode::Right)); // walk in
+    assert_eq!(a.picker().cwd, root.join("dotfiles"));
+    assert!(
+        a.picker().entries.iter().any(|e| e.name == "config.toml"),
+        "the folder's contents should be visible: {:?}",
+        a.picker().entries
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn esc_clears_the_listing_filter() {
+    let (mut a, root) = with_previewable("filter-clear");
+    let all = a.picker().entries.len();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "notes");
+    a.on_key(press(KeyCode::Esc));
+    assert!(a.searching.is_none());
+    assert_eq!(a.picker().entries.len(), all);
+    assert_eq!(
+        a.screen,
+        Screen::Patches,
+        "esc closed the field, not the page"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn selections_survive_the_filter_hiding_them() {
+    // The filter is a view over the listing, not a change to what is chosen.
+    let (mut a, root) = with_previewable("filter-keeps");
+    land_on(&mut a, "notes.md");
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "blob");
+    assert!(
+        !a.picker().entries.iter().any(|e| e.name == "notes.md"),
+        "hidden by the filter"
+    );
+    assert_eq!(a.chosen_paths().len(), 1, "but still chosen");
+    a.on_key(press(KeyCode::Esc));
+    assert_eq!(a.chosen_paths().len(), 1);
+    let _ = std::fs::remove_dir_all(&root);
+}

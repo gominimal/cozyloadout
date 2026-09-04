@@ -503,6 +503,45 @@ mentions it.
 A corrupt or hand-edited file reads as defaults rather than failing. This is a
 convenience, and the worst it should ever cost is the convenience.
 
+### Filtering a list
+
+`/` opens a filter on the theme browser and on the patches listing. `fuzzy.rs`
+is a thin layer over skim's Sublime-style scorer — matching a subsequence is
+easy, but the *ranking* is what decides whether a filter feels right, and that
+is worth not hand-rolling.
+
+**`fuzzy-matcher`, not `nucleo-matcher`.** nucleo is the better-known one and
+what helix uses, but it is MPL-2.0, which `deny.toml`'s allowlist deliberately
+excludes — it would be the first copyleft in the tree, and that is not a
+decision to make in passing. `fuzzy-matcher` is MIT, one net crate, and clean on
+both cargo-deny checks.
+
+The rules are the same on both screens:
+
+- **`enter` closes the field and keeps the filter.** Finishing a search means
+  "this is the list I want", not "move on"; a second `enter` is what advances.
+- **`esc` clears as well as closes.** A filter you cannot see is a list that
+  looks like it has lost most of its contents.
+- **Arrows keep working while the field is open**, so you can narrow and then
+  move without closing anything.
+- **The cursor follows the entry, not the row index.** That is the difference
+  between narrowing around what you were looking at and being dumped back at
+  the top on every keystroke.
+- **An empty query keeps the original order.** The filter being off is not the
+  same as everything scoring zero, and a list that reshuffled itself the moment
+  you pressed `/` would be worse than no search at all.
+- **Matching ignores case**, rather than smart-case. Scheme names and dotfiles
+  are lowercase, so a capital is a slip rather than a request for precision.
+
+On the picker, **walking to another directory clears the filter**: it was typed
+against the listing you were looking at, and carrying it into a new folder hides
+most of wherever you just arrived, which reads as an empty directory rather than
+as a filter. `a_filter_does_not_survive_walking_into_a_folder` is the test; it
+failed before that was true.
+
+The filter is a view over the listing, never a change to what is chosen — a
+selection hidden by a filter is still a selection.
+
 ### Adjusting a scheme
 
 `a` on the themes page swaps the scheme list for six knobs. They are not
@@ -694,6 +733,25 @@ which `cozy-theme --settings <file>` then rebuilds from. It refuses to
 overwrite, and a refused path keeps the prompt open with the text still in it —
 the same shape as the other two text prompts in the wizard. Writing it counts as
 finishing the run, so the automatic file records it too.
+
+### The footer
+
+The key hints along the bottom, answered by whichever screen is up — a hint list
+kept centrally would be a second place to remember when a binding changes, which
+is exactly how a footer starts advertising keys that no longer work.
+
+Two failures worth not repeating, both found by a reader rather than by a test:
+
+- **`/` was bound on both list screens and advertised on neither.** On one the
+  hint went into the wrong branch of `hints()`; on the other a stale edit missed
+  a line rustfmt had reflowed. The feature existed and there was no way to find
+  it. `every_key_a_screen_binds_is_in_its_footer` now covers the cases
+  `hints()` branches on.
+- **The footer was one centred row, which clips.** At eighty columns the patches
+  page lost `enter done` off the end. It now takes as many rows as the hints
+  need, up to three; `the_footer_wraps_rather_than_losing_a_key_off_the_end`
+  checks every advertised hint survives from sixty columns up. A key that is not
+  on screen may as well not be bound.
 
 ### The patches page
 

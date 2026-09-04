@@ -258,7 +258,14 @@ pub fn draw_theme_list(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divi
     // scheme clears them. Without this line that would be a silent loss: you
     // would come back to the panel and find your work gone with nothing having
     // said so. Here, it visibly empties as you scroll away.
-    let counter = format!("{}/{}", app.theme_row + 1, app.schemes.len());
+    // The count is of what is *shown*, with the total after it when a filter
+    // is on — "12/480" while filtered would read as a position in the whole
+    // collection, which it is not.
+    let counter = if app.search_query.is_empty() {
+        format!("{}/{}", app.theme_row + 1, app.schemes.len())
+    } else {
+        format!("{} of {}", app.schemes.len(), app.all_schemes.len())
+    };
     let y = inner.y + inner.height.saturating_sub(1);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -269,6 +276,16 @@ pub fn draw_theme_list(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divi
                 // is set, not the exact numbers — those are on the panel and on
                 // the summary page.
                 match (&app.saved_note, app.adjust.is_identity()) {
+                    // The filter is the thing you are looking at while it is
+                    // open, so it takes this line.
+                    _ if app.searching.is_some() => truncate(
+                        &format!(" /{}_", app.searching.clone().unwrap_or_default()),
+                        (inner.width as usize).saturating_sub(9),
+                    ),
+                    _ if !app.search_query.is_empty() => truncate(
+                        &format!(" /{}", app.search_query),
+                        (inner.width as usize).saturating_sub(9),
+                    ),
                     // A save clears the knobs, so without this the line would
                     // snap back to the hint and the save would look like it did
                     // nothing.
@@ -280,6 +297,7 @@ pub fn draw_theme_list(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divi
                     ),
                 },
                 Style::default().fg(match (&app.saved_note, app.adjust.is_identity()) {
+                    _ if app.searching.is_some() || !app.search_query.is_empty() => t.blue,
                     (Some(Ok(_)), _) => t.green,
                     (_, true) => t.comment,
                     (_, false) => t.orange,
@@ -404,6 +422,10 @@ pub fn draw_preview(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
 // --- keys -----------------------------------------------------------------
 
 pub fn on_key_themes(app: &mut App, key: KeyEvent) {
+    if app.searching.is_some() {
+        on_key_search(app, key);
+        return;
+    }
     if app.saving.is_some() {
         on_key_saving(app, key);
         return;
@@ -418,6 +440,7 @@ pub fn on_key_themes(app: &mut App, key: KeyEvent) {
         // The knobs take the arrow keys, so entering and leaving them is its
         // own key rather than a focus that silently changes what ↑/↓ mean.
         KeyCode::Char('a') => app.adjusting = true,
+        KeyCode::Char('/') => app.searching = Some(app.searching_text()),
         KeyCode::Char('s') if !app.adjust.is_identity() => {
             app.saving = Some(suggested_name(app));
             app.saved_note = None;
@@ -460,7 +483,9 @@ pub fn enter_themes(app: &mut App) {
 
     // Re-discovered every time rather than once: the user can go back,
     // fetch the collection, and return, and the new schemes should be here.
-    app.schemes = discover(&root, Some(&app.user_schemes));
+    app.all_schemes = discover(&root, Some(&app.user_schemes));
+    app.schemes.clone_from(&app.all_schemes);
+    app.searching = None;
     let found = want.and_then(|name| app.schemes.iter().position(|s| s.name == name));
     // A remembered scheme that is no longer on disk drops its adjustments with
     // it. They were tuned against a palette this checkout does not have, and
@@ -516,6 +541,14 @@ fn on_key_knobs(app: &mut App, key: KeyEvent) {
 
 /// The keys this screen answers to, for the footer.
 pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.searching.is_some() {
+        return vec![
+            ("type", "to filter"),
+            ("↑/↓", "move"),
+            ("enter", "keep it"),
+            ("esc", "clear"),
+        ];
+    }
     if app.saving.is_some() {
         return vec![("type", "a name"), ("enter", "save"), ("esc", "cancel")];
     }
@@ -534,6 +567,7 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         return vec![
             ("↑/↓", "browse"),
             ("pgup/pgdn", "page"),
+            ("/", "filter"),
             ("a", "adjust"),
             ("enter", "choose"),
             ("esc", "back"),
@@ -542,6 +576,7 @@ pub fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
     vec![
         ("↑/↓", "browse"),
+        ("/", "filter"),
         ("a", "adjust"),
         ("s", "save as"),
         ("enter", "choose"),
@@ -629,7 +664,9 @@ fn save_adjusted(app: &mut App, name: &str) -> Result<String, String> {
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_string();
-    app.schemes = discover(&app.repo_schemes(), Some(&dir));
+    app.all_schemes = discover(&app.repo_schemes(), Some(&dir));
+    app.schemes.clone_from(&app.all_schemes);
+    app.searching = None;
     if let Some(i) = app.schemes.iter().position(|s| s.name == saved_name) {
         app.theme_row = i;
         app.theme_top = i.saturating_sub(3);
@@ -694,4 +731,41 @@ fn draw_save_prompt(frame: &mut Frame, area: Rect, app: &App, t: &Theme, divider
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
         inner,
     );
+}
+
+/// The `/` filter's keys.
+///
+/// Arrows keep working while it is open, so you can narrow and then move
+/// without closing anything. `enter` closes the filter rather than leaving the
+/// page — finishing here means "this is the list I want", and a second `enter`
+/// is what moves on.
+fn on_key_search(app: &mut App, key: KeyEvent) {
+    let Some(mut query) = app.searching.clone() else {
+        return;
+    };
+    let page = app.list_rows();
+    match key.code {
+        // `esc` clears as well as closes: a filter you cannot see is a list
+        // that looks like it has lost most of its schemes.
+        KeyCode::Esc => {
+            app.searching = None;
+            app.filter_schemes("");
+        }
+        KeyCode::Enter => app.searching = None,
+        KeyCode::Backspace => {
+            query.pop();
+            app.filter_schemes(&query);
+            app.searching = Some(query);
+        }
+        KeyCode::Char(c) => {
+            query.push(c);
+            app.filter_schemes(&query);
+            app.searching = Some(query);
+        }
+        KeyCode::Up => app.move_theme(-1, page),
+        KeyCode::Down => app.move_theme(1, page),
+        KeyCode::PageUp => app.move_theme(-(isize::try_from(page).unwrap_or(10)), page),
+        KeyCode::PageDown => app.move_theme(isize::try_from(page).unwrap_or(10), page),
+        _ => {}
+    }
 }
