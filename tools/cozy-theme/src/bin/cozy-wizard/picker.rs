@@ -18,7 +18,15 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     pub name: String,
+    /// Whether it *behaves* as a directory — a symlink to one counts, because
+    /// walking into it is what the cursor does.
     pub is_dir: bool,
+    /// Where it points, when it is a symlink.
+    ///
+    /// Kept because a dotfile tree is very often a symlink farm (Home Manager,
+    /// stow, chezmoi) and the patch walker treats links specially — see the
+    /// warning the preview pane draws for a linked directory.
+    pub link: Option<String>,
 }
 
 pub struct Picker {
@@ -99,7 +107,16 @@ impl Picker {
             // should still be walkable, and a broken one should not error the
             // whole listing.
             let is_dir = entry.path().is_dir();
-            self.all.push(Entry { name, is_dir });
+            // `symlink_metadata` does not follow, which is the only way to tell
+            // a link from what it points at.
+            let link = entry
+                .path()
+                .symlink_metadata()
+                .ok()
+                .filter(std::fs::Metadata::is_symlink)
+                .and_then(|_| std::fs::read_link(entry.path()).ok())
+                .map(|t| t.display().to_string());
+            self.all.push(Entry { name, is_dir, link });
         }
         self.all
             .sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));

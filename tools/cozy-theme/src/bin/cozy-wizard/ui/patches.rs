@@ -3,7 +3,8 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::prelude::*;
-use super::{shorten_home, truncate};
+use super::{shorten_home, truncate, truncate_start};
+use crate::picker::Entry;
 
 pub fn draw_patches(frame: &mut Frame, inner: Rect, app: &App) {
     let t = app.theme();
@@ -316,32 +317,7 @@ fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let rows = usize::from(inner.height).saturating_sub(header);
     let value = app.preview_of(&path, entry.is_dir, rows.max(1));
 
-    let mut lines = vec![Line::styled(
-        truncate(&entry.name, inner.width as usize),
-        Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
-    )];
-
-    // Where it lands, for anything chosen — the one fact about a pick that is
-    // not visible anywhere else, and the thing `e` edits.
-    if let Some((path, is_dir)) = app.current_pick() {
-        let overridden = app.dest_overrides.contains_key(&path);
-        lines.push(Line::from(vec![
-            Span::styled("→ ~/", Style::default().fg(t.comment)),
-            Span::styled(
-                truncate(&app.dest_of(&path, is_dir), inner.width as usize),
-                Style::default().fg(if overridden { t.orange } else { t.green }),
-            ),
-        ]));
-        lines.push(Line::styled(
-            if overridden {
-                "changed — e to edit"
-            } else {
-                "e to change"
-            },
-            Style::default().fg(t.comment),
-        ));
-    }
-    lines.push(Line::raw(""));
+    let mut lines = heading_lines(app, entry, inner.width as usize, t);
     let dim = Style::default().fg(t.comment);
     let body = Style::default().fg(t.fg);
     match value {
@@ -358,6 +334,32 @@ fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 lines.push(Line::styled("…", dim));
             }
         }
+        preview::Preview::Image {
+            width,
+            height,
+            bytes,
+        } => {
+            draw_image(frame, inner, app, &path, lines, (width, height, bytes), dim);
+            return;
+        }
+        preview::Preview::Ansi { lines: art, more } => {
+            lines.extend(ansi_lines(art));
+            if more {
+                lines.push(Line::styled("…", dim));
+            }
+        }
+        preview::Preview::Archive {
+            entries,
+            bytes,
+            sample,
+            capped,
+        } => lines.extend(archive_lines(
+            inner.width as usize,
+            rows,
+            (entries, bytes, capped),
+            sample,
+            t,
+        )),
         preview::Preview::Binary { bytes } => {
             lines.push(Line::styled(
                 format!("binary, {}", preview::format_bytes(bytes)),
@@ -374,43 +376,134 @@ fn draw_preview_pane(frame: &mut Frame, area: Rect, app: &App, t: &Theme) {
             bytes,
             sample,
             capped,
-        } => {
-            // What the patch copies, not what the folder shows: the source
-            // becomes `<dir>/**/*`, so the whole tree comes with it.
-            lines.push(Line::styled(
-                format!(
-                    "{}{files} file{}, {dirs} folder{}, {}",
-                    if capped { "at least " } else { "" },
-                    if files == 1 { "" } else { "s" },
-                    if dirs == 1 { "" } else { "s" },
-                    preview::format_bytes(bytes)
-                ),
-                Style::default().fg(t.green),
-            ));
-            lines.push(Line::raw(""));
-            // The same icons and colours the listing uses, so a glance at what
-            // a folder would bring in reads the same way as the folder itself.
-            lines.extend(sample.into_iter().take(rows.saturating_sub(2)).map(|p| {
-                // The kind comes from the basename; the path shown is relative
-                // to the folder, so `themes/dark.toml` is a config, not a
-                // directory.
-                let base = p.rsplit('/').next().unwrap_or(&p);
-                let kind = icons::kind_of(base, false);
-                let mut spans = Vec::new();
-                let mut width = inner.width as usize;
-                if app.icons {
-                    spans.push(Span::styled(
-                        format!("{} ", kind.icon()),
-                        Style::default().fg(kind.color(t)),
-                    ));
-                    width = width.saturating_sub(2);
-                }
-                spans.push(Span::styled(truncate(&p, width), dim));
-                Line::from(spans)
-            }));
-        }
+        } => lines.extend(dir_lines(
+            app,
+            inner.width as usize,
+            rows,
+            (files, dirs, bytes, capped),
+            sample,
+            t,
+        )),
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+/// The fixed rows above a preview's body: what the entry is called, where it
+/// points if it is a link, and where it lands if it has been chosen.
+fn heading_lines(app: &App, entry: &Entry, width: usize, t: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        truncate(&entry.name, width),
+        Style::default().fg(t.bright).add_modifier(Modifier::BOLD),
+    )];
+
+    // Where a link points, and — for a linked *directory* — that the patch
+    // walker will not go through it. A dotfile tree is very often a symlink
+    // farm, and this is the difference between patching a folder in and
+    // patching nothing in.
+    if let Some(target) = &entry.link {
+        lines.push(Line::from(vec![
+            Span::styled("→ ", Style::default().fg(t.comment)),
+            Span::styled(
+                // From the left: the tail of a path is what identifies it.
+                // The first forty characters of a nix store path say nothing.
+                truncate_start(
+                    &shorten_home(Path::new(target), &app.home),
+                    width.saturating_sub(2),
+                ),
+                Style::default().fg(t.cyan),
+            ),
+        ]));
+        if entry.is_dir {
+            // Two short lines rather than one long one: this paragraph is
+            // drawn unwrapped, because wrapping code would be worse, so
+            // anything that must be read has to fit on its own row.
+            lines.push(Line::styled(
+                "a linked folder — minimal will not",
+                Style::default().fg(t.orange),
+            ));
+            lines.push(Line::styled(
+                "walk it unless follow_symlinks is on",
+                Style::default().fg(t.orange),
+            ));
+        }
+    }
+
+    // Where it lands, for anything chosen — the one fact about a pick that is
+    // not visible anywhere else, and the thing `e` edits.
+    if let Some((path, is_dir)) = app.current_pick() {
+        let overridden = app.dest_overrides.contains_key(&path);
+        lines.push(Line::from(vec![
+            Span::styled("→ ~/", Style::default().fg(t.comment)),
+            Span::styled(
+                truncate(&app.dest_of(&path, is_dir), width),
+                Style::default().fg(if overridden { t.orange } else { t.green }),
+            ),
+        ]));
+        lines.push(Line::styled(
+            if overridden {
+                "changed — e to edit"
+            } else {
+                "e to change"
+            },
+            Style::default().fg(t.comment),
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines
+}
+
+/// ANSI art in its own colours, not the scheme's: this file *is* a picture,
+/// and repainting it in the theme would be repainting the subject.
+fn ansi_lines(art: Vec<Vec<preview::Span>>) -> Vec<Line<'static>> {
+    art.into_iter()
+        .map(|spans| {
+            Line::from(
+                spans
+                    .into_iter()
+                    .map(|s| {
+                        let mut style = Style::default();
+                        if let Some((r, g, b)) = s.fg {
+                            style = style.fg(Color::Rgb(r, g, b));
+                        }
+                        if let Some((r, g, b)) = s.bg {
+                            style = style.bg(Color::Rgb(r, g, b));
+                        }
+                        Span::styled(s.text, style)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+/// What is inside an archive: the count and size first, then as much of the
+/// member list as the pane has rows for.
+fn archive_lines(
+    width: usize,
+    rows: usize,
+    (entries, bytes, capped): (usize, u64, bool),
+    sample: Vec<String>,
+    t: &Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::styled(
+            format!(
+                "{}{entries} file{}, {}",
+                if capped { "at least " } else { "" },
+                if entries == 1 { "" } else { "s" },
+                preview::format_bytes(bytes)
+            ),
+            Style::default().fg(t.green),
+        ),
+        Line::raw(""),
+    ];
+    lines.extend(
+        sample
+            .into_iter()
+            .take(rows.saturating_sub(2))
+            .map(|p| Line::styled(truncate(&p, width), Style::default().fg(t.comment))),
+    );
+    lines
 }
 
 /// Highlighted spans as drawable lines, clipped to the pane.
@@ -608,4 +701,84 @@ fn on_key_search(app: &mut App, key: KeyEvent) {
         KeyCode::Down => app.picker_mut().move_cursor(1, page),
         _ => {}
     }
+}
+
+/// The heading, the image's dimensions, and the picture itself.
+///
+/// Half-blocks are ordinary coloured cells, so this composes with the rest of
+/// the frame — and a test can read the picture straight back out of the buffer,
+/// which is the whole reason for choosing them over the kitty protocol.
+fn draw_image(
+    frame: &mut Frame,
+    inner: Rect,
+    app: &App,
+    path: &Path,
+    mut lines: Vec<Line<'static>>,
+    (width, height, bytes): (u32, u32, u64),
+    dim: Style,
+) {
+    lines.push(Line::styled(
+        format!("{width}×{height}  ·  {}", preview::format_bytes(bytes)),
+        dim,
+    ));
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+
+    // Everything under the heading goes to the picture.
+    let below = Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(3),
+        width: inner.width,
+        height: inner.height.saturating_sub(3),
+    };
+    app.with_image(path, below, |drawable| {
+        if let Some(d) = drawable {
+            frame.render_widget(ratatui_image::Image::new(d), below);
+        }
+    });
+}
+
+/// What patching a folder in would copy: the counts, then a sample of the
+/// paths, lit the same way the listing lights them.
+fn dir_lines(
+    app: &App,
+    width: usize,
+    rows: usize,
+    (files, dirs, bytes, capped): (usize, usize, u64, bool),
+    sample: Vec<String>,
+    t: &Theme,
+) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(t.comment);
+    let mut out = vec![
+        // The recursive count, not the folder's own listing: the patch source
+        // becomes `<dir>/**/*`, so the whole tree comes with it.
+        Line::styled(
+            format!(
+                "{}{files} file{}, {dirs} folder{}, {}",
+                if capped { "at least " } else { "" },
+                if files == 1 { "" } else { "s" },
+                if dirs == 1 { "" } else { "s" },
+                preview::format_bytes(bytes)
+            ),
+            Style::default().fg(t.green),
+        ),
+        Line::raw(""),
+    ];
+    out.extend(sample.into_iter().take(rows.saturating_sub(2)).map(|p| {
+        // The kind comes from the basename; the path shown is relative to the
+        // folder, so `themes/dark.toml` is a config, not a directory.
+        let base = p.rsplit('/').next().unwrap_or(&p);
+        let kind = icons::kind_of(base, false);
+        let mut spans = Vec::new();
+        let mut room = width;
+        if app.icons {
+            spans.push(Span::styled(
+                format!("{} ", kind.icon()),
+                Style::default().fg(kind.color(t)),
+            ));
+            room = room.saturating_sub(2);
+        }
+        spans.push(Span::styled(truncate(&p, room), dim));
+        Line::from(spans)
+    }));
+    out
 }
