@@ -139,7 +139,9 @@ impl Preview {
         let mut buf = Vec::new();
         let read = {
             use std::io::Read as _;
-            match std::fs::File::open(path).and_then(|f| f.take(MAX_BYTES).read_to_end(&mut buf)) {
+            match std::fs::File::open(path)
+                .and_then(|f| f.take(MAX_BYTES).read_to_end(&mut buf))
+            {
                 Ok(n) => n,
                 Err(e) => return Preview::Error(e.to_string()),
             }
