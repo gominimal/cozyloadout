@@ -1073,8 +1073,13 @@ impl App {
             .map(|(o, _)| o.name.as_str())
             .collect();
         names.extend(self.extra_packages());
-        names.dedup();
-        names
+        let mut unique: Vec<&str> = Vec::with_capacity(names.len());
+        for name in names {
+            if !unique.contains(&name) {
+                unique.push(name);
+            }
+        }
+        unique
     }
 
     fn move_package(&mut self, delta: isize, rows: usize) {
