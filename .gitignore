@@ -17,3 +17,6 @@
 # ~/.config/cozy/settings.toml. Still read when it is the only one there, so an
 # older checkout does not lose its answers; never written again.
 /.cozy-wizard.toml
+
+# Per-developer Claude Code permissions; the shared config is .claude/settings.json.
+/.claude/settings.local.json
