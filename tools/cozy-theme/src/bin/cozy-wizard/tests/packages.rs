@@ -224,7 +224,11 @@ fn a_typed_name_that_is_also_ticked_counts_once() {
     a.on_key(press(KeyCode::Char('i')));
     typing(&mut a, &ticked);
     let names = a.chosen_packages();
-    assert_eq!(names.iter().filter(|n| **n == ticked).count(), 1, "{names:?}");
+    assert_eq!(
+        names.iter().filter(|n| **n == ticked).count(),
+        1,
+        "{names:?}"
+    );
     assert_eq!(names.len(), chosen);
 }
 
