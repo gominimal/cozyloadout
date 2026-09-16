@@ -91,6 +91,7 @@ impl Picker {
         self.top = 0;
         self.error = None;
         self.all.clear();
+        self.entries.clear();
 
         let read = match std::fs::read_dir(&self.cwd) {
             Ok(r) => r,
