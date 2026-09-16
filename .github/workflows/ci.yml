@@ -50,14 +50,16 @@ jobs:
       #
       # `cargo install` rather than third-party setup actions: it keeps this
       # workflow's supply chain to first-party actions/ plus crates.io, which the
-      # repo already depends on. `--locked` on both, and both are no-ops when the
-      # cache hits.
+      # repo already depends on. `--locked` on both. The cache restores the
+      # binaries but not cargo's install records, and `cargo install` refuses
+      # to overwrite a binary it did not record, so skip it when the binary is
+      # already on PATH.
       - name: Install the tools the recipes need
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends fish dash zip
-          cargo install just --locked
-          cargo install cargo-deny --locked
+          command -v just >/dev/null || cargo install just --locked
+          command -v cargo-deny >/dev/null || cargo install cargo-deny --locked
 
       # `--locked` rather than an offline build: the renderer has dependencies
       # now, so the property worth enforcing is that Cargo.lock is committed and
@@ -122,6 +124,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('tools/cozy-theme/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
       - name: Install the tools the recipes need
-        run: cargo install just --locked
+        run: command -v just >/dev/null || cargo install just --locked
       - run: just fetch-schemes
       - run: just check-schemes
