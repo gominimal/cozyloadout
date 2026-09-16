@@ -28,7 +28,7 @@ const VCPU_HOST_RESERVE: u32 = 2;
 const MIN_RAM_MIB: u32 = 512;
 
 /// Default guest RAM. **Arch-conditional**, because libkrun boots a same-arch
-/// guest: on x86_64 a 4096 MiB guest straddles the 32-bit MMIO/PCI hole, which
+/// guest: on `x86_64` a 4096 MiB guest straddles the 32-bit MMIO/PCI hole, which
 /// mis-places the initramfs and panics the kernel, so the default is a
 /// hole-safe 2048 (`minvmd::cmd::DEFAULT_VM_RAM_MIB`).
 #[cfg(target_arch = "x86_64")]
@@ -269,7 +269,7 @@ fn max_ram_mib(total_mib: u32) -> u32 {
     (total_mib / HOST_RAM_SHARE_DENOMINATOR * HOST_RAM_SHARE_NUMERATOR).max(MIN_RAM_MIB)
 }
 
-/// Whether `mib` lands in the x86_64 32-bit MMIO/PCI hole.
+/// Whether `mib` lands in the `x86_64` 32-bit MMIO/PCI hole.
 #[cfg(target_arch = "x86_64")]
 fn straddles_mmio_hole(mib: u32) -> bool {
     (3073..=6143).contains(&mib)
