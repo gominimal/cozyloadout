@@ -190,6 +190,12 @@ fn the_vm_page_shows_the_host_and_its_ceilings() {
 #[test]
 fn the_vm_page_adjusts_the_focused_field_only() {
     let mut a = on_resources();
+    // A host with headroom: the page clamps at this machine's ceiling, and a
+    // four-core CI runner's ceiling is already the default.
+    a.resources = resources::Resources::for_host(resources::HostCapacity {
+        logical_cores: 16,
+        total_mib: 65_536,
+    });
     let before = a.resources.allocation();
     a.on_key(press(KeyCode::Right));
     let after = a.resources.allocation();

@@ -66,6 +66,11 @@ jobs:
       - name: Build
         run: cargo build --release --locked --manifest-path tools/cozy-theme/Cargo.toml
 
+      # The wizard's tests browse the vendored upstream collection (scroll it,
+      # filter it, restore a saved pick from it), so they need schemes/vendor/
+      # present, not just the two checked-in schemes.
+      - run: just fetch-schemes
+
       # Tests, rustfmt, pedantic clippy, cargo-deny, both schemes rendered, and
       # the dash/fish syntax checks.
       - name: Check
