@@ -4,6 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # A week's soak before taking a new release, so a yanked or compromised
+    # version is caught upstream before it lands here.
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
@@ -13,6 +17,8 @@ updates:
     directory: "/tools/cozy-theme"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       cargo:
         patterns:
