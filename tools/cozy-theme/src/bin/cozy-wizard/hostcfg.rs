@@ -8,6 +8,7 @@
 
 use crate::keys::Bindings;
 use crate::resources;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -18,7 +19,13 @@ use std::process::Command;
 /// ignored. Otherwise `~/.config`, the same assumption the loadouts directory
 /// already makes.
 pub fn client_config_path(home: &Path) -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
+    client_config_path_under(home, std::env::var_os("XDG_CONFIG_HOME"))
+}
+
+/// [`client_config_path`] with `$XDG_CONFIG_HOME` passed in, so the resolution
+/// rule can be tested without touching this process's environment.
+fn client_config_path_under(home: &Path, xdg_config_home: Option<OsString>) -> PathBuf {
+    xdg_config_home
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home.join(".config"))
@@ -271,11 +278,17 @@ mod tests {
     fn the_client_config_path_follows_xdg_when_it_is_absolute() {
         // Matching minimal's own resolution, including the spec's rule that a
         // relative XDG_CONFIG_HOME is invalid and ignored.
-        let home = PathBuf::from("/home/someone");
+        let home = Path::new("/home/someone");
+        let default = PathBuf::from("/home/someone/.config/minimal/config.toml");
+        assert_eq!(client_config_path_under(home, None), default);
         assert_eq!(
-            client_config_path(&home),
-            PathBuf::from("/home/someone/.config/minimal/config.toml"),
-            "with no XDG_CONFIG_HOME set in this test process"
+            client_config_path_under(home, Some("/xdg".into())),
+            PathBuf::from("/xdg/minimal/config.toml")
+        );
+        assert_eq!(
+            client_config_path_under(home, Some("relative/xdg".into())),
+            default,
+            "a relative XDG_CONFIG_HOME is ignored"
         );
     }
 
