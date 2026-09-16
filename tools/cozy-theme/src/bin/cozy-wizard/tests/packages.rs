@@ -209,6 +209,19 @@ fn typed_names_are_installed_and_junk_is_dropped() {
 }
 
 #[test]
+fn a_typed_name_that_is_also_ticked_counts_once() {
+    // `fish` is in the list and on by default; typing it again must not make
+    // the summary claim one package more than will be installed.
+    let mut a = on_packages();
+    let chosen = a.chosen_packages().len();
+    a.on_key(press(KeyCode::Char('i')));
+    typing(&mut a, "fish");
+    let names = a.chosen_packages();
+    assert_eq!(names.iter().filter(|n| **n == "fish").count(), 1, "{names:?}");
+    assert_eq!(names.len(), chosen);
+}
+
+#[test]
 fn backspace_edits_the_field() {
     let mut a = on_packages();
     a.on_key(press(KeyCode::Char('i')));
