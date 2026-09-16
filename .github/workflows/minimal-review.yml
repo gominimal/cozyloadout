@@ -1,0 +1,162 @@
+# minimal-review — thin caller.
+#
+# The reviewer itself is one file, in one place:
+#   gominimal/foundry/.github/workflows/minimal-review-impl.yml
+# pinned below at a commit. This file carries triggers, debouncing and a secret
+# map, and nothing else.
+#
+# DO NOT add steps here. A job that `uses:` a reusable workflow cannot carry
+# `steps`, `runs-on` or `container` at all — that restriction is the point. It
+# is what stops a PR under review from prepending a step that poisons $PATH for
+# the gate that judges it. Anything you want to add belongs in foundry.
+#
+# DO NOT configure anything here either. Every per-repo knob is a repository or
+# organization variable, read by the impl and resolved against THIS repo:
+#   vars.MINIMAL_REVIEW_TASK   vars.MINIMAL_REVIEW_MODEL
+#   vars.MINIMAL_REVIEW_HOST_ALIAS   vars.MINIMAL_CHANNEL   vars.AW_BOT_APP_ID
+#
+# To take a reviewer update: bump the pinned SHA. Nothing else changes. Repos
+# are pinned independently on purpose, so a bad impl reaches whoever bumped and
+# no one else.
+#
+# Three ways to start a review: a PR event, `/review` as a PR comment from an
+# org member, or `gh workflow run minimal-review.yml -f pr=<n>`.
+#
+# A `/review` comment gets no acknowledgement, and that is a deliberate trade
+# rather than an oversight. Reacting to it needs `issues: write` in the ceiling
+# below — GitHub gates POST /issues/comments/{id}/reactions on Issues, not Pull
+# requests, even for a comment on a PR — and that permission would let this
+# token create, edit and close issues in every install, for a reviewer whose
+# whole design is comment-only on pull requests. The review itself arrives in
+# two to five minutes and is the acknowledgement. If the wait proves worse than
+# the widened ceiling, add `issues: write` here deliberately, in a reviewed PR.
+#
+# Runbook: gominimal/foundry -> review/docs/phase-1a-runbook.md
+name: minimal-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  # `/review` in a PR comment. `created` only — editing an old comment to say
+  # `/review` should not start a run, and `edited` would let one comment start
+  # any number of them.
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to review"
+        required: true
+        type: string
+
+# The ceiling. A called workflow can drop permissions but never raise them, so
+# this is the most the reviewer can ever hold in this repo.
+permissions:
+  contents: read
+  pull-requests: write
+
+# `pull_request` runs group per PR so a burst of pushes produces one review of
+# the final head. `issue_comment` runs must NOT join that group: with
+# cancel-in-progress, sharing it means any comment on a PR kills the review
+# running for it — CodeRabbit posting its summary was enough, and it cancelled
+# the review of gominimal/foundry#46 nine seconds after the comment landed. So a
+# comment run is keyed by the comment, which cancels nothing and is cancelled by
+# nothing. Two `/review`s in a row both run, and each was explicitly asked for.
+concurrency:
+  group: minimal-review-${{ github.event_name == 'issue_comment' && format('comment-{0}', github.event.comment.id) || github.event.pull_request.number || github.event.inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # dependabot is excluded: its runs cannot read Actions secrets, so the
+    # token mint dies with "The 'private-key' input must be set to a non-empty
+    # string". 12 of 12 dependabot runs failed that way across the fleet.
+    #
+    # Only on this path. `/review` on a dependabot PR still works and is meant
+    # to: that run is triggered by the commenter rather than by dependabot, so
+    # it reads Actions secrets normally. It is the one way to get a bump
+    # reviewed until the secrets live in each repo's Dependabot store, at which
+    # point this clause comes out.
+    #
+    # Same-repo PRs only, and no test of who wrote them here — the impl asks the
+    # API for the author's repository permission before it mints anything, which
+    # is a thing a step can do and an `if` expression cannot.
+    #
+    # An App's PR is still reviewed. The old Bot clause named two beneficiaries,
+    # dependabot and gominimal-aw-bot; dependabot is excluded above for a reason
+    # that is about secrets rather than trust, and aw-bot is admitted by name in
+    # the impl's check. It has to be by name: the permission endpoint answers
+    # `404 gominimal-aw-bot is not a user` for an App, so there is no permission
+    # to look up and a lookup-only rule would refuse every App there is.
+    #
+    # `author_association` used to do this job and could not. It reports MEMBER
+    # only for a PUBLIC org member, so a private one comes back CONTRIBUTOR and
+    # was refused: gominimal/minimal#1313 skipped nine runs in a row that way,
+    # and four of thirteen org members were invisible to the reviewer. Testing
+    # permission instead admits them and still refuses a read-only author, which
+    # the association test did by luck rather than by asking.
+    #
+    # The `issue_comment` clause is the one that has to be right. That event
+    # fires on plain issues as well as PRs, and on a public install anyone at
+    # all can post a comment, so every one of its tests has to hold: it must be a
+    # PR, the body must ask, and the asker must be one of ours. No Bot clause —
+    # a bot comment starting a paid review is a loop nobody asked for, and the
+    # impl refuses one by name.
+    #
+    # CONTRIBUTOR is in the list on purpose and is not "anyone". A private org
+    # member's comment carries CONTRIBUTOR just as their PR does, so the
+    # narrower list reproduced the #1313 bug here: the job never started, so the
+    # impl's permission check never ran. A stranger with no commits in this repo
+    # is NONE and is still refused for free.
+    #
+    # The body test is `== '/review'` or the prefix `'/review '`, not
+    # `startsWith(body, '/review')`. A bare prefix fires on `/reviewed already,
+    # thanks` and `/review-later once CI is green` — a teammate typing English
+    # that happens to open with those seven characters buys a paid run.
+    # A trailing line break IS matched, by the third and fourth
+    # clauses: some clients append one, and `/review` followed by nothing but a
+    # break means the same thing a bare `/review` does. So the command is
+    # `/review` on its own line, with or without a trailing break, or
+    # `/review <text>` on one line.
+    #
+    # Both endings, because GitHub does not normalise a comment body. Measured
+    # across 600 multi-line comments in this org: 43901 bare LF and 378 CRLF —
+    # rare, but not theoretical, and the CRLF ones are twitchyliquid64's, who
+    # writes more review commentary on gominimal/minimal than anyone. Matching
+    # only `\n` would have made `/review` silently do nothing for exactly the
+    # person most likely to type it. `'/review\r'` covers CRLF and a lone CR.
+    #
+    # This gate is in a file the PR under review can edit, so it is a filter and
+    # not a control. The impl re-checks the fork case and this same comment gate.
+    # A double-quoted scalar, not `>-`: in a folded block `\n` stays two
+    # characters and the newline clause would never match. YAML unescapes it
+    # here. Every " in the gate must be escaped as a result.
+    if: "github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      (github.event.comment.body == '/review' ||
+      startsWith(github.event.comment.body, '/review ') ||
+      startsWith(github.event.comment.body, '/review\n') ||
+      startsWith(github.event.comment.body, '/review\r')) &&
+      contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\",\"CONTRIBUTOR\"]'),
+      github.event.comment.author_association)) ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft != true &&
+      github.event.pull_request.user.login != 'dependabot[bot]')"
+    uses: gominimal/foundry/.github/workflows/minimal-review-impl.yml@59fc65f6a66e7632316653ca82757425baf45f06
+    with:
+      # Empty on a pull_request — neither `github.event.inputs` nor
+      # `github.event.issue` exists there — and that is the contract, not an
+      # oversight. The implementation resolves the number as
+      # `${EVENT_PR_NUMBER:-${INPUT_PR_NUMBER:-}}`, preferring the event's own
+      # PR and falling back to this input, then refuses anything non-numeric.
+      # If that precedence ever changes, this line has to change with it.
+      pr: ${{ github.event.inputs.pr || github.event.issue.number }}
+    # Named, not `secrets: inherit`. With inherit, a one-token change to the ref
+    # above would forward every secret this repo can see to a workflow of the
+    # author's choosing, with no secret name anywhere in the diff.
+    secrets:
+      AW_BOT_PRIVATE_KEY: ${{ secrets.AW_BOT_PRIVATE_KEY }}
+      MINIMAL_REVIEW_KEY: ${{ secrets.MINIMAL_REVIEW_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
