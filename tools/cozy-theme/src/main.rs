@@ -278,8 +278,13 @@ fn main() -> Result<()> {
     let mut options = Options::from(&args);
 
     layer_settings(&args, &mut options)?;
-    if let (Some(name), Some(scheme)) = (&args.save_as, &args.scheme) {
-        let loaded = cozy_theme::Scheme::load(scheme)?;
+    if let Some(name) = &args.save_as {
+        // `options.scheme`, not `args.scheme`: a `--settings` file may be what
+        // named the scheme, and `--save-as` should work from it too.
+        if options.scheme.as_os_str().is_empty() {
+            bail!("--save-as needs a scheme: pass one, or a --settings file that names one");
+        }
+        let loaded = cozy_theme::Scheme::load(&options.scheme)?;
         let from = format!(
             "Adapted from {:?} by {}.",
             loaded.name.clone(),
