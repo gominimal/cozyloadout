@@ -78,7 +78,7 @@ Drop the template in `templates/`, add a `[[file]]` block to
 The patches list follows automatically, so there is no second place to update.
 The package itself needs to exist in the [Minimal Public
 Registry](https://github.com/gominimal/pkgs) and be added to `packages` in
-`templates/cozy.toml`.
+`templates/packages.toml`.
 
 ## Why do we require a CLA?
 

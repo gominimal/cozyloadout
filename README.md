@@ -87,8 +87,9 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 It ends with a summary, a tick for whether to install (on by default, `space`
 toggles), and four choices: generate, save these settings to a file, save and
 exit, or abort. `esc` goes back a screen from anywhere, and your answers are
-remembered in a gitignored `.cozy-wizard.toml` so the next run starts where you
-left off, at `~/.config/cozy/settings.toml`.
+remembered in `~/.config/cozy/settings.toml` so the next run starts where you
+left off. An older `.cozy-wizard.toml` in the checkout is read once, then
+moved there.
 
 Nothing you create lands in the checkout: saved schemes and remembered answers
 both live under `~/.config/cozy/`, so they survive re-cloning the repo.
