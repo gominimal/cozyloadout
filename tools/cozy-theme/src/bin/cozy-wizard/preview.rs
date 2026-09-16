@@ -136,26 +136,32 @@ impl Preview {
         }
         // Read a prefix, not the file: `read_to_string` on something large is
         // the whole problem, and a preview only ever shows the top.
-        // `MAX_BYTES` bounds this before the cast, so `usize` always holds it
-        // even where a pointer is 32 bits wide.
-        let want = usize::try_from(MAX_BYTES.min(meta.len())).unwrap_or(usize::MAX);
-        let mut buf = vec![0u8; want];
+        let mut buf = Vec::new();
         let read = {
             use std::io::Read as _;
-            match std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
+            match std::fs::File::open(path).and_then(|f| f.take(MAX_BYTES).read_to_end(&mut buf)) {
                 Ok(n) => n,
                 Err(e) => return Preview::Error(e.to_string()),
             }
         };
-        buf.truncate(read);
+        let cut_short = u64::try_from(read).unwrap_or(u64::MAX) < meta.len();
 
         // A NUL byte is the oldest and most reliable "this is not text" signal,
         // and it is what stops the pane rendering control characters.
         if buf.contains(&0) {
             return Preview::Binary { bytes: meta.len() };
         }
-        let Ok(text) = String::from_utf8(buf) else {
-            return Preview::Binary { bytes: meta.len() };
+        let text = match String::from_utf8(buf) {
+            Ok(text) => text,
+            // A character the byte limit cut in half is truncation, not binary;
+            // invalid bytes anywhere before that boundary still are.
+            Err(e) if cut_short && e.utf8_error().error_len().is_none() => {
+                let valid = e.utf8_error().valid_up_to();
+                let mut bytes = e.into_bytes();
+                bytes.truncate(valid);
+                String::from_utf8(bytes).unwrap_or_default()
+            }
+            Err(_) => return Preview::Binary { bytes: meta.len() },
         };
         // An escape sequence in a text file is either noise to strip or the
         // file's own art. `ESC[` before any newline is the signal: prose does
@@ -166,8 +172,7 @@ impl Preview {
                 .iter()
                 .any(|l| l.iter().any(|s| s.fg.is_some() || s.bg.is_some()))
             {
-                let more = text.lines().nth(lines).is_some()
-                    || u64::try_from(read).unwrap_or(u64::MAX) < meta.len();
+                let more = text.lines().nth(lines).is_some() || cut_short;
                 return Preview::Ansi {
                     lines: coloured,
                     more,
@@ -175,8 +180,7 @@ impl Preview {
             }
         }
         let mut out: Vec<String> = text.lines().take(lines).map(Self::sanitise).collect();
-        let more = text.lines().nth(lines).is_some()
-            || u64::try_from(read).unwrap_or(u64::MAX) < meta.len();
+        let more = text.lines().nth(lines).is_some() || cut_short;
         if out.is_empty() {
             out.push(String::new());
         }
