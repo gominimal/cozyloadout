@@ -508,7 +508,17 @@ pub fn select_theme(app: &mut App) -> bool {
     // Re-discovered every time rather than once: the user can go back,
     // fetch the collection, and return, and the new schemes should be here.
     app.all_schemes = discover(&root, Some(&app.user_schemes));
-    app.schemes.clone_from(&app.all_schemes);
+    // A `/` filter closed with `enter` is the list the user settled on, and
+    // the footer still names it; coming back shows that list, not the whole
+    // collection under the same footer.
+    app.schemes = if app.search_query.is_empty() {
+        app.all_schemes.clone()
+    } else {
+        crate::fuzzy::filter(&app.all_schemes, &app.search_query, |s| s.name.as_str())
+            .into_iter()
+            .map(|i| app.all_schemes[i].clone())
+            .collect()
+    };
     app.searching = None;
     let found = want.and_then(|name| app.schemes.iter().position(|s| s.name == name));
     app.theme_row = found.unwrap_or(0);
