@@ -817,6 +817,24 @@ fn no_test_can_write_into_a_real_home() {
 // -- the / filter ----------------------------------------------------------
 
 #[test]
+fn a_closed_filter_survives_leaving_and_coming_back() {
+    // `enter` keeps the filter and the footer keeps naming it, so the list
+    // behind that footer must still be the narrowed one after a round trip.
+    let mut a = on_themes();
+    let all = a.schemes.len();
+    a.on_key(press(KeyCode::Char('/')));
+    typing(&mut a, "gruv");
+    a.on_key(press(KeyCode::Enter));
+    let narrowed = a.schemes.len();
+    assert!(narrowed < all);
+
+    a.on_key(press(KeyCode::Esc)); // -> schemes
+    a.on_key(press(KeyCode::Enter)); // -> themes again
+    assert_eq!(a.search_query, "gruv");
+    assert_eq!(a.schemes.len(), narrowed, "the filter should still apply");
+}
+
+#[test]
 fn slash_opens_a_filter_that_narrows_the_list() {
     let mut a = on_themes();
     let all = a.schemes.len();
