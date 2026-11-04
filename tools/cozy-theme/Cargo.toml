@@ -83,7 +83,7 @@ uuid = { version = "1", features = ["v5"] }
 yaml-rust2 = { version = "0.12.0", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
 ratatui-image = { version = "9", default-features = false, features = ["crossterm"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 tar = "0.4.46"
 # Archive previews: what patching a `.zip` or `.tar.gz` in would bring. flate2
 # was already in the tree via syntect, so gzip costs nothing extra.
