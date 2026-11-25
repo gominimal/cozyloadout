@@ -445,7 +445,7 @@ mod tests {
         let hits: Vec<&str> = r.search("rg").iter().map(|p| p.name.as_str()).collect();
         assert!(hits.contains(&"ripgrep"), "{hits:?}");
         assert_eq!(r.search("ripgrep")[0].name, "ripgrep");
-        assert!(r.search("zzzznope").is_empty());
+        assert_eq!(r.search("zzzznope"), Vec::<&Package>::new());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

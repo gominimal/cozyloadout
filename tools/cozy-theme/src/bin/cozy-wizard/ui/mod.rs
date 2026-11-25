@@ -10,6 +10,7 @@ pub mod prelude;
 
 pub mod apply;
 pub mod client;
+pub mod git;
 pub mod greeting;
 pub mod packages;
 pub mod patches;
@@ -63,6 +64,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Themes => themes::draw_themes(frame, inner, app),
         Screen::Packages => packages::draw_packages(frame, inner, app),
         Screen::Patches => patches::draw_patches(frame, inner, app),
+        Screen::Git => git::draw_git(frame, inner, app),
         Screen::Client => client::draw_client(frame, inner, app),
         Screen::Resources => vm::draw_resources(frame, inner, app),
         Screen::Apply => apply::draw_apply(frame, inner, app),
@@ -107,6 +109,7 @@ pub fn footer_hints(app: &App) -> Vec<Span<'static>> {
             Screen::Themes => themes::hints(app),
             Screen::Packages => packages::hints(app),
             Screen::Patches => patches::hints(app),
+            Screen::Git => git::hints(app),
             Screen::Client => client::hints(app),
             Screen::Resources => vm::hints(app),
             Screen::Apply => apply::hints(app),

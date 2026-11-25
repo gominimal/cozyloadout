@@ -244,9 +244,16 @@ pub fn on_apply() -> App {
     a
 }
 
-pub fn on_client() -> App {
+pub fn on_git() -> App {
     let mut a = on_packages();
     crate::ui::patches::enter_patches(&mut a);
+    a.on_key(press(KeyCode::Enter));
+    assert_eq!(a.screen, Screen::Git);
+    a
+}
+
+pub fn on_client() -> App {
+    let mut a = on_git();
     a.on_key(press(KeyCode::Enter));
     assert_eq!(a.screen, Screen::Client);
     a

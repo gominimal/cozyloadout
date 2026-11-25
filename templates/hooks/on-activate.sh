@@ -57,11 +57,21 @@ add_include() {
 $1"
 }
 
+# --- git identity ----------------------------------------------------------
+# Whatever the wizard's git page chose, rendered into the block below: up to
+# three plain `git config --global` sets, for user.name, user.email and an
+# insteadOf that fetches GitHub's SSH remotes over HTTPS. A plain set rather
+# than --add, unlike the includes: these are single values, and setting one
+# again is what makes a re-run idempotent. Each ends `|| true`.
+#
+# Nothing chosen renders nothing, so the line closing the block below carries
+# the substitution at its start rather than on a line of its own — otherwise
+# the default hook would grow a blank line.
 if command -v git >/dev/null 2>&1; then
     existing_includes=$(git config --global --get-all include.path 2>/dev/null || true)
     add_include '{{loadout_name}}-delta.gitconfig'
     add_include '{{loadout_name}}-git.gitconfig'
-fi
+{{git_setup}}fi
 
 # --- bat -------------------------------------------------------------------
 # bat compiles themes into a cache and cannot see a .tmTheme until that cache is

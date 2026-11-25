@@ -11,7 +11,7 @@ this covers changing it.
 2. **`cozy.toml` is generated.** Its `patches` list comes from
    `templates/manifest.toml`, so it can't describe a file that wasn't rendered,
    and its `packages` list from `templates/packages.toml`. Edit those, not the
-   generated array — `templates/cozy.toml` is for vars and hooks.
+   generated array — `templates/cozy.toml` is for env_vars and hooks.
    Patch sources are emitted as `$LOADOUT_ROOT/<path>` — minimal expands that to
    the loadout's own directory, so it needs **minimal 0.5.4 or newer**. Before
    0.5.4 the path had to be spelled out as
@@ -80,8 +80,8 @@ float-to-int `as` saturates rather than wrapping, so the two "unchecked
 narrowing" lints do not apply. Keep allows local and reasoned like that one
 rather than widening the crate-level config.
 
-`rust-version = "1.88"`, set by the dependencies rather than by this crate's own
-source — currently `darling`, reached through ratatui. Development is on 1.97.1,
+`rust-version = "1.89"`, set by the dependencies rather than by this crate's own
+source — currently `zip` 9, which the archive preview reads through. Development is on 1.99,
 so the floor is never exercised locally; the `msrv` CI job compiles against it.
 
 One crate was *rejected* after testing: see the handlebars note under Template
@@ -120,8 +120,8 @@ sections for callers who are both in this repo is documentation nobody reads.
 
 `tools/cozy-theme/src/bin/cozy-wizard/`, a second binary in the same package
 (`default-run = "cozy-theme"` keeps a bare `cargo run` pointing at the
-renderer). `just wizard` runs it. Seven screens: greeting, schemes, themes,
-packages, patches, client, resources.
+renderer). `just wizard` runs it. The screens: greeting, schemes, themes,
+packages, patches, git, client, resources.
 
 Cargo takes `src/bin/<name>/main.rs` plus submodules, and the wizard uses all
 of it. The layout is **one module per screen and one per model**, because the
@@ -270,7 +270,7 @@ against one that is not, and walking *back* from the theme browser landed on a
 page that looked like a different program.
 
 `every_screen_paints_in_the_loaded_scheme` holds it now, and holds it the strong
-way: it walks all eight screens plus the three overlays and asserts that **every
+way: it walks every screen plus the overlays and asserts that **every
 cell in the buffer** is `Color::Rgb` or `Color::Reset`. A scheme's colours are
 always `Rgb`, so any named colour surviving in a rendered frame is by
 construction a hardcoded one. Checking a single representative cell would have
@@ -464,6 +464,7 @@ The renderer grew the flags this needs, and they work from the command line too:
 | `--greeting blocks\|legacy` | which fish mark to install |
 | `--with a,b,c` | which optional packages; **omitted means all**, which is what a plain `just theme` has always produced |
 | `--patch-file`, `--patch-dir` | the user's own files, appended to the patch list; a directory becomes a glob with a trailing-slash dest |
+| `--git-name`, `--git-email`, `--git-https` | what the activation hook sets in git; an empty value sets nothing, and `--git-https=false` overrides a settings file |
 
 One trap survives the move to a library call: **the repo root must never be an
 empty path.** `Path::new("schemes/vendor")` climbs to `"schemes"` and then to
@@ -696,6 +697,39 @@ whether anything is set (`contrast +100`, truncated to the column) or offers
 `a to adjust`. Without it the reset would be a silent loss: you would reopen the
 panel and find your work gone with nothing having said so.
 
+### The git page
+
+Two values and three ticks: `user.name`, `user.email`, and an `insteadOf` that
+fetches `git@github.com:` remotes over HTTPS. A session has its own `$HOME`, so
+its git starts with no identity whatever the host's has; and it has no SSH key
+unless one is patched in, which is what makes the rewrite worth offering.
+
+**It configures the loadout, not the host**, which is why it sits before the
+client page rather than beside it. What it chooses becomes lines in
+`hooks/on-activate.sh`, under `build/`, and nothing on this machine changes.
+
+Decisions worth keeping:
+
+- **The text and the tick are separate settings.** Unticking keeps what was
+  typed, in the page and in the settings file, so turning a value off for one
+  run does not mean retyping it the next.
+- **Accepting a typed value ticks it, and emptying one unticks it** — the same
+  reasoning as `e` on the patches page: typing a value is asking for it to be
+  set.
+- **All off by default.** An untouched wizard reproduces the loadout people
+  already have.
+- **The page shows the commands the hook will run**, from `GitSetup::script`, so
+  the preview and the hook cannot disagree.
+- **Values are single-quoted for `sh` by `sh_quote`**, so `O'Brien` or a `$(…)`
+  arrives as text. Control characters are refused at input, and dropped from a
+  hand-edited settings file per field.
+- **A plain set, not `--add`**, unlike the includes: these are single values,
+  and setting one again is what makes re-activation idempotent. Each line ends
+  `|| true`, because the hook must exit 0.
+- **`GitSetup::default()` renders the empty string**, and the template puts
+  the substitution at the start of the `fi` line closing the block, so a
+  default hook gains no blank line.
+
 ### The client and VM pages
 
 Two pages that configure **minimal, not the loadout**. Everything else the
@@ -703,7 +737,7 @@ wizard collects lands in `build/` and is undone by deleting it; these two write
 outside the repo, so both pages say so and the summary marks them.
 
 Nothing in a loadout can set either. `LoadoutFile`
-(`crates/sessions/src/core/loadout.rs`) carries packages, vars, patches and
+(`crates/sessions/src/core/loadout.rs`) carries packages, env_vars, patches and
 lifecycle hooks and nothing else — session keys are *client* config in
 `<config>/minimal/config.toml`, and VM resources are minvmd's. That is why
 these are separate pages rather than more rows in the generated `cozy.toml`.
@@ -1390,12 +1424,14 @@ has been tested is the script itself, run directly against throwaway `$HOME`s.
 ### SHELL — the shell handover
 
 ```toml
-[vars]
+[env_vars]
 SHELL = "fish"
 ```
 
 minimal launches the session's interactive shell from `$SHELL`, so declaring it
-is the whole handover. **Requires minimal 0.5.4 or newer.**
+is the whole handover. **Requires minimal 0.5.4 or newer.** The table is
+`env_vars`, minimal's name since **0.8** for what was `vars`; an older minimal
+does not read it, so 0.8 is the floor for the loadout as a whole.
 
 Before 0.5.4 this did not work: the session shell was `bash --noprofile --rcfile
 <daemon rc> -i` — spawned once when the session is created, not per attach — and
@@ -1598,7 +1634,7 @@ things to remember:
   than trusting it. The floor was derived by reading the dependencies' own
   manifests, and Dependabot moves it silently — uuid, indexmap and hashbrown
   already moved it twice: 1.71 -> 1.85 with the parsers, 1.85 -> 1.88 with
-  ratatui.
+  ratatui, then 1.88 -> 1.89 with zip 9.
 - **A weekly `check-schemes` cron.** `just fetch-schemes` clones tinted-theming
   at HEAD, so the rendered corpus is an input nobody here controls. The schedule
   surfaces an upstream scheme that breaks rendering as upstream drift rather
@@ -1684,7 +1720,7 @@ Worth knowing before relying on any of it:
 | Re-attach carries no OSC palette | read in `minimald::session_host` — the attach flush is a `vt100` screen dump |
 | Detach leaves the palette on the host terminal | read in `Host::unwind_codes` — it resets SGR, alt screen, cursor, focus reporting, and no OSC colours |
 | Any `on_attach` hook breaks fish's OSC 11 background | **doubtful** — observed once, but the once-per-shell palette bug produces the same symptom and was live at the same time. Re-test |
-| Rust floor of 1.88 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — no rustup on the machine this was written on. **`plist` and `image` both declare exactly 1.88**, so the floor is now pinned by a dependency rather than sitting comfortably above one; syntect and bincode declare no `rust-version` at all, so the CI job is the only thing that knows |
+| Rust floor of 1.89 | derived by reading the dependencies' own `rust-version` fields, then **gated in CI** by the `msrv` job, which compiles against it. Never tested locally — no rustup on the machine this was written on. **`zip` 9 declares exactly 1.89**, so the floor is pinned by a dependency rather than sitting comfortably above one; syntect and bincode declare no `rust-version` at all, so the CI job is the only thing that knows |
 | The greeting's detach chord | verified against minimal's source: `minimald` seeds `MINIMAL_DETACH_HINT` per attach channel as `"{leader} then {detach_key}"` (`crates/minimald/src/session.rs`), defaulting to `ctrl-]` and `d` (`crates/sessions/src/keys.rs`). The template reads the var and falls back to the same `ctrl-] then d` minimal's own banner does. **Mint-scoped**, per `docs/reference/loadouts.md`: a second client attaching with a remapped chord gets a working one, but the greeting still shows the minting channel's |
 | zellij forwards OSC sets to the host terminal | **unverified** — see README's Known gaps |
 | The per-attach re-apply fires in a real session | **unverified** — the logic is tested, the daemon was unreachable here |

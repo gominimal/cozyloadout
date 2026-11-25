@@ -225,7 +225,7 @@ pub fn on_key_patches(app: &mut App, key: KeyEvent) {
         // Enter finishes rather than descending: descending is on the
         // arrow that points into the tree, which leaves enter free to mean
         // the same thing it means on every other page.
-        KeyCode::Enter => app.screen = Screen::Client,
+        KeyCode::Enter => app.screen = Screen::Git,
         _ => {}
     }
 }

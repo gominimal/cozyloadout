@@ -264,8 +264,8 @@ fn adjustments_reach_the_summary_and_the_slug() {
     a.on_key(press(KeyCode::Right));
     let adjusted_slug = a.scheme().unwrap().slug;
     a.on_key(press(KeyCode::Enter)); // -> packages
-    for _ in 0..4 {
-        a.on_key(press(KeyCode::Enter)); // patches, client, resources, apply
+    for _ in 0..5 {
+        a.on_key(press(KeyCode::Enter)); // patches, git, client, resources, apply
     }
     assert_eq!(a.screen, Screen::Apply);
 
@@ -388,6 +388,7 @@ fn every_screen_still_advertises_its_own_keys() {
             Screen::Patches,
             &["move", "in/out", "choose", "back", "done"],
         ),
+        (Screen::Git, &["move", "change", "back", "done"]),
         (Screen::Client, &["move", "change", "reset", "back", "done"]),
         (
             Screen::Resources,
@@ -788,7 +789,7 @@ fn the_preview_survives_the_scheme_list_emptying_underneath_it() {
     std::fs::remove_dir_all(&vendor).unwrap();
     a.on_key(press(KeyCode::Enter)); // -> packages
     crate::ui::themes::enter_themes(&mut a); // and back
-    assert!(a.schemes.is_empty());
+    assert_eq!(a.schemes, Vec::<cozy_theme::SchemeEntry>::new());
     let _ = render_app(&a, 110, 30);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -921,7 +922,7 @@ fn the_preview_follows_the_filtered_selection() {
     let before = frame_bg(&a, 110, 30);
     a.on_key(press(KeyCode::Char('/')));
     typing(&mut a, "gruvbox-light");
-    assert!(!a.schemes.is_empty());
+    assert_ne!(a.schemes, Vec::<cozy_theme::SchemeEntry>::new());
     assert_ne!(
         frame_bg(&a, 110, 30),
         before,
@@ -934,7 +935,7 @@ fn a_filter_that_matches_nothing_is_survivable() {
     let mut a = on_themes();
     a.on_key(press(KeyCode::Char('/')));
     typing(&mut a, "zzzznotascheme");
-    assert!(a.schemes.is_empty());
+    assert_eq!(a.schemes, Vec::<cozy_theme::SchemeEntry>::new());
     let _ = render_app(&a, 110, 30);
     a.on_key(press(KeyCode::Down));
     a.on_key(press(KeyCode::Esc));

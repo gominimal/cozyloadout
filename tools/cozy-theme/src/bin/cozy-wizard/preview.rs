@@ -223,8 +223,8 @@ impl Preview {
             };
             for i in 0..zip.len().min(MAX_WALK) {
                 if let Ok(entry) = zip.by_index(i) {
-                    if !entry.is_dir() {
-                        names.push((entry.name().to_string(), entry.size()));
+                    if let (false, Ok(name)) = (entry.is_dir(), entry.name()) {
+                        names.push((name.into_owned(), entry.size()));
                     }
                 }
             }

@@ -347,7 +347,7 @@ mod tests {
         // An empty listing and a permission error look identical on screen
         // unless the error is kept.
         let mut p = Picker::new(Path::new("/definitely/not/here"));
-        assert!(p.entries.is_empty());
+        assert_eq!(p.entries, Vec::<Entry>::new());
         assert!(p.error.is_some(), "a failed listing should explain itself");
         p.reload();
         assert!(p.error.is_some());

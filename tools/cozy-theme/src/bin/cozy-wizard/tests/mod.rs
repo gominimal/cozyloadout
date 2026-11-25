@@ -9,6 +9,7 @@
 pub mod util;
 
 mod apply;
+mod git;
 mod greeting;
 mod hostpages;
 mod navigation;
