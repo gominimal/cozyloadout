@@ -290,6 +290,7 @@ fn run_generate_to(app: &App, repo: &Path, out: &Path, install: bool) -> Result<
             .map(|p| p.chosen_of(false))
             .unwrap_or_default(),
         adjust: app.adjust,
+        git: app.git_setup(),
         patch_dests: app.dest_overrides.clone(),
         patch_dirs: app
             .picker
@@ -336,6 +337,7 @@ enum Screen {
     Themes,
     Packages,
     Patches,
+    Git,
     Client,
     Resources,
     Apply,
@@ -449,6 +451,19 @@ struct App {
     /// keys would otherwise swallow.
     editing: Option<String>,
 
+    /// The git page: the two values as typed, whether each is set by the
+    /// hook, and the HTTPS rewrite. The text is kept apart from its tick so
+    /// unticking does not throw away what was typed.
+    git_name: String,
+    git_email: String,
+    git_set_name: bool,
+    git_set_email: bool,
+    git_https: bool,
+    git_row: usize,
+    /// `Some(buffer)` while a value is being typed — modal for the same
+    /// reason the client page's chords are: the field takes `q` and `j`.
+    git_editing: Option<String>,
+
     /// The VM's share of this machine, probed on the way into the page.
     resources: Resources,
 
@@ -553,6 +568,16 @@ impl App {
             bindings: Bindings::default(),
             client_row: 0,
             editing: None,
+            // Restored here, like the greeting, because nothing on this page
+            // depends on anything discovered later. All off when never asked:
+            // an untouched wizard reproduces the loadout people already have.
+            git_name: saved.git_name.clone().unwrap_or_default(),
+            git_email: saved.git_email.clone().unwrap_or_default(),
+            git_set_name: saved.git_set_name.unwrap_or(false),
+            git_set_email: saved.git_set_email.unwrap_or(false),
+            git_https: saved.git_https.unwrap_or(false),
+            git_row: 0,
+            git_editing: None,
             // Probing reads /proc or runs sysctl, so it happens once here
             // rather than on every frame.
             resources: Resources::probe(),
@@ -658,6 +683,20 @@ impl App {
             bell_on_leader: Some(self.bindings.bell),
             vcpus: Some(self.resources.allocation().vcpus),
             ram_mib: Some(self.resources.allocation().ram_mib),
+            git_name: Some(self.git_name.clone()),
+            git_email: Some(self.git_email.clone()),
+            git_set_name: Some(self.git_set_name),
+            git_set_email: Some(self.git_set_email),
+            git_https: Some(self.git_https),
+        }
+    }
+
+    /// What the hook will do to git, from the git page's ticks.
+    fn git_setup(&self) -> cozy_theme::GitSetup {
+        cozy_theme::GitSetup {
+            name: self.git_set_name.then(|| self.git_name.clone()),
+            email: self.git_set_email.then(|| self.git_email.clone()),
+            https: self.git_https,
         }
     }
 
@@ -1031,6 +1070,7 @@ impl App {
         // Ctrl-C still gets you out from anywhere.
         let typing = (self.screen == Screen::Packages && self.focus == Focus::Input)
             || (self.screen == Screen::Client && self.editing.is_some())
+            || (self.screen == Screen::Git && self.git_editing.is_some())
             || (self.screen == Screen::Themes && self.saving.is_some())
             || (self.screen == Screen::Apply && self.saving_settings.is_some())
             || (self.screen == Screen::Patches && self.editing_dest.is_some())
@@ -1053,6 +1093,7 @@ impl App {
             Screen::Themes => crate::ui::themes::on_key_themes(self, key),
             Screen::Packages => crate::ui::packages::on_key_packages(self, key),
             Screen::Patches => crate::ui::patches::on_key_patches(self, key),
+            Screen::Git => crate::ui::git::on_key_git(self, key),
             Screen::Client => crate::ui::client::on_key_client(self, key),
             Screen::Resources => crate::ui::vm::on_key_resources(self, key),
             Screen::Apply => crate::ui::apply::on_key_apply(self, key),

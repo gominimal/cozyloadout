@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn nothing_matching_gives_nothing() {
-        assert!(find("zzzzzz").is_empty());
+        assert_eq!(find("zzzzzz"), Vec::<&str>::new());
     }
 
     #[test]

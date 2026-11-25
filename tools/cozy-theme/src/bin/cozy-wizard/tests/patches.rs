@@ -57,7 +57,7 @@ fn arrows_walk_the_tree_and_enter_moves_on() {
     a.on_key(press(KeyCode::Enter));
     assert_eq!(
         a.screen,
-        Screen::Client,
+        Screen::Git,
         "enter should move on rather than descend"
     );
     std::fs::remove_dir_all(&root).unwrap();
@@ -108,6 +108,7 @@ fn picking_your_own_config_displaces_the_loadouts_and_says_so() {
 
     // And the summary repeats it, being the last screen before anything is
     // written.
+    a.on_key(press(KeyCode::Enter)); // -> git
     a.on_key(press(KeyCode::Enter)); // -> client
     a.on_key(press(KeyCode::Enter)); // -> resources
     a.on_key(press(KeyCode::Enter)); // -> apply
@@ -169,7 +170,7 @@ fn picking_a_directory_displaces_everything_the_loadout_puts_in_it() {
 #[test]
 fn nothing_picked_means_nothing_displaced() {
     let (a, home) = on_patches_with_conflict("none");
-    assert!(a.displaced_configs().is_empty());
+    assert_eq!(a.displaced_configs(), Vec::<String>::new());
     let text = flatten(&render_app(&a, 110, 30));
     assert!(
         !text.contains("using yours instead of"),

@@ -19,7 +19,15 @@ fn a_finished_run_records_every_page() {
     a.on_key(press(KeyCode::Esc));
     let theme = a.schemes[a.theme_row].name.clone();
     a.on_key(press(KeyCode::Enter)); // packages -> patches
-    a.on_key(press(KeyCode::Enter)); // patches -> client
+    a.on_key(press(KeyCode::Enter)); // patches -> git
+    a.on_key(press(KeyCode::Char(' '))); // edit the name
+    typing(&mut a, "Ada Lovelace");
+    a.on_key(press(KeyCode::Enter));
+    for _ in 0..4 {
+        a.on_key(press(KeyCode::Down)); // to the https tick
+    }
+    a.on_key(press(KeyCode::Char(' ')));
+    a.on_key(press(KeyCode::Enter)); // git -> client
     a.on_key(press(KeyCode::Enter)); // client -> resources
     a.on_key(press(KeyCode::Enter)); // resources -> apply
     assert_eq!(a.screen, Screen::Apply);
@@ -39,6 +47,11 @@ fn a_finished_run_records_every_page() {
         "the dropped package is recorded off"
     );
     assert!(st.packages.len() > 1, "and the rest are recorded too");
+    assert_eq!(st.git_name.as_deref(), Some("Ada Lovelace"));
+    assert_eq!(st.git_set_name, Some(true), "typing a name ticks it");
+    assert_eq!(st.git_email.as_deref(), Some(""));
+    assert_eq!(st.git_set_email, Some(false));
+    assert_eq!(st.git_https, Some(true));
 }
 
 #[test]

@@ -8,7 +8,7 @@
 use clap::parser::ValueSource;
 use clap::{CommandFactory, Parser};
 use color_eyre::eyre::{bail, eyre, Result};
-use cozy_theme::{Adjust, Options, Packages, Settings};
+use cozy_theme::{Adjust, GitSetup, Options, Packages, Settings};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -94,6 +94,26 @@ struct Args {
     #[arg(long, allow_negative_numbers = true, default_value_t = 0, value_parser = pct)]
     warmth: i8,
 
+    /// Have the activation hook set git's user.name. An empty value sets
+    /// nothing, which is how to override one a `--settings` file names.
+    #[arg(long, value_parser = git_value)]
+    git_name: Option<String>,
+
+    /// Have the activation hook set git's user.email, likewise.
+    #[arg(long, value_parser = git_value)]
+    git_email: Option<String>,
+
+    /// Have the activation hook fetch GitHub's SSH remotes over HTTPS.
+    /// `--git-https=false` turns off one a `--settings` file turned on.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_value_t = false,
+        default_missing_value = "true"
+    )]
+    git_https: bool,
+
     /// Save the adjusted scheme under this name, as a scheme of its own, and
     /// render that. Lands beside the checked-in schemes, so `just theme <name>`
     /// picks it up afterwards.
@@ -136,6 +156,12 @@ fn patch_dest_pair(s: &str) -> Result<(PathBuf, String), String> {
     Ok((PathBuf::from(src), dest.to_string()))
 }
 
+/// A git name or email: anything without control characters in it.
+fn git_value(s: &str) -> Result<String, String> {
+    cozy_theme::check_git_value(s)?;
+    Ok(s.to_string())
+}
+
 /// Percentages are bounded so an out-of-range value is refused at the command
 /// line rather than silently clamped somewhere in the middle of a render.
 fn pct(s: &str) -> Result<i8, String> {
@@ -165,6 +191,11 @@ impl From<&Args> for Options {
                 separation: a.separation,
                 background: a.background,
                 warmth: a.warmth,
+            },
+            git: GitSetup {
+                name: a.git_name.clone(),
+                email: a.git_email.clone(),
+                https: a.git_https,
             },
             ..Options::default()
         }
@@ -244,6 +275,15 @@ fn layer_settings(args: &Args, options: &mut Options) -> Result<()> {
         if typed_flag(name) {
             *to = from;
         }
+    }
+    if typed_flag("git_name") {
+        from_file.git.name = typed.git.name;
+    }
+    if typed_flag("git_email") {
+        from_file.git.email = typed.git.email;
+    }
+    if typed_flag("git_https") {
+        from_file.git.https = typed.git.https;
     }
     *options = from_file;
 

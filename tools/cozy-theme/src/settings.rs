@@ -77,6 +77,15 @@ pub struct Settings {
     /// propose a VM this one cannot boot.
     pub vcpus: Option<u8>,
     pub ram_mib: Option<u32>,
+
+    /// The git page. The text is kept separately from whether it is used, so
+    /// unticking a box and ticking it again next run does not mean retyping
+    /// your name. `None` on a tick is never asked, which reads as off.
+    pub git_name: Option<String>,
+    pub git_email: Option<String>,
+    pub git_set_name: Option<bool>,
+    pub git_set_email: Option<bool>,
+    pub git_https: Option<bool>,
 }
 
 impl Settings {
@@ -206,6 +215,24 @@ impl Settings {
         }
     }
 
+    /// What the activation hook should do to git, as `Options::git` wants it.
+    ///
+    /// A value with control characters in it is dropped rather than rendered —
+    /// the wizard cannot produce one, so it came from a hand edit, and it
+    /// costs that field rather than the file.
+    #[must_use]
+    pub fn git(&self) -> crate::GitSetup {
+        let pick = |on: Option<bool>, v: &Option<String>| {
+            v.clone()
+                .filter(|v| on == Some(true) && crate::check_git_value(v).is_ok())
+        };
+        crate::GitSetup {
+            name: pick(self.git_set_name, &self.git_name),
+            email: pick(self.git_set_email, &self.git_email),
+            https: self.git_https == Some(true),
+        }
+    }
+
     /// Fill in everything this file decides, leaving the paths to the caller.
     ///
     /// The wizard's apply screen and `cozy-theme --settings` both go through
@@ -214,6 +241,7 @@ impl Settings {
     pub fn apply_to(&self, options: &mut crate::Options, offered: &crate::Packages) {
         options.greeting = self.greeting();
         options.adjust = self.adjust();
+        options.git = self.git();
         options.with = self.packages(offered);
         options.patch_files = Self::existing(&self.files);
         options.patch_dirs = Self::existing(&self.dirs);
@@ -278,6 +306,46 @@ mod tests {
         assert_eq!(back.vcpus, Some(4));
         assert_eq!(back.ram_mib, Some(8192));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn git_values_are_used_only_when_ticked_and_survive_when_not() {
+        let s = Settings {
+            git_name: Some("Ada".into()),
+            git_email: Some("ada@example.com".into()),
+            git_set_name: Some(true),
+            git_set_email: Some(false),
+            git_https: None,
+            ..Settings::default()
+        };
+        let g = s.git();
+        assert_eq!(g.name.as_deref(), Some("Ada"));
+        assert_eq!(g.email, None, "unticked is not set");
+        assert!(!g.https, "never asked reads as off");
+
+        let dir = temp("git");
+        let path = dir.join(FILE);
+        s.save(&path).unwrap();
+        assert_eq!(
+            Settings::load(&path).git_email.as_deref(),
+            Some("ada@example.com"),
+            "an unticked value is still remembered"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_hand_edited_control_character_costs_that_field_only() {
+        let s = Settings {
+            git_name: Some("Ada\nLovelace".into()),
+            git_email: Some("ada@example.com".into()),
+            git_set_name: Some(true),
+            git_set_email: Some(true),
+            ..Settings::default()
+        };
+        let g = s.git();
+        assert_eq!(g.name, None);
+        assert_eq!(g.email.as_deref(), Some("ada@example.com"));
     }
 
     #[test]

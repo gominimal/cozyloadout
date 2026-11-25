@@ -72,6 +72,7 @@ pub fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
                 format!("{files} file(s), {dirs} director(ies)")
             },
         ),
+        row("git", git_summary(app)),
         // These two configure minimal itself, not the loadout, so they are
         // marked as such: the rows above are undone by deleting `build/`,
         // these are not.
@@ -106,6 +107,26 @@ pub fn summary_paragraph(app: &App, t: &Theme) -> Paragraph<'static> {
         },
     ]))
     .wrap(Wrap { trim: false })
+}
+
+/// The git row: what the hook will set, named by key.
+fn git_summary(app: &App) -> String {
+    let g = app.git_setup();
+    let mut set: Vec<&str> = Vec::new();
+    if g.name.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+        set.push("user.name");
+    }
+    if g.email.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+        set.push("user.email");
+    }
+    if g.https {
+        set.push("GitHub over HTTPS");
+    }
+    if set.is_empty() {
+        "untouched".to_string()
+    } else {
+        format!("{} — set by the activation hook", set.join(", "))
+    }
 }
 
 /// The summary and the four things that can be done with it.

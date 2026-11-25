@@ -174,7 +174,7 @@ pub fn on_key_client(app: &mut App, key: KeyEvent) {
         return;
     }
     match key.code {
-        KeyCode::Esc => app.screen = Screen::Patches,
+        KeyCode::Esc => app.screen = Screen::Git,
         KeyCode::Up | KeyCode::Char('k') => {
             app.client_row = app.client_row.saturating_sub(1);
         }

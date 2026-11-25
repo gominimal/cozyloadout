@@ -169,6 +169,12 @@ fn every_screen_paints_in_the_loaded_scheme() {
         ("themes", base),
         ("packages", on_packages()),
         ("patches", patches),
+        ("git", on_git()),
+        ("git, editing", {
+            let mut g = on_git();
+            g.on_key(press(KeyCode::Char(' ')));
+            g
+        }),
         ("client", on_client()),
         ("resources", on_resources()),
         ("apply", on_apply()),

@@ -393,7 +393,7 @@ fn nothing_is_flagged_when_there_is_no_index_to_check_against() {
     a.registry = crate::registry::Registry::load(Path::new("/definitely/not/here"));
     a.on_key(press(KeyCode::Char('i')));
     typing(&mut a, "emacs obviousnonsense");
-    assert!(a.unknown_extras().is_empty());
+    assert_eq!(a.unknown_extras(), Vec::<&str>::new());
     let text = flatten(&render_app(&a, 110, 30));
     assert!(!text.contains("not in the registry"), "{text}");
 }
@@ -427,7 +427,7 @@ fn esc_leaves_the_search_without_adding_anything() {
     typing(&mut a, "emacs");
     a.on_key(press(KeyCode::Esc));
     assert!(a.searching.is_none());
-    assert!(a.extra_packages().is_empty());
+    assert_eq!(a.extra_packages(), Vec::<&str>::new());
     assert_eq!(
         a.screen,
         Screen::Packages,

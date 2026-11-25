@@ -29,6 +29,8 @@ fn both_pages_step_back_the_way_they_came() {
     a.on_key(press(KeyCode::Esc));
     assert_eq!(a.screen, Screen::Client);
     a.on_key(press(KeyCode::Esc));
+    assert_eq!(a.screen, Screen::Git);
+    a.on_key(press(KeyCode::Esc));
     assert_eq!(a.screen, Screen::Patches);
 }
 

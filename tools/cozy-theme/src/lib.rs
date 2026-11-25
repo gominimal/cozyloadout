@@ -889,6 +889,89 @@ impl Packages {
 }
 
 // ---------------------------------------------------------------------------
+// Git setup
+// ---------------------------------------------------------------------------
+
+/// What the activation hook does to git's global config, beyond the includes
+/// it always adds.
+///
+/// `Default` does nothing — no commands, and not even a blank line in the
+/// hook. The same identity rule `Adjust` keeps, for the same reason: it lets
+/// `Options` carry one unconditionally.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct GitSetup {
+    /// `user.name`, set when present and not blank.
+    pub name: Option<String>,
+    /// `user.email`, likewise.
+    pub email: Option<String>,
+    /// Rewrite `git@github.com:` remotes to HTTPS. A session has no SSH key
+    /// unless one is patched in, so an SSH remote is one that cannot be
+    /// fetched.
+    pub https: bool,
+}
+
+impl GitSetup {
+    /// The hook lines, each indented to sit inside the hook's `command -v git`
+    /// block and each ending in a newline — so the empty string is "nothing",
+    /// with no stray blank line left behind in the rendered script.
+    ///
+    /// Every command ends `|| true`: the hook must exit 0 whatever git thinks,
+    /// and a `url.*.insteadOf` that already holds several values is exactly the
+    /// case where a plain set refuses.
+    #[must_use]
+    pub fn script(&self) -> String {
+        let mut out = String::new();
+        let mut set = |key: &str, value: &str| {
+            let _ = writeln!(
+                out,
+                "    git config --global {key} {} || true",
+                sh_quote(value)
+            );
+        };
+        if let Some(name) = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            set("user.name", name);
+        }
+        if let Some(email) = self
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            set("user.email", email);
+        }
+        if self.https {
+            set("url.https://github.com/.insteadOf", "git@github.com:");
+        }
+        out
+    }
+}
+
+/// Quote a value for POSIX `sh`: single quotes, with any single quote inside
+/// written as `'\''`. Nothing is special inside single quotes, so this is
+/// the whole of it — a name like `O'Brien` or `$(rm -rf ~)` arrives as text.
+#[must_use]
+pub fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Whether a typed name or email can go into the hook at all.
+///
+/// Control characters are refused rather than quoted: a newline is legal inside
+/// single quotes, but git stores the value with it, and no name has one.
+pub fn check_git_value(value: &str) -> Result<(), String> {
+    if value.chars().any(char::is_control) {
+        Err("control characters are not allowed".into())
+    } else {
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
 
@@ -921,6 +1004,8 @@ pub struct Options {
     /// Adjustments applied to the scheme before anything is rendered.
     /// `Adjust::default()` is the identity, so this is free to be unconditional.
     pub adjust: Adjust,
+    /// What the activation hook sets in git's global config.
+    pub git: GitSetup,
 }
 
 impl Default for Options {
@@ -937,6 +1022,7 @@ impl Default for Options {
             home: std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
             patch_dests: BTreeMap::new(),
             adjust: Adjust::default(),
+            git: GitSetup::default(),
         }
     }
 }
@@ -1385,6 +1471,7 @@ pub fn build(args: &Options) -> Result<String> {
     let mut vars = scheme.vars();
     vars.insert("loadout_name".into(), args.loadout.clone());
     vars.insert("greeting".into(), args.greeting.clone());
+    vars.insert("git_setup".into(), args.git.script());
     // One quoted name per line, indented to sit inside the array in the
     // template. Same shape as `patches` below, and generated for the same
     // reason: the list has one home, and it is templates/packages.toml.
@@ -2334,6 +2421,34 @@ palette:
         assert!(report.contains("Minimal Dark"), "{report}");
         assert!(report.contains("minimal-dark"), "{report}");
         assert!(report.contains("files]"), "{report}");
+    }
+
+    #[test]
+    fn no_git_setup_renders_nothing_at_all() {
+        // Not even a newline: the template puts the substitution at the start
+        // of the line closing the block, so anything here would show up as a
+        // blank line in every default hook.
+        assert_eq!(GitSetup::default().script(), "");
+        let blank = GitSetup {
+            name: Some("   ".into()),
+            email: Some(String::new()),
+            https: false,
+        };
+        assert_eq!(blank.script(), "", "a blank value is nothing to set");
+    }
+
+    #[test]
+    fn git_values_are_quoted_for_sh_whatever_is_in_them() {
+        let g = GitSetup {
+            name: Some("Ada O'Brien $(rm -rf ~) `x`".into()),
+            email: None,
+            https: true,
+        };
+        assert_eq!(
+            g.script(),
+            "    git config --global user.name 'Ada O'\\''Brien $(rm -rf ~) `x`' || true\n    \
+             git config --global url.https://github.com/.insteadOf 'git@github.com:' || true\n"
+        );
     }
 
     #[test]

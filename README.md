@@ -60,11 +60,11 @@ min session activate --loadout cozy --attach .
 | Tool | Used for |
 | --- | --- |
 | [`just`](https://github.com/casey/just) | running the recipes |
-| Rust — `cargo` and `rustc`, 1.88+ | building the renderer and the wizard |
+| Rust — `cargo` and `rustc`, 1.89+ | building the renderer and the wizard |
 | `bash` | recipe bodies |
 | `zip` | `just bundle`, which produces the distributable `cozy.zip` |
 | `git` | cloning this repo; also `just fetch-schemes` |
-| Minimal **0.5.4+** | installing the loadout — earlier versions don't support `$LOADOUT_ROOT` patch sources or the `SHELL` handover |
+| Minimal **0.8+** | installing the loadout — it declares its environment in `[env_vars]`, which minimal reads from 0.8 on (earlier versions called it `vars`) |
 
 Plus the usual POSIX userland. `fish` and `dash` are optional, used only by `just check` to syntax-check generated files.
 
@@ -72,7 +72,7 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 
 ## The wizard
 
-`just wizard` is the recommended way to set the loadout up. Seven screens:
+`just wizard` is the recommended way to set the loadout up. Its screens:
 
 | | |
 | --- | --- |
@@ -81,6 +81,7 @@ You do **not** need the tools being themed — helix, zellij, bat and the rest. 
 | **Themes** | every scheme on disk, with the whole interface re-painting in each one as you scroll, next to a preview of a prompt, highlighted code and a diff — `/` filters, `a` opens six adjustments |
 | **Packages** | which optional packages to install, with a description and licence for each — `/` searches the Minimal registry by name, showing categories and any security advisories, and anything you type by hand is checked against it |
 | **Patches** | one picker for your own dotfiles — files and folders alike, `/` to filter — with a preview of whatever is under the cursor: a file's contents syntax-highlighted in the scheme you picked, an image drawn in the pane, ANSI art in its own colours, what is inside an archive, where a symlink points, or what copying a folder in would actually bring |
+| **Git** | your git name and email, and whether GitHub's SSH remotes are fetched over HTTPS — each one ticked on is set by the activation hook in every new session, and the page shows the exact commands |
 | **Detach** | the leader and detach chords, checked against the rules minimal enforces |
 | **Resources** | how many cores and how much memory the microVM gets, within minvmd's own limits |
 
@@ -98,7 +99,7 @@ both live under `~/.config/cozy/`, so they survive re-cloning the repo.
 
 That file is portable. Save one under a name of your own — from the last screen,
 or with `just wizard --settings mine.toml` — and it describes the whole loadout:
-scheme, adjustments, greeting, packages, patches. Rebuild from it anywhere,
+scheme, adjustments, greeting, packages, patches, git identity. Rebuild from it anywhere,
 without the interface:
 
 ```shell
@@ -125,7 +126,7 @@ just theme gruvbox-dark-hard   # render into build/, bundle into cozy.zip
 just install                   # copy build/ into ~/.config/minimal/loadouts/
 ```
 
-Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is checked in. The renderer takes the same choices the wizard collects — `--greeting`, `--with`, `--patch-file`, `--patch-dir` — so nothing is only reachable through the interface:
+Skip `just fetch-schemes` and `just theme` builds `minimal-dark`, which is checked in. The renderer takes the same choices the wizard collects — `--greeting`, `--with`, `--patch-file`, `--patch-dir`, `--git-name`, `--git-email`, `--git-https` — so nothing is only reachable through the interface:
 
 ```shell
 cargo run --release --manifest-path tools/cozy-theme/Cargo.toml -- --help

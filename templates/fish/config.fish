@@ -371,8 +371,8 @@ end
 
 # --- Tool colours that travel in the environment ---
 # These four have no config file to patch: they are read from the environment,
-# so they are set here rather than in cozy.toml's [vars]. That is deliberate —
-# vars compose across every contributor and a differing value is a hard
+# so they are set here rather than in cozy.toml's [env_vars]. That is deliberate —
+# env_vars compose across every contributor and a differing value is a hard
 # activation failure, so anything that can live in the shell config does.
 #
 # The palette is written out at render time rather than read from the
@@ -422,14 +422,14 @@ if command -q difft
     set -gx DFT_BACKGROUND {% if dark %}dark{% endif %}{% if light %}light{% endif %}
 end
 
-# $EDITOR is set in cozy.toml's [vars]; $VISUAL is the same answer for the
+# $EDITOR is set in cozy.toml's [env_vars]; $VISUAL is the same answer for the
 # programs that ask the other question. The two are not synonyms: $EDITOR is
 # the fallback for when a full-screen editor can't be hosted — historically a
 # line printer, today a pipe or a dumb terminal — and $VISUAL is the one to use
 # when it can. Tools that distinguish them check $VISUAL first, so setting only
 # $EDITOR quietly asks for the degraded answer everywhere that cares.
 #
-# Not in [vars], for the reason given there: every name added to it is another
+# Not in [env_vars], for the reason given there: every name added to it is another
 # chance for a project's minimal.toml to disagree and fail the activation
 # outright, so anything that can live in the shell config does.
 #
